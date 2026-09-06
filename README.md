@@ -1,42 +1,84 @@
-# Recruitment Document Tools
+# Profile Bot AI - Unified Recruitment Intelligence & Dossier Suite
 
-The workspace is organized into two completely decoupled, standalone applications:
+A unified recruitment platform combining **Autonomous Candidate Search Automation (Naukri Resdex)** and **Document Dossier Compilation (.DOCX)** under a single website and single backend.
 
 ```text
 c:\Users\sriha\snypar\profile-bot/
+├── frontend/                        # 🌐 UNIFIED SINGLE WEBSITE (Vite + React)
+│   ├── index.html                   # Modern typography & SVG favicon
+│   ├── src/
+│   │   ├── App.jsx                  # Single app with seamless tab switching
+│   │   ├── config.js                # Dynamic backend port selector (Port 8001)
+│   │   ├── index.css                # Dark theme design system
+│   │   ├── components/
+│   │   │   ├── Navbar.jsx           # Unified navbar with brand, tab switcher & port config
+│   │   │   ├── Icons.jsx            # SVG vector icon suite (no emojis)
+│   │   │   └── SearchAgentView.jsx  # Resdex Candidate Search Agent
+│   │   └── dossier-compiler/        # Candidate Dossier Compiler module (.DOCX)
+│   └── package.json
 │
-├── Dossier compiler/             # 📑 Standalone Dossier Compiler Application
-│   ├── frontend/                 # Vite + React (Port 5173)
-│   ├── backend/                  # FastAPI + PyMuPDF DOCX Compiler (Port 8001)
-│   ├── tests/                    # Dossier & rendering test suite
-│   ├── pytest.ini
-│   └── README.md
+├── backend/                         # ⚡ UNIFIED BACKEND (FastAPI on Port 8001)
+│   ├── requirements.txt             # PyMuPDF, python-docx, Pillow, Selenium, FastAPI
+│   └── app/
+│       ├── main.py                  # Mounts /search, /profiles, /dossier, /health, and /app
+│       ├── api/                     # API routers for search, profiles, and dossier
+│       ├── services/                # DossierService, FormService, Matching, Ranking
+│       ├── agents/                  # Resdex RequirementAgent
+│       ├── selenium/                # Browser automation driver & form executor
+│       └── core/                    # Security middlewares, DLP masking, rate limiter
 │
-├── Profile search automation/    # 🔍 Standalone Candidate Search Automation Application
-│   ├── frontend/                 # Vite + React (Port 5174)
-│   ├── backend/                  # FastAPI + Selenium Automation Agent (Port 8002)
-│   ├── tests/                    # Search, matching & ranking test suite
-│   ├── pytest.ini
-│   └── README.md
-│
+├── tests/                           # 🧪 Unified test suite (59 passing tests)
+├── pytest.ini                       # Test configuration
 └── README.md
 ```
 
 ---
 
-## 1. Dossier Compiler (Photo + ID + Resume)
-A dedicated application to upload a candidate photo, government ID proof, and resume, and automatically compile them into a unified `.docx` file in exact sequence:
-1. **Candidate Header & Photo** (22pt name, 13pt title, contact bar, 2.58" portrait)
-2. **Verified Government ID Document** (6.2" wide exact image / rendered PDF)
-3. **Original Candidate Resume** (6.5" wide exact verbatim copy / rendered PDF)
+## Quick Start (Single Website + Single Backend)
 
-* **Backend**: `cd "Dossier compiler/backend" && py -m uvicorn app.main:app --reload --port 8001`
-* **Frontend**: `cd "Dossier compiler/frontend" && npm run dev` (Runs on `http://localhost:5173`)
+### 1. Start the Unified Backend API
+```powershell
+cd backend
+py -m uvicorn app.main:app --reload --port 8001
+```
+* **API Documentation**: [http://127.0.0.1:8001/docs](http://127.0.0.1:8001/docs)
+* **Health Check**: [http://127.0.0.1:8001/health](http://127.0.0.1:8001/health)
+
+### 2. Start the Unified Website
+```powershell
+cd frontend
+npm run dev
+```
+* Access the unified portal at: **[http://localhost:5173](http://localhost:5173)**
 
 ---
 
-## 2. Profile Search Automation (Resdex Candidate Search Agent)
-A dedicated recruitment intelligence application for parsing natural language job descriptions, mapping criteria to Resdex candidate search forms, and automating portal workflows.
+## Features in the Unified Website
 
-* **Backend**: `cd "Profile search automation/backend" && py -m uvicorn app.main:app --reload --port 8002`
-* **Frontend**: `cd "Profile search automation/frontend" && npm run dev` (Runs on `http://localhost:5174`)
+### 🔍 1. Candidate Search Agent (Naukri Resdex)
+* Parse natural-language recruiter requirements into a structured `SearchPlan`.
+* Validate plan deterministically against `resdex_schema.json`.
+* Execution modes:
+  * **Dry-Run**: Instant plan inspection and schema verification.
+  * **Inspection**: Launches Chrome and populates the Resdex form without submitting.
+  * **Live Search**: Fills form and triggers live search.
+* Candidate matching & multi-factor scoring (0–100).
+
+### 📑 2. Candidate Dossier Compiler
+* Upload **Photo**, **ID Proof**, and **Resume**.
+* High-resolution 150 DPI multi-page PDF rendering via PyMuPDF.
+* Generates OpenXML `.DOCX` with exact layout:
+  1. Candidate Header (Name, Title, Contact Line)
+  2. Centered Candidate Photo (2.58" wide)
+  3. Heading **"ID Proof"** (16pt Calibri Bold) + Centered ID document (6.2" wide)
+  4. Page Break
+  5. Heading **"Candidate Resume"** (16pt Calibri Bold) + Verbatim original resume pages (6.5" wide) with clean page breaks between multi-page resumes
+  6. Blank footer (no reference tags or labels).
+
+---
+
+## Running Tests
+Run all 59 unit and integration tests across both domains:
+```powershell
+py -m pytest tests/ -v
+```

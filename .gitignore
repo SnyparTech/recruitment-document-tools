@@ -28,6 +28,14 @@ wheels/
 .coverage
 htmlcov/
 
+# Node / Frontend
+node_modules/
+dist/
+dist-ssr/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
 # Environment & Secrets
 .env
 *.local
@@ -38,8 +46,14 @@ htmlcov/
 .idea/
 *.swp
 *.swo
+.DS_Store
 
 # Selenium / Browser profiles
 selenium_profile/
 chromedriver.log
 geckodriver.log
+
+# Upload & generated storage
+backend/storage/
+storage/
+*.docx
