@@ -1,7 +1,12 @@
 // Backend API Base Configuration
-// Defaulting to 127.0.0.1:8001 to prevent conflict with other projects on port 8000
+// Default to relative root ('') on external tunnels or remote hosts to leverage Vite proxying
 export const getApiBase = () => {
-  return localStorage.getItem('PROFILE_BOT_API_BASE') || 'http://127.0.0.1:8001';
+  const saved = localStorage.getItem('PROFILE_BOT_API_BASE');
+  if (saved) return saved;
+  if (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+    return '';
+  }
+  return '';
 };
 
 export const setApiBase = (url) => {
