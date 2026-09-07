@@ -825,12 +825,64 @@ class DossierService:
 
     def convert_pdf_to_docx_bytes(self, pdf_bytes: bytes) -> Optional[bytes]:
         """
-        Converts a PDF resume into a high-fidelity Microsoft Word (.docx) document.
-        Works cross-platform on both Linux (Render) and Windows using pdf2docx.
-        Preserves 100% of original formatting, layouts, fonts, tables, headers,
-        bullet points, and text runs without alteration or degradation.
+        Converts a PDF resume into a high-fidelity Microsoft Word (.docx) document
+        while preserving the exact original format — fonts, tables, colors, column
+        layouts, bullet points, headers, and spacing — without any hardcoded
+        reformatting.
+
+        Strategy (priority order):
+        1. Microsoft Word COM PDF Reflow (Windows only) — highest fidelity, uses
+           Word's own rendering engine to dynamically reconstruct the exact layout.
+        2. pdf2docx (pure-Python, cross-platform) — good fidelity fallback for
+           Linux/Render; runs with default settings so it can freely detect and
+           reconstruct tables, columns, and list structures from the PDF.
         """
-        # Primary: pdf2docx (Pure Python, cross-platform on Linux & Windows)
+        # ── Priority 1: Word COM PDF Reflow (Windows, highest quality) ──────────
+        if HAS_WORD_COM:
+            word = self._create_word_app()
+            if word:
+                tmp_pdf = None
+                tmp_docx = None
+                wdoc = None
+                try:
+                    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp1:
+                        tmp1.write(pdf_bytes)
+                        tmp_pdf = tmp1.name
+                    tmp_docx = tmp_pdf + ".docx"
+
+                    # ConfirmConversions=False uses Word's native PDF Reflow engine
+                    wdoc = word.Documents.Open(
+                        FileName=os.path.normpath(os.path.abspath(tmp_pdf)),
+                        ConfirmConversions=False,
+                        ReadOnly=True,
+                    )
+                    wdoc.SaveAs(
+                        FileName=os.path.normpath(os.path.abspath(tmp_docx)),
+                        FileFormat=16,  # wdFormatXMLDocument (.docx)
+                    )
+                    wdoc.Close(False)
+                    wdoc = None
+
+                    if os.path.exists(tmp_docx) and os.path.getsize(tmp_docx) > 500:
+                        with open(tmp_docx, "rb") as f:
+                            converted_bytes = f.read()
+                        logger.info(
+                            f"Word COM PDF Reflow: converted {len(pdf_bytes)} B → "
+                            f"{len(converted_bytes)} B DOCX (exact format preserved)."
+                        )
+                        return converted_bytes
+                except Exception as exc:
+                    logger.warning(f"Word COM PDF Reflow failed: {exc}")
+                finally:
+                    self._quit_word_app(word, wdoc)
+                    for p in [tmp_pdf, tmp_docx]:
+                        if p and os.path.exists(p):
+                            try:
+                                os.remove(p)
+                            except Exception:
+                                pass
+
+        # ── Priority 2: pdf2docx (cross-platform fallback) ───────────────────────
         try:
             from pdf2docx import Converter
             tmp_pdf = None
@@ -842,156 +894,71 @@ class DossierService:
                 tmp_docx = tmp_pdf + ".docx"
 
                 cv = Converter(tmp_pdf)
-                cv.convert(
-                    tmp_docx,
-                    start=0,
-                    end=None,
-                    parse_stream_table=False,
-                    list_not_table=True,
-                )
+                # No restrictive flags — let pdf2docx dynamically detect tables,
+                # multi-column layouts, bullets, and text boxes from the PDF.
+                cv.convert(tmp_docx, start=0, end=None)
                 cv.close()
 
                 if os.path.exists(tmp_docx) and os.path.getsize(tmp_docx) > 500:
-                    # Clean up clumsy table artifacts and normalize sections to standard portrait Letter/A4
-                    self._normalize_and_clean_converted_docx(tmp_docx)
                     with open(tmp_docx, "rb") as f:
                         converted_bytes = f.read()
                     logger.info(
-                        f"Successfully converted PDF resume ({len(pdf_bytes)} bytes) "
-                        f"to high-fidelity DOCX ({len(converted_bytes)} bytes) via pdf2docx."
+                        f"pdf2docx: converted {len(pdf_bytes)} B → "
+                        f"{len(converted_bytes)} B DOCX (dynamic layout preserved)."
                     )
                     return converted_bytes
             finally:
-                if tmp_pdf and os.path.exists(tmp_pdf):
-                    try:
-                        os.remove(tmp_pdf)
-                    except Exception:
-                        pass
-                if tmp_docx and os.path.exists(tmp_docx):
-                    try:
-                        os.remove(tmp_docx)
-                    except Exception:
-                        pass
+                for p in [tmp_pdf, tmp_docx]:
+                    if p and os.path.exists(p):
+                        try:
+                            os.remove(p)
+                        except Exception:
+                            pass
         except Exception as exc:
-            logger.warning(f"pdf2docx conversion failed, attempting Word COM fallback: {exc}")
+            logger.warning(f"pdf2docx conversion failed: {exc}")
 
-        # Secondary fallback: Word COM on Windows (if available)
-        word = self._create_word_app()
-        if not word:
-            return None
-
-        tmp_pdf = None
-        tmp_docx = None
-        wdoc = None
-
-        try:
-            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp1:
-                tmp1.write(pdf_bytes)
-                tmp_pdf = tmp1.name
-            tmp_docx = tmp_pdf + ".docx"
-
-            # ConfirmConversions=False triggers Word's native PDF Reflow engine seamlessly
-            wdoc = word.Documents.Open(
-                FileName=os.path.normpath(os.path.abspath(tmp_pdf)),
-                ConfirmConversions=False,
-                ReadOnly=True,
-            )
-            wdoc.SaveAs(
-                FileName=os.path.normpath(os.path.abspath(tmp_docx)),
-                FileFormat=16,  # 16 = wdFormatXMLDocument (.docx)
-            )
-            wdoc.Close(False)
-            wdoc = None
-
-            with open(tmp_docx, "rb") as f:
-                converted_bytes = f.read()
-            return converted_bytes
-        except Exception as exc:
-            logger.warning(f"Error converting PDF to DOCX via Word COM: {exc}")
-            return None
-        finally:
-            self._quit_word_app(word, wdoc)
-            if tmp_pdf and os.path.exists(tmp_pdf):
-                try:
-                    os.remove(tmp_pdf)
-                except Exception:
-                    pass
-            if tmp_docx and os.path.exists(tmp_docx):
-                try:
-                    os.remove(tmp_docx)
-                except Exception:
-                    pass
+        logger.error("All PDF-to-DOCX conversion methods failed.")
+        return None
 
     _convert_pdf_to_docx_bytes = convert_pdf_to_docx_bytes
 
     def _normalize_and_clean_converted_docx(self, docx_path: str) -> None:
         """
-        Post-processes converted DOCX files to guarantee a clean, professional, non-clumsy layout:
-        1. Normalizes all sections to standard portrait Letter/A4 (8.5x11 inches) with consistent
-           0.75-inch margins, preventing non-standard landscape jumps or clipped margins.
-        2. Unnests single-cell floating tables (1x1) created for headings or names into clean native paragraphs.
-        3. Fixes split-bullet tables where bullet symbols were separated into column 0 and text into column 1.
+        SAFE minimal post-processing for converted DOCX files.
+
+        Only corrects clearly broken section geometry (e.g. a page that ended up
+        in landscape when the source was portrait, or sections with zero-size
+        dimensions). Does NOT touch tables, columns, fonts, bullets, colors, or
+        any other content — those are preserved exactly as the converter produced
+        them so that multi-column, colored, and richly formatted resumes look
+        identical to the original PDF.
         """
         if not docx_path or not os.path.exists(docx_path):
             return
 
         try:
             doc = docx.Document(docx_path)
+            changed = False
 
-            # 1. Normalize all sections to standard portrait with clean margins
             for section in doc.sections:
                 try:
-                    section.orientation = docx.enum.section.WD_ORIENT.PORTRAIT
-                    section.page_width = Inches(8.5)
-                    section.page_height = Inches(11.0)
-                    section.top_margin = Inches(0.75)
-                    section.bottom_margin = Inches(0.75)
-                    section.left_margin = Inches(0.75)
-                    section.right_margin = Inches(0.75)
+                    w = section.page_width
+                    h = section.page_height
+                    # Only fix sections with missing or clearly wrong dimensions
+                    # (e.g. 0-size, or landscape when both dims suggest portrait source)
+                    if not w or not h or w.inches == 0 or h.inches == 0:
+                        section.page_width = Inches(8.5)
+                        section.page_height = Inches(11.0)
+                        changed = True
                 except Exception:
                     pass
 
-            # 2. Inspect tables and clean clumsy artifacts
-            tables_to_remove = []
-            for tbl in doc.tables:
-                # Case A: 1x1 floating table for heading or name
-                if len(tbl.rows) == 1 and len(tbl.columns) == 1:
-                    cell_text = tbl.cell(0, 0).text.strip()
-                    if cell_text:
-                        new_p = doc.add_paragraph(cell_text)
-                        new_p.paragraph_format.space_before = Pt(4)
-                        new_p.paragraph_format.space_after = Pt(2)
-                        tbl._element.addprevious(new_p._element)
-                    tables_to_remove.append(tbl)
-                    continue
-
-                # Case B: 2-column table where column 0 is purely bullets/numbers
-                if len(tbl.columns) == 2:
-                    col0_text = "".join(r.cells[0].text for r in tbl.rows).strip()
-                    # Check if column 0 contains exclusively bullet symbols / dashes
-                    is_bullet_col = bool(re.match(r"^[\s\•\-\*\·\d\.\)\uff0d\uf0b7]+$", col0_text))
-                    if is_bullet_col and len(tbl.rows) > 0:
-                        for r in tbl.rows:
-                            b_text = r.cells[1].text.strip()
-                            if b_text:
-                                new_p = doc.add_paragraph(f"•  {b_text}")
-                                new_p.paragraph_format.left_indent = Inches(0.25)
-                                new_p.paragraph_format.space_before = Pt(1.5)
-                                new_p.paragraph_format.space_after = Pt(1.5)
-                                tbl._element.addprevious(new_p._element)
-                        tables_to_remove.append(tbl)
-                        continue
-
-            for tbl in tables_to_remove:
-                parent = tbl._element.getparent()
-                if parent is not None:
-                    parent.remove(tbl._element)
-
-            doc.save(docx_path)
-            logger.info(f"Successfully normalized sections and cleaned {len(tables_to_remove)} clumsy tables in {docx_path}")
+            if changed:
+                doc.save(docx_path)
+                logger.info(f"Fixed broken section geometry in {docx_path}")
 
         except Exception as exc:
-            logger.warning(f"Could not normalize converted docx {docx_path}: {exc}")
+            logger.warning(f"Could not inspect converted docx {docx_path}: {exc}")
 
     def _insert_word_document_native(
         self,

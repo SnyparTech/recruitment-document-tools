@@ -1,0 +1,262 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Dossier Compiler — Architecture",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "upload-flow",
+        "label": "File Upload & Compilation",
+        "focus": ["frontend", "middleware", "api", "dossier-service", "docx-gen", "storage"],
+        "note": "Primary path: candidate uploads photo, ID proof, and resume → DOCX dossier generated."
+      },
+      {
+        "id": "security-layer",
+        "label": "Security Middleware Stack",
+        "focus": ["frontend", "middleware", "api"],
+        "note": "Defense-in-depth: OWASP headers, localhost guard, payload limit, rate limit, CORS."
+      },
+      {
+        "id": "extraction-pipeline",
+        "label": "Document Extraction Pipeline",
+        "focus": ["dossier-service", "extractors", "image-proc", "pdf-render"],
+        "note": "Text extraction from PDF/DOCX/TXT, ID analysis, photo standardization."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "frontend",
+      "type": "frontend",
+      "label": "React Frontend",
+      "sublabel": "Vite :5173",
+      "pos": [30, 140],
+      "size": [120, 56],
+      "tag": "Multipart Upload"
+    },
+    {
+      "id": "middleware",
+      "type": "security",
+      "label": "Security Middleware",
+      "sublabel": "5-Layer Stack",
+      "pos": [210, 140],
+      "size": [130, 56],
+      "tag": "OWASP + Localhost"
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "Dossier API",
+      "sublabel": "FastAPI :8000",
+      "pos": [400, 140],
+      "size": [120, 56],
+      "tag": "/dossier/*"
+    },
+    {
+      "id": "dossier-service",
+      "type": "backend",
+      "label": "DossierService",
+      "sublabel": "Core Orchestrator",
+      "pos": [580, 40],
+      "size": [130, 56],
+      "tag": "compile_dossier_docx"
+    },
+    {
+      "id": "extractors",
+      "type": "backend",
+      "label": "Document Extractors",
+      "sublabel": "pdfplumber + docx",
+      "pos": [580, 380],
+      "size": [130, 56],
+      "tag": "PDF / DOCX / TXT"
+    },
+    {
+      "id": "image-proc",
+      "type": "backend",
+      "label": "Image Processor",
+      "sublabel": "Pillow (PIL)",
+      "pos": [780, 380],
+      "size": [120, 56],
+      "tag": "Crop + Thumbnail"
+    },
+    {
+      "id": "pdf-render",
+      "type": "backend",
+      "label": "PDF Renderer",
+      "sublabel": "PyMuPDF (fitz)",
+      "pos": [780, 40],
+      "size": [120, 56],
+      "tag": "150 DPI PNG"
+    },
+    {
+      "id": "docx-gen",
+      "type": "backend",
+      "label": "DOCX Generator",
+      "sublabel": "python-docx",
+      "pos": [960, 140],
+      "size": [120, 56],
+      "tag": "OpenXML Output"
+    },
+    {
+      "id": "storage",
+      "type": "database",
+      "label": "Local Storage",
+      "sublabel": "dossiers/",
+      "pos": [1140, 140],
+      "size": [110, 56],
+      "tag": ".DOCX Files"
+    },
+    {
+      "id": "registry",
+      "type": "database",
+      "label": "Registry",
+      "sublabel": "In-Memory",
+      "pos": [400, 300],
+      "size": [120, 50],
+      "tag": "Metadata"
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "security-group",
+      "label": "Hardened Local-Only",
+      "wraps": ["middleware", "api", "dossier-service", "extractors", "image-proc", "pdf-render", "docx-gen", "storage", "registry"],
+      "pad": 14
+    }
+  ],
+  "connections": [
+    {
+      "id": "upload",
+      "from": "frontend",
+      "to": "middleware",
+      "label": "Multipart POST",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "left",
+      "labelAt": [170, 208]
+    },
+    {
+      "id": "through-middleware",
+      "from": "middleware",
+      "to": "api",
+      "label": "Validated Request",
+      "fromSide": "right",
+      "toSide": "left",
+      "labelAt": [350, 208]
+    },
+    {
+      "id": "delegate-service",
+      "from": "api",
+      "to": "dossier-service",
+      "label": "Extract + Compile",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "labelAt": [465, 98]
+    },
+    {
+      "id": "text-extraction",
+      "from": "dossier-service",
+      "to": "extractors",
+      "label": "Parse Documents",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [540, 364]
+    },
+    {
+      "id": "photo-processing",
+      "from": "dossier-service",
+      "to": "image-proc",
+      "label": "Standardize Photo",
+      "fromSide": "bottom",
+      "toSide": "left",
+      "labelAt": [720, 338]
+    },
+    {
+      "id": "pdf-to-image",
+      "from": "dossier-service",
+      "to": "pdf-render",
+      "label": "Render Pages",
+      "fromSide": "right",
+      "toSide": "left",
+      "labelAt": [700, 10]
+    },
+    {
+      "id": "generate-docx",
+      "from": "dossier-service",
+      "to": "docx-gen",
+      "label": "Assemble DOCX",
+      "fromSide": "right",
+      "toSide": "top",
+      "labelAt": [880, 110]
+    },
+    {
+      "id": "save-file",
+      "from": "docx-gen",
+      "to": "storage",
+      "label": "Write .docx",
+      "fromSide": "right",
+      "toSide": "left",
+      "labelAt": [1090, 208]
+    },
+    {
+      "id": "register-metadata",
+      "from": "api",
+      "to": "registry",
+      "label": "Store Metadata",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [460, 258]
+    },
+    {
+      "id": "download",
+      "from": "storage",
+      "to": "frontend",
+      "label": "FileResponse .docx",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "bottom",
+      "via": [[1195, 240], [1195, 480], [90, 480], [90, 196]],
+      "labelAt": [642, 474]
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Upload Pipeline",
+      "items": [
+        "Frontend sends multipart: photo + ID proof + resume",
+        "5-layer security middleware validates and rate-limits",
+        "DossierService orchestrates extraction and compilation"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Document Extraction",
+      "items": [
+        "pdfplumber extracts text from PDF resumes",
+        "python-docx reads DOCX paragraphs verbatim",
+        "PyMuPDF renders PDF pages at 150 DPI for embedding"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "DOCX Generation",
+      "items": [
+        "python-docx assembles styled candidate profile",
+        "Embedded photo cropped to 400x400 via Pillow",
+        "Identity proof rendered as full-page images"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Security",
+      "items": [
+        "Localhost-only guard blocks DNS rebinding",
+        "OWASP headers: CSP, X-Frame-Options, X-Content-Type",
+        "Token-bucket rate limiting + payload size defense"
+      ]
+    }
+  ]
+}
