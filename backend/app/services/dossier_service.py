@@ -432,14 +432,14 @@ class DossierService:
             page_images = self._render_pdf_to_images(id_bytes)
             if page_images:
                 for idx, img_data in enumerate(page_images):
-                    if idx > 0:
-                        doc.add_page_break()
                     p_pic = doc.add_paragraph()
                     p_pic.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                    p_pic.paragraph_format.space_before = Pt(8)
-                    p_pic.paragraph_format.space_after = Pt(14)
+                    p_pic.paragraph_format.space_before = Pt(4)
+                    p_pic.paragraph_format.space_after = Pt(6)
+                    if idx > 0:
+                        p_pic.paragraph_format.page_break_before = True
                     try:
-                        p_pic.add_run().add_picture(io.BytesIO(img_data), width=Inches(6.2))
+                        p_pic.add_run().add_picture(io.BytesIO(img_data), width=Inches(6.0))
                     except Exception as exc:
                         logger.warning(f"Could not embed ID PDF page: {exc}")
             else:
@@ -471,10 +471,9 @@ class DossierService:
         filename: str,
     ) -> None:
         """Embeds the exact resume document into the DOCX."""
-        doc.add_page_break()
-
-        # Section Heading matching sample docx (Pt(16), Bold, #0F172A)
+        # Clean page break before resume section without creating an extra empty paragraph
         p_head = doc.add_paragraph()
+        p_head.paragraph_format.page_break_before = True
         p_head.paragraph_format.space_before = Pt(0)
         p_head.paragraph_format.space_after = Pt(4)
         r_head = p_head.add_run("Candidate Resume")
@@ -489,14 +488,32 @@ class DossierService:
             page_images = self._render_pdf_to_images(resume_bytes)
             if page_images:
                 for idx, img_data in enumerate(page_images):
-                    if idx > 0:
-                        doc.add_page_break()
                     p_pic = doc.add_paragraph()
                     p_pic.alignment = WD_ALIGN_PARAGRAPH.CENTER
                     p_pic.paragraph_format.space_before = Pt(0)
-                    p_pic.paragraph_format.space_after = Pt(14)
+                    p_pic.paragraph_format.space_after = Pt(0)
+                    p_pic.paragraph_format.line_spacing = 1.0
+
+                    # Calculate target dimensions based on page aspect ratio so it fits cleanly
                     try:
-                        p_pic.add_run().add_picture(io.BytesIO(img_data), width=Inches(6.5))
+                        with Image.open(io.BytesIO(img_data)) as pil_img:
+                            w_px, h_px = pil_img.size
+                            aspect = h_px / w_px if w_px > 0 else 1.414
+                    except Exception:
+                        aspect = 1.414
+
+                    if idx == 0:
+                        # First page shares vertical space with 'Candidate Resume' heading (~0.4 in)
+                        # Usable page height is 9.5 in; keep target height under 8.5 in
+                        target_width = min(6.0, 8.5 / aspect)
+                    else:
+                        # Subsequent pages start at the very top of their own page
+                        p_pic.paragraph_format.page_break_before = True
+                        # Full page usable height is 9.5 in; keep target height under 9.1 in
+                        target_width = min(6.4, 9.1 / aspect)
+
+                    try:
+                        p_pic.add_run().add_picture(io.BytesIO(img_data), width=Inches(target_width))
                     except Exception as exc:
                         logger.warning(f"Could not embed Resume PDF page: {exc}")
             else:

@@ -26,7 +26,6 @@ export default function Navbar({ activeTab, setActiveTab }) {
         </div>
         <div>
           <span className="brand-name" style={{ fontSize: '1.15rem' }}>Profile Bot AI</span>
-          <span className="brand-badge-light">Unified Suite</span>
         </div>
       </div>
 
