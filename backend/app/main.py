@@ -73,11 +73,11 @@ app.add_middleware(
     RateLimitMiddleware, requests_per_minute=settings.RATE_LIMIT_PER_MINUTE
 )
 
-# Layer 5: Flexible and Secure CORS (Localhost, Netlify, Render, ngrok)
+# Layer 5: Universal Web CORS (Vercel, Netlify, Render, ngrok, Localhost)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|.*\.onrender\.com|.*\.netlify\.app|.*\.ngrok-free\.app|.*\.ngrok\.io)(:\d+)?$",
+    allow_origin_regex=r"^https?://.*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

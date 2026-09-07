@@ -98,7 +98,7 @@ export default function Navbar({ activeTab, setActiveTab }) {
             style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}
             title="Click to change backend port"
           >
-            <span>Backend: <strong style={{ color: '#1E293B' }}>{currentBase.replace('http://', '')}</strong></span>
+            <span>Backend: <strong style={{ color: '#1E293B' }}>{currentBase ? currentBase.replace(/^https?:\/\//, '') : 'local'}</strong></span>
             <IconEdit size={13} color="#4F46E5" />
           </div>
         )}
