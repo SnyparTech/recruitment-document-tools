@@ -11,10 +11,12 @@ Candidate Profile Dossier (.docx) containing embedded photo, verified ID badge,
 structured resume sections, core competencies, and career timeline.
 """
 
+import copy
 import io
 import logging
 import os
 import re
+import tempfile
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -26,6 +28,12 @@ from docx.shared import Inches, Pt, RGBColor
 from PIL import Image
 import pdfplumber
 import fitz  # PyMuPDF for high-resolution document rendering
+
+try:
+    import win32com.client
+    HAS_WORD_COM = True
+except ImportError:
+    HAS_WORD_COM = False
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +71,7 @@ class DossierService:
         os.makedirs(self.storage_dir, exist_ok=True)
 
     def extract_resume_text(self, file_bytes: bytes, filename: str) -> str:
-        """Extracts plain text from PDF, DOCX, or text resume files."""
+        """Extracts plain text from PDF, DOCX, DOC, or text resume files."""
         lower_name = filename.lower()
         text = ""
 
@@ -79,6 +87,45 @@ class DossierService:
                 for p in doc.paragraphs:
                     if p.text:
                         text += p.text + "\n"
+                for table in doc.tables:
+                    for row in table.rows:
+                        row_text = " | ".join(cell.text.strip() for cell in row.cells if cell.text.strip())
+                        if row_text:
+                            text += row_text + "\n"
+            elif lower_name.endswith(".doc"):
+                if HAS_WORD_COM:
+                    tmp_path = None
+                    word = None
+                    wdoc = None
+                    try:
+                        with tempfile.NamedTemporaryFile(suffix=".doc", delete=False) as tmp:
+                            tmp.write(file_bytes)
+                            tmp_path = tmp.name
+                        word = win32com.client.Dispatch('Word.Application')
+                        word.Visible = False
+                        wdoc = word.Documents.Open(os.path.abspath(tmp_path))
+                        text = wdoc.Content.Text
+                    except Exception as exc:
+                        logger.warning(f"Error extracting text from .doc via Word COM: {exc}")
+                        text = file_bytes.decode("utf-8", errors="ignore")
+                    finally:
+                        if wdoc is not None:
+                            try:
+                                wdoc.Close(False)
+                            except Exception:
+                                pass
+                        if word is not None:
+                            try:
+                                word.Quit()
+                            except Exception:
+                                pass
+                        if tmp_path and os.path.exists(tmp_path):
+                            try:
+                                os.remove(tmp_path)
+                            except Exception:
+                                pass
+                else:
+                    text = file_bytes.decode("utf-8", errors="ignore")
             else:
                 # Text or fallback
                 text = file_bytes.decode("utf-8", errors="ignore")
@@ -382,15 +429,30 @@ class DossierService:
         # ----------------------------------------------------------------------
         # 3. CANDIDATE RESUME (EXACT ORIGINAL - NO ALTERATIONS OR RE-TYPING)
         # ----------------------------------------------------------------------
+        lower_resume = resume_filename.lower() if resume_filename else ""
         if resume_bytes:
-            self._embed_exact_resume_document(
-                doc=doc,
-                resume_bytes=resume_bytes,
-                filename=resume_filename,
-            )
+            if lower_resume.endswith(".docx") or lower_resume.endswith(".doc"):
+                # Save base doc first, then attempt 100% native Word COM insertion
+                doc.save(file_path)
+                inserted = self._insert_word_document_native(
+                    target_docx_path=file_path,
+                    resume_bytes=resume_bytes,
+                    filename=resume_filename,
+                )
+                if not inserted:
+                    # Fallback to in-memory python-docx element cloning (preserving all runs & tables)
+                    self._embed_exact_docx_elements(doc, resume_bytes, resume_filename)
+                    doc.save(file_path)
+            else:
+                self._embed_exact_resume_document(
+                    doc=doc,
+                    resume_bytes=resume_bytes,
+                    filename=resume_filename,
+                )
+                doc.save(file_path)
+        else:
+            doc.save(file_path)
 
-        # Save DOCX file
-        doc.save(file_path)
         logger.info(f"Compiled candidate profile dossier saved: {file_path}")
 
         return dossier_id, file_path
@@ -547,22 +609,8 @@ class DossierService:
             else:
                 doc.add_paragraph("[Resume Document Attached]")
 
-        elif lower.endswith(".docx"):
-            # Verbatim copy of original DOCX paragraphs
-            try:
-                source_doc = docx.Document(io.BytesIO(resume_bytes))
-                for element in source_doc.paragraphs:
-                    if element.text.strip():
-                        p = doc.add_paragraph()
-                        p.paragraph_format.space_before = Pt(2)
-                        p.paragraph_format.space_after = Pt(2)
-                        r = p.add_run(element.text)
-                        r.font.name = "Calibri"
-                        r.font.size = Pt(10)
-                        r.font.color.rgb = RGBColor(30, 41, 59)
-            except Exception as exc:
-                logger.warning(f"Error copying DOCX resume content: {exc}")
-                doc.add_paragraph(f"[Resume DOCX: {filename}]")
+        elif lower.endswith(".docx") or lower.endswith(".doc"):
+            self._embed_exact_docx_elements(doc, resume_bytes, filename)
 
         else:
             # Plain text resume
@@ -576,3 +624,180 @@ class DossierService:
                     r.font.name = "Calibri"
                     r.font.size = Pt(9.5)
                     r.font.color.rgb = RGBColor(30, 41, 59)
+
+    def _convert_doc_to_docx_bytes(self, doc_bytes: bytes) -> Optional[bytes]:
+        """Converts legacy binary .doc file bytes to modern .docx bytes using Word COM."""
+        if not HAS_WORD_COM:
+            return None
+        tmp_doc = None
+        tmp_docx = None
+        word = None
+        wdoc = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".doc", delete=False) as tmp1:
+                tmp1.write(doc_bytes)
+                tmp_doc = tmp1.name
+            tmp_docx = tmp_doc + "x"
+
+            word = win32com.client.Dispatch("Word.Application")
+            try:
+                word.Visible = False
+            except Exception:
+                pass
+            try:
+                word.DisplayAlerts = 0
+            except Exception:
+                pass
+
+            wdoc = word.Documents.Open(FileName=os.path.normpath(os.path.abspath(tmp_doc)))
+            wdoc.SaveAs(FileName=os.path.normpath(os.path.abspath(tmp_docx)), FileFormat=16)  # 16 = wdFormatXMLDocument (.docx)
+            wdoc.Close(False)
+
+            with open(tmp_docx, "rb") as f:
+                converted_bytes = f.read()
+            return converted_bytes
+        except Exception as exc:
+            logger.warning(f"Error converting .doc to .docx: {exc}")
+            return None
+        finally:
+            if wdoc is not None:
+                try:
+                    wdoc.Close(False)
+                except Exception:
+                    pass
+            if word is not None:
+                try:
+                    word.Quit()
+                except Exception:
+                    pass
+            if tmp_doc and os.path.exists(tmp_doc):
+                try:
+                    os.remove(tmp_doc)
+                except Exception:
+                    pass
+            if tmp_docx and os.path.exists(tmp_docx):
+                try:
+                    os.remove(tmp_docx)
+                except Exception:
+                    pass
+
+    def _insert_word_document_native(
+        self,
+        target_docx_path: str,
+        resume_bytes: bytes,
+        filename: str,
+    ) -> bool:
+        """
+        Natively embeds a .docx or .doc file into the compiled dossier using Word COM.
+        Preserves 100% of original fonts, styles, tables, bullet points, headers, footers,
+        colors, and layouts without degrading or reverting to default/normal format.
+        """
+        if not HAS_WORD_COM:
+            return False
+
+        ext = os.path.splitext(filename)[1].lower() or ".docx"
+        tmp_path = None
+        word = None
+        wdoc = None
+
+        try:
+            with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+                tmp.write(resume_bytes)
+                tmp_path = tmp.name
+
+            word = win32com.client.Dispatch("Word.Application")
+            try:
+                word.Visible = False
+            except Exception:
+                pass
+            try:
+                word.DisplayAlerts = 0  # wdAlertsNone
+            except Exception:
+                pass
+
+            wdoc = word.Documents.Open(FileName=os.path.normpath(os.path.abspath(target_docx_path)))
+            end_rng = wdoc.Range(wdoc.Content.End - 1, wdoc.Content.End - 1)
+            end_rng.InsertBreak(7)  # 7 = wdPageBreak
+            end_rng.Collapse(0)    # 0 = wdCollapseEnd
+
+            end_rng.Text = "Candidate Resume\r\n"
+            end_rng.Font.Name = "Calibri"
+            end_rng.Font.Size = 14
+            end_rng.Font.Bold = True
+            end_rng.Font.Color = 0x2A170F
+
+            insert_rng = wdoc.Range(wdoc.Content.End - 1, wdoc.Content.End - 1)
+            insert_rng.InsertFile(FileName=os.path.normpath(os.path.abspath(tmp_path)))
+
+            wdoc.Save()
+            return True
+        except Exception as exc:
+            logger.warning(f"Native Word COM insertion failed, falling back to python-docx: {exc}")
+            return False
+        finally:
+            if wdoc is not None:
+                try:
+                    wdoc.Close(False)
+                except Exception:
+                    pass
+            if word is not None:
+                try:
+                    word.Quit()
+                except Exception:
+                    pass
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+
+    def _embed_exact_docx_elements(
+        self,
+        doc: docx.Document,
+        resume_bytes: bytes,
+        filename: str,
+    ) -> None:
+        """
+        Pure-Python fallback for .docx files that preserves all original body elements
+        (paragraphs, runs, tables, formatting, bold, italics, font colors, alignments)
+        rather than stripping or resetting them to default styles.
+        """
+        p_head = doc.add_paragraph()
+        p_head.paragraph_format.page_break_before = True
+        p_head.paragraph_format.space_before = Pt(0)
+        p_head.paragraph_format.space_after = Pt(4)
+        r_head = p_head.add_run("Candidate Resume")
+        r_head.font.name = "Calibri"
+        r_head.font.size = Pt(14)
+        r_head.font.bold = True
+        r_head.font.color.rgb = RGBColor(15, 23, 42)
+
+        try:
+            docx_payload = resume_bytes
+            if filename.lower().endswith(".doc") and not filename.lower().endswith(".docx"):
+                converted = self._convert_doc_to_docx_bytes(resume_bytes)
+                if converted:
+                    docx_payload = converted
+
+            source_doc = docx.Document(io.BytesIO(docx_payload))
+
+            # Copy custom styles from source document so they resolve correctly
+            target_styles = doc.styles.element
+            source_styles = source_doc.styles.element
+            existing_ids = {
+                s.get(docx.oxml.ns.qn("w:styleId"))
+                for s in target_styles.findall(docx.oxml.ns.qn("w:style"))
+            }
+            for s in source_styles.findall(docx.oxml.ns.qn("w:style")):
+                sid = s.get(docx.oxml.ns.qn("w:styleId"))
+                if sid and sid not in existing_ids:
+                    target_styles.append(copy.deepcopy(s))
+                    existing_ids.add(sid)
+
+            # Deep-copy all elements (paragraphs, tables, drawings) from source body
+            for elem in source_doc.element.body:
+                if not elem.tag.endswith("sectPr"):
+                    doc.element.body.append(copy.deepcopy(elem))
+        except Exception as exc:
+            logger.warning(f"Error in deep copy of DOCX resume: {exc}")
+            doc.add_paragraph(f"[Resume Document Attached: {filename}]")
