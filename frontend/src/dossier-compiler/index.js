@@ -1,4 +1,3 @@
-export { default } from './DossierCompiler';
-export { default as DossierCompiler } from './DossierCompiler';
-export { default as FileUploadCard } from './FileUploadCard';
+export { default } from './DossierUploadWorkspace';
+export { default as DossierUploadWorkspace } from './DossierUploadWorkspace';
 export { default as DossierResultCard } from './DossierResultCard';
