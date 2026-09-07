@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import docx
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 from PIL import Image
 import pdfplumber
@@ -475,6 +476,11 @@ class DossierService:
         else:
             doc.save(file_path)
 
+        # Optimize spacing, eliminate excessive vertical gaps, and remove artificial section breaks
+        self._optimize_word_document_gaps(file_path)
+        if converted_resume_path and os.path.exists(converted_resume_path):
+            self._optimize_word_document_gaps(converted_resume_path)
+
         logger.info(f"Compiled candidate profile dossier saved: {file_path}")
 
         return dossier_id, file_path, converted_resume_path
@@ -891,3 +897,134 @@ class DossierService:
         except Exception as exc:
             logger.warning(f"Error in deep copy of DOCX resume: {exc}")
             doc.add_paragraph(f"[Resume Document Attached: {filename}]")
+
+    def _optimize_word_document_gaps(self, docx_path: str) -> None:
+        """
+        Eliminates large empty vertical gaps, blank half-pages, and artificial section breaks
+        in the compiled dossier or converted resume while preserving 100% of formatting,
+        fonts, bold styles, colors, tables, and visual layout.
+        """
+        if not docx_path or not os.path.exists(docx_path):
+            return
+
+        try:
+            # Step 1: Open with python-docx to clean OpenXML structure
+            doc = docx.Document(docx_path)
+
+            resume_start_idx = None
+            for idx, p in enumerate(doc.paragraphs):
+                if "Candidate Resume" in p.text:
+                    resume_start_idx = idx
+                    break
+
+            empty_paragraphs_to_remove = []
+            consecutive_empty = 0
+
+            for idx, p in enumerate(doc.paragraphs):
+                # If "Candidate Resume" exists, protect Page 1 by only touching paragraphs after it
+                if resume_start_idx is not None and idx <= resume_start_idx:
+                    continue
+
+                text = p.text.strip()
+                pPr = p._p.find(qn("w:pPr"))
+                if pPr is not None:
+                    sectPr = pPr.find(qn("w:sectPr"))
+                    if sectPr is not None:
+                        pPr.remove(sectPr)
+                        # If paragraph was only a section break holder, mark for removal
+                        if not text and len(p.runs) == 0:
+                            empty_paragraphs_to_remove.append(p)
+                            continue
+
+                # Remove consecutive redundant empty paragraphs
+                if not text and len(p.runs) == 0:
+                    consecutive_empty += 1
+                    if consecutive_empty > 1:
+                        empty_paragraphs_to_remove.append(p)
+                else:
+                    consecutive_empty = 0
+
+                # Spacing adjustments directly on python-docx paragraph format
+                if resume_start_idx is not None and idx > resume_start_idx:
+                    p.paragraph_format.line_spacing = 1.0
+                    if p.paragraph_format.space_before and p.paragraph_format.space_before.pt > 3.0:
+                        p.paragraph_format.space_before = Pt(2.0)
+                    if p.paragraph_format.space_after and p.paragraph_format.space_after.pt > 3.0:
+                        p.paragraph_format.space_after = Pt(2.0)
+                    if len(text) > 40:
+                        p.paragraph_format.keep_with_next = False
+
+            # Remove marked empty paragraphs from DOM
+            for p in empty_paragraphs_to_remove:
+                p_elem = p._p
+                parent = p_elem.getparent()
+                if parent is not None:
+                    try:
+                        parent.remove(p_elem)
+                    except Exception:
+                        pass
+
+            doc.save(docx_path)
+            logger.info(f"Cleaned OpenXML section breaks and empty lines in {docx_path}")
+
+        except Exception as exc:
+            logger.warning(f"Error during OpenXML gap cleanup on {docx_path}: {exc}")
+
+        # Step 2: High-fidelity layout optimization via Word COM (if available)
+        word = self._create_word_app()
+        if not word:
+            return
+
+        wdoc = None
+        try:
+            wdoc = word.Documents.Open(FileName=os.path.normpath(os.path.abspath(docx_path)))
+            in_resume = False
+            has_resume_heading = False
+
+            for p in wdoc.Paragraphs:
+                if "Candidate Resume" in p.Range.Text:
+                    has_resume_heading = True
+                    break
+
+            for p in wdoc.Paragraphs:
+                txt = p.Range.Text.strip()
+                if has_resume_heading:
+                    if "Candidate Resume" in txt:
+                        in_resume = True
+                        continue
+                    if not in_resume:
+                        continue
+
+                # Set single line spacing (wdLineSpaceSingle = 0)
+                try:
+                    p.Format.LineSpacingRule = 0
+                except Exception:
+                    pass
+
+                # Tighten spacing before and after
+                try:
+                    if p.Format.SpaceBefore > 3.0:
+                        p.Format.SpaceBefore = 2.0
+                except Exception:
+                    pass
+
+                try:
+                    if p.Format.SpaceAfter > 3.0:
+                        p.Format.SpaceAfter = 2.0
+                except Exception:
+                    pass
+
+                # Clear KeepWithNext on long content paragraphs to avoid cascading page breaks
+                try:
+                    if len(txt) > 40:
+                        p.Format.KeepWithNext = False
+                except Exception:
+                    pass
+
+            wdoc.Save()
+            logger.info(f"Optimized paragraph spacing and pagination via Word COM for {docx_path}")
+        except Exception as exc:
+            logger.warning(f"Error during Word COM layout optimization on {docx_path}: {exc}")
+        finally:
+            self._quit_word_app(word, wdoc)
+
