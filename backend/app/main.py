@@ -73,12 +73,13 @@ app.add_middleware(
     RateLimitMiddleware, requests_per_minute=settings.RATE_LIMIT_PER_MINUTE
 )
 
-# Layer 5: Restrictive Local-Only CORS
+# Layer 5: Flexible and Secure CORS (Localhost, Netlify, Render, ngrok)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|.*\.onrender\.com|.*\.netlify\.app|.*\.ngrok-free\.app|.*\.ngrok\.io)(:\d+)?$",
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=[
         "X-RateLimit-Limit",
@@ -166,8 +167,9 @@ app.include_router(dossier_router)
 # ------------------------------------------------------------------------------
 # 6. System & Health Check Endpoints
 # ------------------------------------------------------------------------------
-@app.get(
+@app.api_route(
     "/",
+    methods=["GET", "HEAD"],
     status_code=status.HTTP_200_OK,
     summary="Root System Status",
     tags=["System"],
@@ -183,8 +185,9 @@ async def root():
     }
 
 
-@app.get(
+@app.api_route(
     "/health",
+    methods=["GET", "HEAD"],
     status_code=status.HTTP_200_OK,
     summary="Health Check",
     tags=["System"],

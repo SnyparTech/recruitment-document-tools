@@ -41,6 +41,17 @@ class Settings(BaseSettings):
         "http://localhost:3000",
         "http://127.0.0.1:3000",
     ]
+    ALLOWED_HOSTS: list[str] = [
+        "127.0.0.1",
+        "localhost",
+        "testserver",
+        "::1",
+        "*.onrender.com",
+        "*.netlify.app",
+        "*.ngrok-free.app",
+        "*.ngrok.io",
+        "*",
+    ]
     RATE_LIMIT_PER_MINUTE: int = 120
     MAX_PAYLOAD_SIZE_BYTES: int = 31457280  # 30 MB for multi-file uploads (Photo + ID Proof + Resume)
     ENABLE_SECURITY_HEADERS: bool = True

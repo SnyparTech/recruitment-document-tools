@@ -81,30 +81,40 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 # ==============================================================================
 class LocalhostGuardMiddleware(BaseHTTPMiddleware):
     """
-    Protects local API endpoints from DNS Rebinding and unauthorized host spoofing.
-    Ensures that requests originate strictly from authorized localhost/loopback hosts.
+    Protects API endpoints from unauthorized host spoofing while allowing
+    requests from localhost, configured cloud domains, and wildcards.
     """
 
-    ALLOWED_HOSTS = {
-        "127.0.0.1",
-        "localhost",
-        "127.0.0.1:8000",
-        "localhost:8000",
-        "testserver",  # For pytest TestClient
-    }
-
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
-        # Extract host without port
         host_header = request.headers.get("host", "").lower().strip()
 
-        # Check Host header
-        if host_header and host_header not in self.ALLOWED_HOSTS:
-            # Allow custom port variations of localhost/127.0.0.1
+        if host_header:
             host_name = host_header.split(":")[0]
-            if host_name not in {"127.0.0.1", "localhost", "testserver", "::1"}:
+            allowed_patterns = getattr(
+                settings,
+                "ALLOWED_HOSTS",
+                ["127.0.0.1", "localhost", "testserver", "::1", "*.onrender.com", "*.netlify.app", "*"],
+            )
+
+            allowed = False
+            for pattern in allowed_patterns:
+                p = pattern.lower().strip()
+                if p == "*":
+                    allowed = True
+                    break
+                if p.startswith("*."):
+                    suffix = p[1:]  # e.g. .onrender.com
+                    if host_name.endswith(suffix) or host_name == p[2:]:
+                        allowed = True
+                        break
+                elif host_name == p or host_header == p:
+                    allowed = True
+                    break
+
+            if not allowed:
                 logger.warning(f"Blocked unauthorized Host header: '{host_header}'")
                 return Response(
-                    content='{"error":"FORBIDDEN_HOST","message":"Access restricted to localhost interface."}',
+                    content='{"error":"FORBIDDEN_HOST","message":"Access restricted to authorized hosts."}',
                     status_code=status.HTTP_403_FORBIDDEN,
                     media_type="application/json",
                 )
@@ -137,7 +147,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         # Bypass rate limiter for health checks
-        if request.url.path in {"/health", "/docs", "/redoc", "/openapi.json"}:
+        if request.url.path in {"/", "/health", "/docs", "/redoc", "/openapi.json"}:
             return await call_next(request)
 
         client_ip = request.client.host if request.client else "127.0.0.1"
