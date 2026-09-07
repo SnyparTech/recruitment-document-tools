@@ -36,6 +36,7 @@ export default function Navbar({ activeTab, setActiveTab }) {
           className={`top-nav-tab ${activeTab === 'candidates' ? 'active' : ''}`}
           onClick={() => setActiveTab('candidates')}
           id="tab-candidates"
+          title="Naukri Candidate Search"
         >
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
@@ -43,7 +44,8 @@ export default function Navbar({ activeTab, setActiveTab }) {
             <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
             <path d="M16 3.13a4 4 0 0 1 0 7.75" />
           </svg>
-          <span>Candidates</span>
+          <span className="tab-label-full">Candidates</span>
+          <span className="tab-label-short">Search</span>
         </button>
 
         <button
@@ -51,9 +53,11 @@ export default function Navbar({ activeTab, setActiveTab }) {
           className={`top-nav-tab ${activeTab === 'dossier' ? 'active' : ''}`}
           onClick={() => setActiveTab('dossier')}
           id="tab-dossier"
+          title="Compile Candidate Dossier"
         >
           <IconDocument size={17} />
-          <span>Dossier Compiler</span>
+          <span className="tab-label-full">Dossier Compiler</span>
+          <span className="tab-label-short">Dossier</span>
         </button>
       </div>
 
@@ -61,44 +65,37 @@ export default function Navbar({ activeTab, setActiveTab }) {
       <div className="nav-status-top">
         <span className="status-dot-green"></span>
         {isEditing ? (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <div className="nav-status-edit-box">
             <input
               type="text"
               value={inputVal}
               onChange={(e) => setInputVal(e.target.value)}
-              style={{
-                background: '#FFFFFF',
-                border: '1px solid #818CF8',
-                color: '#1E293B',
-                borderRadius: '6px',
-                padding: '2px 8px',
-                fontSize: '0.8rem',
-                width: '170px',
-              }}
+              placeholder="Backend URL"
+              className="nav-status-input"
             />
             <button
               onClick={handleSave}
-              style={{
-                background: '#4F46E5',
-                border: 'none',
-                color: '#FFFFFF',
-                borderRadius: '6px',
-                padding: '3px 10px',
-                fontSize: '0.75rem',
-                fontWeight: 600,
-                cursor: 'pointer',
-              }}
+              className="btn-nav-save"
             >
               Save
+            </button>
+            <button
+              onClick={() => setIsEditing(false)}
+              className="btn-nav-cancel"
+            >
+              ✕
             </button>
           </div>
         ) : (
           <div
             onClick={() => setIsEditing(true)}
-            style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}
-            title="Click to change backend port"
+            className="nav-status-label-wrap"
+            title="Click to configure API backend endpoint"
           >
-            <span>Backend: <strong style={{ color: '#1E293B' }}>{currentBase ? currentBase.replace(/^https?:\/\//, '') : 'local'}</strong></span>
+            <span className="nav-status-text">
+              <span className="nav-status-prefix">Backend: </span>
+              <strong className="nav-status-host">{currentBase ? currentBase.replace(/^https?:\/\//, '') : 'local'}</strong>
+            </span>
             <IconEdit size={13} color="#4F46E5" />
           </div>
         )}

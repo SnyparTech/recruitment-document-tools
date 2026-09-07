@@ -1052,24 +1052,676 @@ body {
   max-height: 400px;
 }
 
-/* Responsive adjustments */
-@media (max-width: 1180px) {
+/* ==============================================================================
+   9. DOSSIER RESULT CARD COMPONENT STYLES
+   ============================================================================== */
+.dossier-result-card {
+  background: #FFFFFF;
+  border: 1.5px solid #E0E7FF;
+  border-radius: var(--radius-lg);
+  padding: 24px 28px;
+  box-shadow: 0 8px 30px rgba(79, 70, 229, 0.06);
+}
+
+.dossier-result-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 20px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid #EEF2FF;
+}
+
+.dossier-candidate-profile {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex: 1;
+  min-width: 260px;
+}
+
+.dossier-candidate-avatar {
+  width: 62px;
+  height: 62px;
+  border-radius: 14px;
+  overflow: hidden;
+  background-color: #EEF2FF;
+  border: 2px solid #C7D2FE;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  box-shadow: 0 4px 12px rgba(79, 70, 229, 0.1);
+}
+
+.dossier-candidate-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.dossier-candidate-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.dossier-name-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.dossier-candidate-name {
+  font-size: 1.28rem;
+  font-weight: 800;
+  color: #0F172A;
+  letter-spacing: -0.015em;
+}
+
+.dossier-verified-badge {
+  background: #ECFDF5;
+  color: #059669;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 2px 9px;
+  border-radius: var(--radius-full);
+  border: 1px solid #A7F3D0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.dossier-candidate-title {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--primary-purple);
+  margin-top: 2px;
+}
+
+.dossier-candidate-contacts {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-top: 5px;
+  font-size: 0.78rem;
+  color: #64748B;
+}
+
+.contact-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.dossier-result-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.btn-result-reset {
+  background: #FFFFFF;
+  border: 1px solid #CBD5E1;
+  color: #475569;
+  border-radius: var(--radius-sm);
+  padding: 11px 18px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.btn-result-reset:hover {
+  background: #F8FAFC;
+  border-color: #94A3B8;
+  color: #1E293B;
+}
+
+.btn-result-download-docx {
+  background: #EEF2FF;
+  color: #4338CA;
+  border: 1.5px solid #C7D2FE;
+  text-decoration: none;
+  padding: 11px 18px;
+  border-radius: var(--radius-sm);
+  font-size: 0.88rem;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.12);
+  transition: var(--transition);
+}
+
+.btn-result-download-docx:hover {
+  background: #E0E7FF;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.2);
+}
+
+.btn-result-download-dossier {
+  background: linear-gradient(135deg, #6366F1 0%, #4F46E5 100%);
+  color: #FFFFFF;
+  text-decoration: none;
+  padding: 11px 22px;
+  border-radius: var(--radius-sm);
+  font-size: 0.9rem;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  box-shadow: 0 4px 14px rgba(79, 70, 229, 0.3);
+  transition: var(--transition);
+}
+
+.btn-result-download-dossier:hover {
+  background: linear-gradient(135deg, #4F46E5 0%, #4338CA 100%);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(79, 70, 229, 0.4);
+}
+
+.dossier-structure-box {
+  margin-top: 18px;
+  background: #F8FAFC;
+  padding: 14px 18px;
+  border-radius: 10px;
+  border: 1px solid #E2E8F0;
+}
+
+.dossier-structure-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 0.86rem;
+  color: #1E293B;
+}
+
+.dossier-structure-pills {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.structure-pill {
+  padding: 4px 12px;
+  border-radius: var(--radius-full);
+  font-size: 0.75rem;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pill-photo {
+  background: var(--coral-bg);
+  color: var(--coral-accent);
+  border: 1px solid var(--coral-border);
+}
+
+.pill-id {
+  background: var(--mint-bg);
+  color: var(--mint-accent);
+  border: 1px solid var(--mint-border);
+}
+
+.pill-resume {
+  background: var(--indigo-bg);
+  color: var(--indigo-accent);
+  border: 1px solid var(--indigo-border);
+}
+
+/* ==============================================================================
+   10. NAVBAR RESPONSIVE STYLES & CONTROLS
+   ============================================================================== */
+.tab-label-short {
+  display: none;
+}
+
+.step-label-short {
+  display: none;
+}
+
+.nav-status-label-wrap {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.nav-status-edit-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.nav-status-input {
+  background: #FFFFFF;
+  border: 1px solid #818CF8;
+  color: #1E293B;
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 0.8rem;
+  width: 170px;
+  outline: none;
+}
+
+.btn-nav-save {
+  background: var(--primary-purple);
+  border: none;
+  color: #FFFFFF;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-nav-cancel {
+  background: transparent;
+  border: none;
+  color: #94A3B8;
+  padding: 4px 6px;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+
+/* Execution Mode Selector Classes */
+.execution-mode-selector {
+  display: flex;
+  gap: 12px;
+}
+
+.mode-option-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #F8FAFC;
+  border: 1px solid #E2E8F0;
+  padding: 10px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.88rem;
+  font-weight: 600;
+  flex: 1;
+  transition: var(--transition);
+}
+
+.mode-option-card.active-dry {
+  background: rgba(56, 189, 248, 0.12);
+  border-color: #0284C7;
+}
+
+.mode-option-card.active-inspection {
+  background: rgba(16, 185, 129, 0.12);
+  border-color: #059669;
+}
+
+.mode-option-card.active-submit {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: #D97706;
+}
+
+.mode-option-content {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ==============================================================================
+   11. COMPREHENSIVE RESPONSIVE DESIGN SYSTEM
+   ============================================================================== */
+
+/* --- TABLETS & SMALL DESKTOPS (<= 1200px) --- */
+@media (max-width: 1200px) {
   .slots-showcase-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
+
   .showcase-column {
     display: none;
   }
+
+  .workspace-container {
+    padding: 20px 24px 40px 24px;
+  }
+
+  .workspace-card {
+    padding: 28px 28px;
+  }
 }
 
-@media (max-width: 860px) {
+/* --- TABLETS PORTRAIT (<= 960px) --- */
+@media (max-width: 960px) {
+  .navbar-top {
+    padding: 0 20px;
+  }
+
+  .slots-showcase-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 18px;
+  }
+
+  .slot-resume {
+    grid-column: span 2;
+  }
+
+  .step-connector {
+    width: 36px;
+    margin: 0 6px 16px 6px;
+  }
+
+  .execution-mode-selector {
+    flex-direction: column;
+    gap: 8px;
+  }
+}
+
+/* --- MOBILE PHONES & SMALL TABLETS (<= 768px) --- */
+@media (max-width: 768px) {
+  .navbar-top {
+    height: 64px;
+    padding: 0 14px;
+  }
+
+  .brand-name {
+    font-size: 1rem;
+  }
+
+  .brand-badge-light {
+    display: none;
+  }
+
+  .top-nav-tab {
+    padding: 6px 12px;
+    font-size: 0.82rem;
+    gap: 6px;
+  }
+
+  .tab-label-full {
+    display: none;
+  }
+
+  .tab-label-short {
+    display: inline;
+  }
+
+  .nav-status-prefix {
+    display: none;
+  }
+
+  .nav-status-host {
+    font-size: 0.76rem;
+    max-width: 100px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    display: inline-block;
+    vertical-align: middle;
+  }
+
+  .nav-status-input {
+    width: 120px;
+    font-size: 0.75rem;
+  }
+
+  .workspace-container {
+    padding: 12px 12px 32px 12px;
+  }
+
+  .workspace-card {
+    padding: 20px 16px;
+    border-radius: var(--radius-lg);
+  }
+
+  .workspace-top-bar {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 16px;
+    margin-bottom: 22px;
+  }
+
+  .stepper-nav {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .step-label-full {
+    display: none;
+  }
+
+  .step-label-short {
+    display: inline;
+  }
+
+  .step-circle {
+    width: 24px;
+    height: 24px;
+    font-size: 0.72rem;
+  }
+
+  .step-label {
+    font-size: 0.7rem;
+    margin-top: 4px;
+  }
+
+  .step-connector {
+    width: 24px;
+    margin: 0 4px 14px 4px;
+  }
+
+  .workspace-heading-block {
+    margin-bottom: 24px;
+  }
+
+  .workspace-main-title {
+    font-size: 1.4rem;
+  }
+
+  .workspace-sub-title {
+    font-size: 0.85rem;
+  }
+
+  /* Slots stack 1-column on mobile */
   .slots-showcase-grid {
     grid-template-columns: 1fr;
+    gap: 16px;
+    margin-bottom: 24px;
   }
+
+  .slot-resume {
+    grid-column: auto;
+  }
+
+  .document-slot {
+    padding: 18px 16px;
+  }
+
+  .slot-dropzone {
+    padding: 20px 12px;
+  }
+
+  /* Candidate Metadata Row */
+  .candidate-metadata-row {
+    grid-template-columns: 1fr;
+    gap: 12px;
+    padding: 14px;
+  }
+
+  /* Security Strip */
+  .security-strip {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 14px;
+  }
+
+  .security-right {
+    font-size: 0.75rem;
+  }
+
+  /* Action Bar */
+  .action-bar {
+    flex-direction: column-reverse;
+    gap: 12px;
+    width: 100%;
+  }
+
+  .btn-continue {
+    width: 100%;
+    justify-content: center;
+    padding: 13px 20px;
+    font-size: 0.95rem;
+  }
+
+  .btn-cancel {
+    width: 100%;
+    text-align: center;
+    padding: 10px;
+  }
+
+  /* Dossier Result Card Mobile */
+  .dossier-result-card {
+    padding: 18px 16px;
+  }
+
+  .dossier-result-header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 16px;
+  }
+
+  .dossier-result-actions {
+    flex-direction: column;
+    width: 100%;
+    gap: 10px;
+  }
+
+  .btn-result-reset,
+  .btn-result-download-docx,
+  .btn-result-download-dossier {
+    width: 100%;
+    justify-content: center;
+    text-align: center;
+    padding: 12px 16px;
+  }
+}
+
+/* --- SMALL MOBILE PHONES (<= 480px) --- */
+@media (max-width: 480px) {
   .navbar-top {
-    padding: 0 16px;
+    height: 58px;
+    padding: 0 10px;
   }
-  .top-nav-tab span {
+
+  .brand-ring-icon {
+    width: 28px;
+    height: 28px;
+  }
+
+  .brand-ring-inner {
+    width: 14px;
+    height: 14px;
+  }
+
+  .brand-name {
+    font-size: 0.92rem;
+  }
+
+  .top-nav-tabs {
+    padding: 2px;
+    gap: 3px;
+  }
+
+  .top-nav-tab {
+    padding: 5px 8px;
+    font-size: 0.76rem;
+    gap: 4px;
+  }
+
+  .nav-status-top {
+    padding: 4px 8px;
+  }
+
+  .nav-status-host {
     display: none;
+  }
+
+  .workspace-container {
+    padding: 8px 6px 28px 6px;
+  }
+
+  .workspace-card {
+    padding: 16px 12px;
+  }
+
+  .workspace-main-title {
+    font-size: 1.22rem;
+  }
+
+  .workspace-sub-title {
+    font-size: 0.8rem;
+  }
+
+  .step-connector {
+    width: 16px;
+    margin: 0 2px 12px 2px;
+  }
+
+  .step-label {
+    font-size: 0.65rem;
+  }
+
+  .slot-icon-wrapper {
+    width: 52px;
+    height: 52px;
+    margin: 4px auto 10px auto;
+  }
+
+  .slot-title {
+    font-size: 0.96rem;
+  }
+
+  .uploaded-file-row {
+    gap: 8px;
+  }
+
+  .uploaded-thumb {
+    width: 38px;
+    height: 38px;
+  }
+
+  .hero-title {
+    font-size: 1.25rem;
+  }
+
+  .hero-desc {
+    font-size: 0.82rem;
+  }
+
+  .card {
+    padding: 16px 12px;
+  }
+
+  .card-title {
+    font-size: 1rem;
+  }
+
+  .btn-primary-action {
+    padding: 11px 16px;
+    font-size: 0.88rem;
+  }
+
+  .dossier-candidate-avatar {
+    width: 50px;
+    height: 50px;
+  }
+
+  .dossier-candidate-name {
+    font-size: 1.1rem;
   }
 }

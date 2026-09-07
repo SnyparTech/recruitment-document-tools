@@ -138,7 +138,10 @@ export default function DossierUploadWorkspace({ initialCandidate, onBack }) {
               <div className="step-circle">
                 {currentStep > 1 ? '✓' : '1'}
               </div>
-              <span className="step-label">Upload Documents</span>
+              <span className="step-label">
+                <span className="step-label-full">Upload Documents</span>
+                <span className="step-label-short">Upload</span>
+              </span>
             </div>
 
             <div className={`step-connector ${currentStep > 1 ? 'completed' : ''}`}></div>
@@ -156,7 +159,10 @@ export default function DossierUploadWorkspace({ initialCandidate, onBack }) {
             {/* Step 3 */}
             <div className={`step-item ${currentStep === 3 ? 'active' : ''}`}>
               <div className="step-circle">3</div>
-              <span className="step-label">Generate Dossier</span>
+              <span className="step-label">
+                <span className="step-label-full">Generate Dossier</span>
+                <span className="step-label-short">Generate</span>
+              </span>
             </div>
           </div>
         </div>

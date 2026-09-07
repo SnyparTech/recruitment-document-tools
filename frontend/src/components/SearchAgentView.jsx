@@ -101,20 +101,8 @@ export default function SearchAgentView() {
           <div className="form-row" style={{ marginBottom: '24px' }}>
             <div className="form-group">
               <label className="form-label">Execution Mode</label>
-              <div style={{ display: 'flex', gap: '10px' }}>
-                <label style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  background: executeMode === 'dry_run' ? 'rgba(56, 189, 248, 0.15)' : 'var(--bg-input)',
-                  border: `1px solid ${executeMode === 'dry_run' ? 'var(--primary)' : 'var(--border-subtle)'}`,
-                  padding: '10px 16px',
-                  borderRadius: '8px',
-                  cursor: 'pointer',
-                  fontSize: '0.88rem',
-                  fontWeight: 600,
-                  flex: 1
-                }}>
+              <div className="execution-mode-selector">
+                <label className={`mode-option-card ${executeMode === 'dry_run' ? 'active-dry' : ''}`}>
                   <input
                     type="radio"
                     name="mode"
@@ -122,25 +110,13 @@ export default function SearchAgentView() {
                     checked={executeMode === 'dry_run'}
                     onChange={() => setExecuteMode('dry_run')}
                   />
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                  <span className="mode-option-content">
                     <IconBolt size={15} color="var(--primary)" />
-                    Dry-Run Plan Only
+                    <span>Dry-Run Plan Only</span>
                   </span>
                 </label>
 
-                <label style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  background: executeMode === 'inspection' ? 'rgba(16, 185, 129, 0.15)' : 'var(--bg-input)',
-                  border: `1px solid ${executeMode === 'inspection' ? 'var(--accent-emerald)' : 'var(--border-subtle)'}`,
-                  padding: '10px 16px',
-                  borderRadius: '8px',
-                  cursor: 'pointer',
-                  fontSize: '0.88rem',
-                  fontWeight: 600,
-                  flex: 1
-                }}>
+                <label className={`mode-option-card ${executeMode === 'inspection' ? 'active-inspection' : ''}`}>
                   <input
                     type="radio"
                     name="mode"
@@ -148,25 +124,13 @@ export default function SearchAgentView() {
                     checked={executeMode === 'inspection'}
                     onChange={() => setExecuteMode('inspection')}
                   />
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                  <span className="mode-option-content">
                     <IconEye size={15} color="var(--accent-emerald)" />
-                    Visual Form Fill (Inspection)
+                    <span>Visual Form Fill (Inspection)</span>
                   </span>
                 </label>
 
-                <label style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  background: executeMode === 'submit' ? 'rgba(245, 158, 11, 0.15)' : 'var(--bg-input)',
-                  border: `1px solid ${executeMode === 'submit' ? 'var(--accent-amber)' : 'var(--border-subtle)'}`,
-                  padding: '10px 16px',
-                  borderRadius: '8px',
-                  cursor: 'pointer',
-                  fontSize: '0.88rem',
-                  fontWeight: 600,
-                  flex: 1
-                }}>
+                <label className={`mode-option-card ${executeMode === 'submit' ? 'active-submit' : ''}`}>
                   <input
                     type="radio"
                     name="mode"
@@ -174,9 +138,9 @@ export default function SearchAgentView() {
                     checked={executeMode === 'submit'}
                     onChange={() => setExecuteMode('submit')}
                   />
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                  <span className="mode-option-content">
                     <IconRocket size={15} color="var(--accent-amber)" />
-                    Live Submit Search
+                    <span>Live Submit Search</span>
                   </span>
                 </label>
               </div>
