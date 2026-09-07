@@ -3,8 +3,8 @@
 export const getApiBase = () => {
   const saved = localStorage.getItem('PROFILE_BOT_API_BASE');
   if (saved) return saved;
-  if (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
-    return '';
+  if (import.meta.env?.VITE_API_BASE) {
+    return import.meta.env.VITE_API_BASE;
   }
   return '';
 };
