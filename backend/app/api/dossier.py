@@ -119,16 +119,23 @@ async def compile_candidate_dossier(
     profile.id_number = id_num
 
     # 6. Generate DOCX Dossier with EXACT embedded documents (auto-converting PDF resumes to DOCX)
-    dossier_id, file_path, converted_resume_path = dossier_service.compile_dossier_docx(
-        profile=profile,
-        photo_bytes=photo_bytes,
-        photo_filename=photo.filename or "Candidate_Photo.jpg",
-        id_proof_bytes=id_bytes,
-        id_proof_filename=id_proof.filename or "Identity_Proof.pdf",
-        resume_bytes=resume_bytes,
-        resume_filename=resume.filename or "Resume.pdf",
-        recruiter_notes=recruiter_notes,
-    )
+    try:
+        dossier_id, file_path, converted_resume_path = dossier_service.compile_dossier_docx(
+            profile=profile,
+            photo_bytes=photo_bytes,
+            photo_filename=photo.filename or "Candidate_Photo.jpg",
+            id_proof_bytes=id_bytes,
+            id_proof_filename=id_proof.filename or "Identity_Proof.pdf",
+            resume_bytes=resume_bytes,
+            resume_filename=resume.filename or "Resume.pdf",
+            recruiter_notes=recruiter_notes,
+        )
+    except Exception as exc:
+        logger.error(f"Dossier compilation failed: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Dossier compilation failed: {str(exc)}",
+        )
 
     converted_resume_url = f"/dossier/download-resume/{dossier_id}" if converted_resume_path else None
     converted_resume_filename = os.path.basename(converted_resume_path) if converted_resume_path else None

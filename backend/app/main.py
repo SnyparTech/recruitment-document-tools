@@ -134,13 +134,23 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
 
 @app.exception_handler(Exception)
 async def generic_exception_handler(request: Request, exc: Exception):
-    """Catches unhandled errors and ensures stack traces are never leaked."""
-    logger.error(f"Unhandled server error: {exc}", exc_info=True)
+    """Catches unhandled errors and ensures stack traces are logged."""
+    import traceback
+    tb = traceback.format_exc()
+    logger.error(f"Unhandled server error: {exc}\n{tb}")
+    try:
+        err_log_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "server_errors.log"))
+        with open(err_log_path, "a", encoding="utf-8") as f_err:
+            f_err.write(f"\n[{request.method} {request.url.path}] Unhandled error: {exc}\n{tb}\n")
+    except Exception:
+        pass
+
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={
             "error": "INTERNAL_SERVER_ERROR",
-            "message": "An unexpected error occurred. No sensitive details are exposed.",
+            "message": f"Server error: {str(exc)}",
+            "detail": str(exc),
         },
     )
 

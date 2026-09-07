@@ -95,32 +95,21 @@ class DossierService:
                         if row_text:
                             text += row_text + "\n"
             elif lower_name.endswith(".doc"):
-                if HAS_WORD_COM:
+                word = self._create_word_app()
+                if word:
                     tmp_path = None
-                    word = None
                     wdoc = None
                     try:
                         with tempfile.NamedTemporaryFile(suffix=".doc", delete=False) as tmp:
                             tmp.write(file_bytes)
                             tmp_path = tmp.name
-                        word = win32com.client.Dispatch('Word.Application')
-                        word.Visible = False
-                        wdoc = word.Documents.Open(os.path.abspath(tmp_path))
+                        wdoc = word.Documents.Open(os.path.normpath(os.path.abspath(tmp_path)))
                         text = wdoc.Content.Text
                     except Exception as exc:
                         logger.warning(f"Error extracting text from .doc via Word COM: {exc}")
                         text = file_bytes.decode("utf-8", errors="ignore")
                     finally:
-                        if wdoc is not None:
-                            try:
-                                wdoc.Close(False)
-                            except Exception:
-                                pass
-                        if word is not None:
-                            try:
-                                word.Quit()
-                            except Exception:
-                                pass
+                        self._quit_word_app(word, wdoc)
                         if tmp_path and os.path.exists(tmp_path):
                             try:
                                 os.remove(tmp_path)
@@ -658,37 +647,73 @@ class DossierService:
                     r.font.size = Pt(9.5)
                     r.font.color.rgb = RGBColor(30, 41, 59)
 
+    def _create_word_app(self):
+        """Creates a clean, isolated Word COM application instance using DispatchEx."""
+        if not HAS_WORD_COM:
+            return None
+        try:
+            pythoncom.CoInitialize()
+        except Exception:
+            pass
+        word = None
+        try:
+            word = win32com.client.DispatchEx("Word.Application")
+        except Exception:
+            try:
+                word = win32com.client.Dispatch("Word.Application")
+            except Exception as exc:
+                logger.warning(f"Could not dispatch Word COM: {exc}")
+                return None
+
+        try:
+            word.Visible = False
+        except Exception:
+            pass
+        try:
+            word.DisplayAlerts = 0  # wdAlertsNone
+        except Exception:
+            pass
+        try:
+            word.FeatureInstall = 0  # msoFeatureInstallNone
+        except Exception:
+            pass
+        return word
+
+    def _quit_word_app(self, word, wdoc=None):
+        """Safely closes active document, quits Word COM application, and uninitializes COM."""
+        if wdoc is not None:
+            try:
+                wdoc.Close(False)
+            except Exception:
+                pass
+        if word is not None:
+            try:
+                word.Quit()
+            except Exception:
+                pass
+        try:
+            pythoncom.CoUninitialize()
+        except Exception:
+            pass
+
     def _convert_doc_to_docx_bytes(self, doc_bytes: bytes) -> Optional[bytes]:
         """Converts legacy binary .doc file bytes to modern .docx bytes using Word COM."""
-        if not HAS_WORD_COM:
+        word = self._create_word_app()
+        if not word:
             return None
         tmp_doc = None
         tmp_docx = None
-        word = None
         wdoc = None
         try:
-            try:
-                pythoncom.CoInitialize()
-            except Exception:
-                pass
             with tempfile.NamedTemporaryFile(suffix=".doc", delete=False) as tmp1:
                 tmp1.write(doc_bytes)
                 tmp_doc = tmp1.name
             tmp_docx = tmp_doc + "x"
 
-            word = win32com.client.Dispatch("Word.Application")
-            try:
-                word.Visible = False
-            except Exception:
-                pass
-            try:
-                word.DisplayAlerts = 0
-            except Exception:
-                pass
-
             wdoc = word.Documents.Open(FileName=os.path.normpath(os.path.abspath(tmp_doc)))
             wdoc.SaveAs(FileName=os.path.normpath(os.path.abspath(tmp_docx)), FileFormat=16)  # 16 = wdFormatXMLDocument (.docx)
             wdoc.Close(False)
+            wdoc = None
 
             with open(tmp_docx, "rb") as f:
                 converted_bytes = f.read()
@@ -697,20 +722,7 @@ class DossierService:
             logger.warning(f"Error converting .doc to .docx: {exc}")
             return None
         finally:
-            if wdoc is not None:
-                try:
-                    wdoc.Close(False)
-                except Exception:
-                    pass
-            if word is not None:
-                try:
-                    word.Quit()
-                except Exception:
-                    pass
-            try:
-                pythoncom.CoUninitialize()
-            except Exception:
-                pass
+            self._quit_word_app(word, wdoc)
             if tmp_doc and os.path.exists(tmp_doc):
                 try:
                     os.remove(tmp_doc)
@@ -728,34 +740,19 @@ class DossierService:
         Preserves 100% of original formatting, layouts, fonts, tables, headers,
         bullet points, and text runs without alteration or degradation.
         """
-        if not HAS_WORD_COM:
+        word = self._create_word_app()
+        if not word:
             return None
 
         tmp_pdf = None
         tmp_docx = None
-        word = None
         wdoc = None
 
         try:
-            try:
-                pythoncom.CoInitialize()
-            except Exception:
-                pass
-
             with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp1:
                 tmp1.write(pdf_bytes)
                 tmp_pdf = tmp1.name
             tmp_docx = tmp_pdf + ".docx"
-
-            word = win32com.client.Dispatch("Word.Application")
-            try:
-                word.Visible = False
-            except Exception:
-                pass
-            try:
-                word.DisplayAlerts = 0  # wdAlertsNone
-            except Exception:
-                pass
 
             # ConfirmConversions=False triggers Word's native PDF Reflow engine seamlessly
             wdoc = word.Documents.Open(
@@ -777,20 +774,7 @@ class DossierService:
             logger.warning(f"Error converting PDF to DOCX via Word COM: {exc}")
             return None
         finally:
-            if wdoc is not None:
-                try:
-                    wdoc.Close(False)
-                except Exception:
-                    pass
-            if word is not None:
-                try:
-                    word.Quit()
-                except Exception:
-                    pass
-            try:
-                pythoncom.CoUninitialize()
-            except Exception:
-                pass
+            self._quit_word_app(word, wdoc)
             if tmp_pdf and os.path.exists(tmp_pdf):
                 try:
                     os.remove(tmp_pdf)
@@ -815,33 +799,18 @@ class DossierService:
         Preserves 100% of original fonts, styles, tables, bullet points, headers, footers,
         colors, and layouts without degrading or reverting to default/normal format.
         """
-        if not HAS_WORD_COM:
+        word = self._create_word_app()
+        if not word:
             return False
 
         ext = os.path.splitext(filename)[1].lower() or ".docx"
         tmp_path = None
-        word = None
         wdoc = None
 
         try:
-            try:
-                pythoncom.CoInitialize()
-            except Exception:
-                pass
-
             with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
                 tmp.write(resume_bytes)
                 tmp_path = tmp.name
-
-            word = win32com.client.Dispatch("Word.Application")
-            try:
-                word.Visible = False
-            except Exception:
-                pass
-            try:
-                word.DisplayAlerts = 0  # wdAlertsNone
-            except Exception:
-                pass
 
             wdoc = word.Documents.Open(FileName=os.path.normpath(os.path.abspath(target_docx_path)))
             end_rng = wdoc.Range(wdoc.Content.End - 1, wdoc.Content.End - 1)
@@ -858,25 +827,14 @@ class DossierService:
             insert_rng.InsertFile(FileName=os.path.normpath(os.path.abspath(tmp_path)))
 
             wdoc.Save()
+            wdoc.Close(False)
+            wdoc = None
             return True
         except Exception as exc:
             logger.warning(f"Native Word COM insertion failed, falling back to python-docx: {exc}")
             return False
         finally:
-            if wdoc is not None:
-                try:
-                    wdoc.Close(False)
-                except Exception:
-                    pass
-            if word is not None:
-                try:
-                    word.Quit()
-                except Exception:
-                    pass
-            try:
-                pythoncom.CoUninitialize()
-            except Exception:
-                pass
+            self._quit_word_app(word, wdoc)
             if tmp_path and os.path.exists(tmp_path):
                 try:
                     os.remove(tmp_path)
