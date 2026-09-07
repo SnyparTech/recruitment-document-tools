@@ -357,11 +357,13 @@ class DossierService:
         if photo_bytes:
             p_pic = doc.add_paragraph()
             p_pic.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            p_pic.paragraph_format.space_before = Pt(10)
-            p_pic.paragraph_format.space_after = Pt(12)
+            p_pic.paragraph_format.space_before = Pt(6)
+            p_pic.paragraph_format.space_after = Pt(8)
             try:
                 processed_photo = self.process_candidate_photo(photo_bytes)
-                p_pic.add_run().add_picture(io.BytesIO(processed_photo), width=Inches(2.58))
+                r_pic = p_pic.add_run()
+                r_pic.font.size = Pt(1)
+                r_pic.add_picture(io.BytesIO(processed_photo), width=Inches(2.2))
             except Exception as exc:
                 logger.warning(f"Could not embed photo into docx: {exc}")
                 p_pic.add_run("[Candidate Photo Attached]")
@@ -417,29 +419,45 @@ class DossierService:
         id_type: str,
     ) -> None:
         """Embeds the exact identity proof document into the DOCX."""
-        # Section Heading matching sample docx (Pt(16), Bold, #0F172A)
         p_head = doc.add_paragraph()
-        p_head.paragraph_format.space_before = Pt(4)
-        p_head.paragraph_format.space_after = Pt(6)
-        r_head = p_head.add_run("ID Proof")
+        p_head.paragraph_format.space_before = Pt(6)
+        p_head.paragraph_format.space_after = Pt(4)
+        r_head = p_head.add_run("ID Proof (Verified)")
         r_head.font.name = "Calibri"
-        r_head.font.size = Pt(16)
+        r_head.font.size = Pt(14)
         r_head.font.bold = True
         r_head.font.color.rgb = RGBColor(15, 23, 42)
 
         lower = filename.lower()
         if lower.endswith(".pdf"):
+            # Multi-page or full-page PDF ID proof starts on its own page
+            p_head.paragraph_format.page_break_before = True
             page_images = self._render_pdf_to_images(id_bytes)
             if page_images:
                 for idx, img_data in enumerate(page_images):
                     p_pic = doc.add_paragraph()
                     p_pic.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                    p_pic.paragraph_format.space_before = Pt(4)
-                    p_pic.paragraph_format.space_after = Pt(6)
-                    if idx > 0:
-                        p_pic.paragraph_format.page_break_before = True
+                    p_pic.paragraph_format.space_before = Pt(0)
+                    p_pic.paragraph_format.space_after = Pt(0)
+                    p_pic.paragraph_format.line_spacing = 1.0
+
                     try:
-                        p_pic.add_run().add_picture(io.BytesIO(img_data), width=Inches(6.0))
+                        with Image.open(io.BytesIO(img_data)) as pil_img:
+                            w_px, h_px = pil_img.size
+                            aspect = h_px / w_px if w_px > 0 else 1.414
+                    except Exception:
+                        aspect = 1.414
+
+                    if idx == 0:
+                        target_width = min(5.8, 8.0 / aspect)
+                    else:
+                        p_pic.paragraph_format.page_break_before = True
+                        target_width = min(6.0, 8.5 / aspect)
+
+                    r_pic = p_pic.add_run()
+                    r_pic.font.size = Pt(1)
+                    try:
+                        r_pic.add_picture(io.BytesIO(img_data), width=Inches(target_width))
                     except Exception as exc:
                         logger.warning(f"Could not embed ID PDF page: {exc}")
             else:
@@ -447,19 +465,29 @@ class DossierService:
                 r_err = p_err.add_run("[ID Proof PDF Document Attached]")
                 r_err.font.italic = True
         else:
+            # Image ID proof (e.g. Aadhaar / PAN card): fits cleanly on Page 1 below photo
             try:
                 img = Image.open(io.BytesIO(id_bytes))
                 if img.mode in ("RGBA", "P"):
                     img = img.convert("RGB")
+                w_px, h_px = img.size
+                aspect = h_px / w_px if w_px > 0 else 0.62
+
+                # Fit on Page 1: max width 5.5 in, max height 3.8 in
+                target_width = min(5.5, 3.8 / aspect)
+
                 buf = io.BytesIO()
                 img.save(buf, format="JPEG", quality=92)
                 buf.seek(0)
 
                 p_pic = doc.add_paragraph()
                 p_pic.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                p_pic.paragraph_format.space_before = Pt(8)
-                p_pic.paragraph_format.space_after = Pt(14)
-                p_pic.add_run().add_picture(buf, width=Inches(6.2))
+                p_pic.paragraph_format.space_before = Pt(0)
+                p_pic.paragraph_format.space_after = Pt(0)
+                p_pic.paragraph_format.line_spacing = 1.0
+                r_pic = p_pic.add_run()
+                r_pic.font.size = Pt(1)
+                r_pic.add_picture(buf, width=Inches(target_width))
             except Exception as exc:
                 logger.warning(f"Error embedding ID proof image: {exc}")
                 doc.add_paragraph(f"[ID Document Image: {filename}]")
@@ -478,13 +506,12 @@ class DossierService:
         p_head.paragraph_format.space_after = Pt(4)
         r_head = p_head.add_run("Candidate Resume")
         r_head.font.name = "Calibri"
-        r_head.font.size = Pt(16)
+        r_head.font.size = Pt(14)
         r_head.font.bold = True
         r_head.font.color.rgb = RGBColor(15, 23, 42)
 
         lower = filename.lower()
         if lower.endswith(".pdf"):
-            # High-resolution visual render of each resume page
             page_images = self._render_pdf_to_images(resume_bytes)
             if page_images:
                 for idx, img_data in enumerate(page_images):
@@ -494,7 +521,6 @@ class DossierService:
                     p_pic.paragraph_format.space_after = Pt(0)
                     p_pic.paragraph_format.line_spacing = 1.0
 
-                    # Calculate target dimensions based on page aspect ratio so it fits cleanly
                     try:
                         with Image.open(io.BytesIO(img_data)) as pil_img:
                             w_px, h_px = pil_img.size
@@ -503,17 +529,19 @@ class DossierService:
                         aspect = 1.414
 
                     if idx == 0:
-                        # First page shares vertical space with 'Candidate Resume' heading (~0.4 in)
-                        # Usable page height is 9.5 in; keep target height under 8.5 in
-                        target_width = min(6.0, 8.5 / aspect)
+                        # First page shares vertical space with 'Candidate Resume' heading (~0.35 in)
+                        # Keep target height at 8.0 in (leaves plenty of margin on 9.5 in usable page)
+                        target_width = min(5.8, 8.0 / aspect)
                     else:
                         # Subsequent pages start at the very top of their own page
                         p_pic.paragraph_format.page_break_before = True
-                        # Full page usable height is 9.5 in; keep target height under 9.1 in
-                        target_width = min(6.4, 9.1 / aspect)
+                        # Full page usable height is 9.5 in; keep target height at 8.5 in
+                        target_width = min(6.0, 8.5 / aspect)
 
+                    r_pic = p_pic.add_run()
+                    r_pic.font.size = Pt(1)
                     try:
-                        p_pic.add_run().add_picture(io.BytesIO(img_data), width=Inches(target_width))
+                        r_pic.add_picture(io.BytesIO(img_data), width=Inches(target_width))
                     except Exception as exc:
                         logger.warning(f"Could not embed Resume PDF page: {exc}")
             else:
