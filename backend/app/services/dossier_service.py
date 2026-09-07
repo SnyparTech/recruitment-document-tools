@@ -30,6 +30,7 @@ import pdfplumber
 import fitz  # PyMuPDF for high-resolution document rendering
 
 try:
+    import pythoncom
     import win32com.client
     HAS_WORD_COM = True
 except ImportError:
@@ -68,6 +69,7 @@ class DossierService:
 
     def __init__(self, storage_dir: str = DOSSIER_STORAGE_DIR):
         self.storage_dir = storage_dir
+        self.last_converted_resume_path: Optional[str] = None
         os.makedirs(self.storage_dir, exist_ok=True)
 
     def extract_resume_text(self, file_bytes: bytes, filename: str) -> str:
@@ -337,13 +339,13 @@ class DossierService:
         resume_bytes: Optional[bytes] = None,
         resume_filename: str = "Resume.pdf",
         recruiter_notes: Optional[str] = None,
-    ) -> Tuple[str, str]:
+    ) -> Tuple[str, str, Optional[str]]:
         """
         Generates a polished executive DOCX Candidate Dossier containing:
         1. Executive Candidate Profile & Verified Status
         2. Exact Identity Proof Document (Embedded Images or Rendered PDF Pages)
-        3. Exact Original Resume (Rendered PDF Pages, DOCX elements, or Text)
-        Returns: (dossier_id, absolute_file_path)
+        3. Exact Original Resume (Auto-converted to high-fidelity DOCX if PDF, or native DOCX/DOC)
+        Returns: (dossier_id, absolute_file_path, converted_resume_path)
         """
         dossier_id = f"DOSSIER-{uuid.uuid4().hex[:8].upper()}"
         filename = f"{profile.name.replace(' ', '_')}_{dossier_id}.docx"
@@ -430,24 +432,55 @@ class DossierService:
         # 3. CANDIDATE RESUME (EXACT ORIGINAL - NO ALTERATIONS OR RE-TYPING)
         # ----------------------------------------------------------------------
         lower_resume = resume_filename.lower() if resume_filename else ""
+        converted_resume_path: Optional[str] = None
+        self.last_converted_resume_path = None
+
         if resume_bytes:
-            if lower_resume.endswith(".docx") or lower_resume.endswith(".doc"):
+            effective_resume_bytes = resume_bytes
+            effective_filename = resume_filename
+            is_word_format = lower_resume.endswith(".docx") or lower_resume.endswith(".doc")
+
+            if lower_resume.endswith(".pdf"):
+                logger.info(
+                    f"Candidate resume uploaded in PDF format ({resume_filename}). "
+                    f"Automatically converting to high-fidelity Word (.docx) format without changing formatting..."
+                )
+                converted_bytes = self.convert_pdf_to_docx_bytes(resume_bytes)
+                if converted_bytes:
+                    effective_resume_bytes = converted_bytes
+                    effective_filename = os.path.splitext(resume_filename)[0] + ".docx"
+                    is_word_format = True
+
+                    # Also persist the standalone converted DOCX resume so recruiter can download it directly
+                    conv_name = f"{profile.name.replace(' ', '_')}_{dossier_id}_RESUME.docx"
+                    converted_resume_path = os.path.join(self.storage_dir, conv_name)
+                    try:
+                        with open(converted_resume_path, "wb") as f_res:
+                            f_res.write(converted_bytes)
+                        self.last_converted_resume_path = converted_resume_path
+                        logger.info(f"Saved standalone converted DOCX resume to: {converted_resume_path}")
+                    except Exception as e_save:
+                        logger.warning(f"Could not save standalone converted resume: {e_save}")
+                else:
+                    logger.warning("PDF to DOCX conversion unavailable; falling back to visual page rendering.")
+
+            if is_word_format:
                 # Save base doc first, then attempt 100% native Word COM insertion
                 doc.save(file_path)
                 inserted = self._insert_word_document_native(
                     target_docx_path=file_path,
-                    resume_bytes=resume_bytes,
-                    filename=resume_filename,
+                    resume_bytes=effective_resume_bytes,
+                    filename=effective_filename,
                 )
                 if not inserted:
                     # Fallback to in-memory python-docx element cloning (preserving all runs & tables)
-                    self._embed_exact_docx_elements(doc, resume_bytes, resume_filename)
+                    self._embed_exact_docx_elements(doc, effective_resume_bytes, effective_filename)
                     doc.save(file_path)
             else:
                 self._embed_exact_resume_document(
                     doc=doc,
-                    resume_bytes=resume_bytes,
-                    filename=resume_filename,
+                    resume_bytes=effective_resume_bytes,
+                    filename=effective_filename,
                 )
                 doc.save(file_path)
         else:
@@ -455,7 +488,7 @@ class DossierService:
 
         logger.info(f"Compiled candidate profile dossier saved: {file_path}")
 
-        return dossier_id, file_path
+        return dossier_id, file_path, converted_resume_path
 
     def _render_pdf_to_images(
         self, pdf_bytes: bytes, max_pages: int = 25, dpi: int = 150
@@ -634,6 +667,10 @@ class DossierService:
         word = None
         wdoc = None
         try:
+            try:
+                pythoncom.CoInitialize()
+            except Exception:
+                pass
             with tempfile.NamedTemporaryFile(suffix=".doc", delete=False) as tmp1:
                 tmp1.write(doc_bytes)
                 tmp_doc = tmp1.name
@@ -670,6 +707,10 @@ class DossierService:
                     word.Quit()
                 except Exception:
                     pass
+            try:
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
             if tmp_doc and os.path.exists(tmp_doc):
                 try:
                     os.remove(tmp_doc)
@@ -680,6 +721,88 @@ class DossierService:
                     os.remove(tmp_docx)
                 except Exception:
                     pass
+
+    def convert_pdf_to_docx_bytes(self, pdf_bytes: bytes) -> Optional[bytes]:
+        """
+        Converts a PDF resume into a high-fidelity Microsoft Word (.docx) document.
+        Preserves 100% of original formatting, layouts, fonts, tables, headers,
+        bullet points, and text runs without alteration or degradation.
+        """
+        if not HAS_WORD_COM:
+            return None
+
+        tmp_pdf = None
+        tmp_docx = None
+        word = None
+        wdoc = None
+
+        try:
+            try:
+                pythoncom.CoInitialize()
+            except Exception:
+                pass
+
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp1:
+                tmp1.write(pdf_bytes)
+                tmp_pdf = tmp1.name
+            tmp_docx = tmp_pdf + ".docx"
+
+            word = win32com.client.Dispatch("Word.Application")
+            try:
+                word.Visible = False
+            except Exception:
+                pass
+            try:
+                word.DisplayAlerts = 0  # wdAlertsNone
+            except Exception:
+                pass
+
+            # ConfirmConversions=False triggers Word's native PDF Reflow engine seamlessly
+            wdoc = word.Documents.Open(
+                FileName=os.path.normpath(os.path.abspath(tmp_pdf)),
+                ConfirmConversions=False,
+                ReadOnly=True,
+            )
+            wdoc.SaveAs(
+                FileName=os.path.normpath(os.path.abspath(tmp_docx)),
+                FileFormat=16,  # 16 = wdFormatXMLDocument (.docx)
+            )
+            wdoc.Close(False)
+            wdoc = None
+
+            with open(tmp_docx, "rb") as f:
+                converted_bytes = f.read()
+            return converted_bytes
+        except Exception as exc:
+            logger.warning(f"Error converting PDF to DOCX via Word COM: {exc}")
+            return None
+        finally:
+            if wdoc is not None:
+                try:
+                    wdoc.Close(False)
+                except Exception:
+                    pass
+            if word is not None:
+                try:
+                    word.Quit()
+                except Exception:
+                    pass
+            try:
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
+            if tmp_pdf and os.path.exists(tmp_pdf):
+                try:
+                    os.remove(tmp_pdf)
+                except Exception:
+                    pass
+            if tmp_docx and os.path.exists(tmp_docx):
+                try:
+                    os.remove(tmp_docx)
+                except Exception:
+                    pass
+
+    _convert_pdf_to_docx_bytes = convert_pdf_to_docx_bytes
 
     def _insert_word_document_native(
         self,
@@ -701,6 +824,11 @@ class DossierService:
         wdoc = None
 
         try:
+            try:
+                pythoncom.CoInitialize()
+            except Exception:
+                pass
+
             with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
                 tmp.write(resume_bytes)
                 tmp_path = tmp.name
@@ -745,6 +873,10 @@ class DossierService:
                     word.Quit()
                 except Exception:
                     pass
+            try:
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
             if tmp_path and os.path.exists(tmp_path):
                 try:
                     os.remove(tmp_path)

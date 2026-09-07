@@ -15,7 +15,7 @@ import os
 from typing import Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from app.services.dossier_service import DossierService
@@ -45,6 +45,8 @@ class DossierCompileResponse(BaseModel):
     id_type: str = Field(..., description="Identified ID document type")
     id_verified: bool = Field(True, description="Identity proof verification status")
     download_url: str = Field(..., description="Relative API URL to download the compiled DOCX")
+    converted_resume_url: Optional[str] = Field(None, description="Relative API URL to download the auto-converted DOCX resume")
+    converted_resume_filename: Optional[str] = Field(None, description="Filename of converted DOCX resume")
     compilation_timestamp: str = Field(..., description="Date and time when dossier was compiled")
     summary: str = Field(..., description="Extracted executive summary")
 
@@ -116,8 +118,8 @@ async def compile_candidate_dossier(
     profile.id_type = id_type
     profile.id_number = id_num
 
-    # 6. Generate DOCX Dossier with EXACT embedded documents
-    dossier_id, file_path = dossier_service.compile_dossier_docx(
+    # 6. Generate DOCX Dossier with EXACT embedded documents (auto-converting PDF resumes to DOCX)
+    dossier_id, file_path, converted_resume_path = dossier_service.compile_dossier_docx(
         profile=profile,
         photo_bytes=photo_bytes,
         photo_filename=photo.filename or "Candidate_Photo.jpg",
@@ -128,12 +130,17 @@ async def compile_candidate_dossier(
         recruiter_notes=recruiter_notes,
     )
 
+    converted_resume_url = f"/dossier/download-resume/{dossier_id}" if converted_resume_path else None
+    converted_resume_filename = os.path.basename(converted_resume_path) if converted_resume_path else None
+
     # 7. Record in registry
     DOSSIER_REGISTRY[dossier_id] = {
         "dossier_id": dossier_id,
         "file_path": file_path,
         "filename": os.path.basename(file_path),
         "profile": profile,
+        "converted_resume_path": converted_resume_path,
+        "converted_resume_filename": converted_resume_filename,
     }
 
     return DossierCompileResponse(
@@ -146,6 +153,8 @@ async def compile_candidate_dossier(
         id_type=profile.id_type,
         id_verified=profile.id_verified,
         download_url=f"/dossier/download/{dossier_id}",
+        converted_resume_url=converted_resume_url,
+        converted_resume_filename=converted_resume_filename,
         compilation_timestamp=profile.compilation_timestamp,
         summary=profile.summary,
     )
@@ -202,3 +211,72 @@ async def get_dossier_metadata(dossier_id: str):
         "filename": record["filename"],
         "download_url": f"/dossier/download/{dossier_id}",
     }
+
+
+@router.get(
+    "/download-resume/{dossier_id}",
+    summary="Download Converted DOCX Resume",
+    description="Streams the automatically converted .docx candidate resume file.",
+)
+async def download_converted_resume(dossier_id: str):
+    """Downloads the converted DOCX resume for a given dossier_id."""
+    record = DOSSIER_REGISTRY.get(dossier_id)
+    if record and record.get("converted_resume_path") and os.path.exists(record["converted_resume_path"]):
+        return FileResponse(
+            path=record["converted_resume_path"],
+            filename=record.get("converted_resume_filename") or os.path.basename(record["converted_resume_path"]),
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+
+    # Check on disk
+    if os.path.exists(dossier_service.storage_dir):
+        for fname in os.listdir(dossier_service.storage_dir):
+            if dossier_id in fname and fname.endswith("_RESUME.docx"):
+                file_path = os.path.join(dossier_service.storage_dir, fname)
+                return FileResponse(
+                    path=file_path,
+                    filename=fname,
+                    media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Converted resume for dossier '{dossier_id}' not found.",
+    )
+
+
+@router.post(
+    "/convert-resume",
+    summary="Directly Convert PDF Resume to DOCX",
+    description="Uploads a PDF resume and converts it to high-fidelity DOCX format.",
+)
+async def convert_resume_standalone(
+    resume: UploadFile = File(..., description="PDF Resume to convert"),
+):
+    """Stand-alone conversion endpoint for converting any PDF resume to DOCX without layout changes."""
+    filename = resume.filename or "resume.pdf"
+    if not filename.lower().endswith(".pdf"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only PDF files are supported by this conversion endpoint.",
+        )
+
+    pdf_bytes = await resume.read()
+    if not pdf_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded PDF resume is empty.")
+
+    docx_bytes = dossier_service.convert_pdf_to_docx_bytes(pdf_bytes)
+    if not docx_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to convert PDF resume to DOCX format.",
+        )
+
+    base_name = os.path.splitext(filename)[0]
+    out_filename = f"{base_name}.docx"
+
+    return Response(
+        content=docx_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{out_filename}"'},
+    )

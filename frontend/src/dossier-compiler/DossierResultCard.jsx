@@ -87,7 +87,7 @@ export default function DossierResultCard({ result, photoPreview, apiBase, onRes
           </div>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
           {onReset && (
             <button
               type="button"
@@ -105,6 +105,33 @@ export default function DossierResultCard({ result, photoPreview, apiBase, onRes
             >
               Upload Another
             </button>
+          )}
+
+          {result.converted_resume_url && (
+            <a
+              href={`${apiBase}${result.converted_resume_url}`}
+              target="_blank"
+              rel="noreferrer"
+              download
+              style={{
+                background: '#EEF2FF',
+                color: '#4338CA',
+                border: '1.5px solid #C7D2FE',
+                textDecoration: 'none',
+                padding: '10px 18px',
+                borderRadius: '8px',
+                fontSize: '0.88rem',
+                fontWeight: 700,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '8px',
+                boxShadow: '0 2px 8px rgba(99, 102, 241, 0.12)',
+              }}
+              title="Download standalone converted Word .docx resume"
+            >
+              <IconDocument size={15} color="#4338CA" />
+              <span>Converted Resume (.docx)</span>
+            </a>
           )}
 
           <a
@@ -150,7 +177,7 @@ export default function DossierResultCard({ result, photoPreview, apiBase, onRes
           </span>
           <span style={{ background: '#F5F6FF', color: '#6366F1', border: '1px solid #C7D2FE', padding: '3px 10px', borderRadius: '999px', fontSize: '0.75rem', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
             <IconDocument size={13} color="#6366F1" />
-            3. Candidate Resume (Verbatim Multi-Page Document)
+            3. Candidate Resume {result.converted_resume_url ? '(PDF Auto-Converted to Native DOCX)' : '(Native Word Document)'}
           </span>
         </div>
       </div>

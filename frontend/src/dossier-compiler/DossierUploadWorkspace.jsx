@@ -381,7 +381,7 @@ export default function DossierUploadWorkspace({ initialCandidate, onBack }) {
                 <h3 className="slot-title">Resume</h3>
                 <p className="slot-desc">Latest resume</p>
                 <div className="slot-specs">
-                  PDF / DOCX / DOC<br />(Max 10 MB)
+                  PDF (Auto-converts to DOCX)<br />DOCX / DOC (Max 10 MB)
                 </div>
 
                 <input
@@ -400,7 +400,21 @@ export default function DossierUploadWorkspace({ initialCandidate, onBack }) {
                       </div>
                       <div className="uploaded-file-details">
                         <div className="uploaded-file-name" title={resume.name}>{resume.name}</div>
-                        <div className="uploaded-file-size">{formatFileSize(resume.size)}</div>
+                        <div className="uploaded-file-size" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                          <span>{formatFileSize(resume.size)}</span>
+                          {resume.name.toLowerCase().endsWith('.pdf') && (
+                            <span style={{
+                              background: '#EEF2FF',
+                              color: '#4338CA',
+                              fontSize: '0.68rem',
+                              fontWeight: 700,
+                              padding: '1px 6px',
+                              borderRadius: '4px',
+                            }}>
+                              Auto-converting to DOCX
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </div>
                     <div className="uploaded-actions-row">
