@@ -195,6 +195,9 @@ class DossierService:
             "experience", "work experience", "education", "skills", "technical skills",
             "candidate resume", "id proof", "id proof (verified)", "verified",
             "page", "confidential", "email", "phone", "mobile", "address",
+            "technical expertise", "professional background", "background",
+            "career summary", "profile info", "candidate", "key skills",
+            "core competencies", "areas of expertise",
         }
 
         # 1. Check for explicit "Name: <Candidate Name>" or "Resume of <Candidate Name>" pattern in top 20 lines
@@ -212,21 +215,23 @@ class DossierService:
         # 2. Scan first 15 non-empty lines for a valid candidate name
         for line in lines[:15]:
             clean = line.strip()
+            # Split off attached contact info (e.g. "Vikas Kumar +91 9654778896" -> "Vikas Kumar")
+            cand_part = re.split(
+                r"[\+\|📱📧]|(?:\b\d{10}\b)|(?:[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})",
+                clean,
+            )[0].strip()
             # Strip leading bullets or special characters
-            clean = re.sub(r"^[\s\*\-\•\·\|\:\#\>]+", "", clean).strip()
-            lower = clean.lower()
-            if lower in GENERIC_HEADERS:
+            cand_clean = re.sub(r"^[\s\*\-\•\·\|\:\#\>]+", "", cand_part).strip()
+            lower = cand_clean.lower()
+            if not lower or lower in GENERIC_HEADERS:
                 continue
             if any(lower.startswith(gh) for gh in ["resume", "curriculum vitae", "cv", "bio-data", "biodata"]):
                 continue
-            # Skip lines containing contact symbols, digits, URLs, or emails
-            if re.search(r"@|\.com|http|www|github|linkedin|\+\d|\(\d|\b\d{10}\b", clean):
-                continue
-            words = clean.split()
-            # Candidate names are typically 1 to 4 words (e.g. "Ravikiran", "Gaurav Pratap", "Mayank Kumar", "Vikas Singh")
+            words = cand_clean.split()
+            # Candidate names are typically 1 to 4 words (e.g. "Ravikiran", "Gaurav Pratap", "Mayank Kumar", "Vikas Kumar")
             if 1 <= len(words) <= 4:
-                alpha_count = sum(c.isalpha() or c.isspace() or c in ".-'" for c in clean)
-                if alpha_count / max(len(clean), 1) > 0.85:
+                alpha_count = sum(c.isalpha() or c.isspace() or c in ".-'" for c in cand_clean)
+                if alpha_count / max(len(cand_clean), 1) > 0.85:
                     job_keywords = {
                         "developer", "engineer", "lead", "manager", "architect",
                         "consultant", "analyst", "specialist", "trainee", "tester",
@@ -234,7 +239,7 @@ class DossierService:
                         "associate", "director", "executive", "assistant",
                     }
                     if not any(w.lower() in job_keywords for w in words):
-                        return clean.title()
+                        return cand_clean.title()
 
         # 3. Fallback: Parse candidate name from email (e.g. vikassingh7485@gmail.com -> Vikas Singh)
         if email and "@" in email:
@@ -837,10 +842,18 @@ class DossierService:
                 tmp_docx = tmp_pdf + ".docx"
 
                 cv = Converter(tmp_pdf)
-                cv.convert(tmp_docx, start=0, end=None)
+                cv.convert(
+                    tmp_docx,
+                    start=0,
+                    end=None,
+                    parse_stream_table=False,
+                    list_not_table=True,
+                )
                 cv.close()
 
                 if os.path.exists(tmp_docx) and os.path.getsize(tmp_docx) > 500:
+                    # Clean up clumsy table artifacts and normalize sections to standard portrait Letter/A4
+                    self._normalize_and_clean_converted_docx(tmp_docx)
                     with open(tmp_docx, "rb") as f:
                         converted_bytes = f.read()
                     logger.info(
@@ -910,6 +923,75 @@ class DossierService:
                     pass
 
     _convert_pdf_to_docx_bytes = convert_pdf_to_docx_bytes
+
+    def _normalize_and_clean_converted_docx(self, docx_path: str) -> None:
+        """
+        Post-processes converted DOCX files to guarantee a clean, professional, non-clumsy layout:
+        1. Normalizes all sections to standard portrait Letter/A4 (8.5x11 inches) with consistent
+           0.75-inch margins, preventing non-standard landscape jumps or clipped margins.
+        2. Unnests single-cell floating tables (1x1) created for headings or names into clean native paragraphs.
+        3. Fixes split-bullet tables where bullet symbols were separated into column 0 and text into column 1.
+        """
+        if not docx_path or not os.path.exists(docx_path):
+            return
+
+        try:
+            doc = docx.Document(docx_path)
+
+            # 1. Normalize all sections to standard portrait with clean margins
+            for section in doc.sections:
+                try:
+                    section.orientation = docx.enum.section.WD_ORIENT.PORTRAIT
+                    section.page_width = Inches(8.5)
+                    section.page_height = Inches(11.0)
+                    section.top_margin = Inches(0.75)
+                    section.bottom_margin = Inches(0.75)
+                    section.left_margin = Inches(0.75)
+                    section.right_margin = Inches(0.75)
+                except Exception:
+                    pass
+
+            # 2. Inspect tables and clean clumsy artifacts
+            tables_to_remove = []
+            for tbl in doc.tables:
+                # Case A: 1x1 floating table for heading or name
+                if len(tbl.rows) == 1 and len(tbl.columns) == 1:
+                    cell_text = tbl.cell(0, 0).text.strip()
+                    if cell_text:
+                        new_p = doc.add_paragraph(cell_text)
+                        new_p.paragraph_format.space_before = Pt(4)
+                        new_p.paragraph_format.space_after = Pt(2)
+                        tbl._element.addprevious(new_p._element)
+                    tables_to_remove.append(tbl)
+                    continue
+
+                # Case B: 2-column table where column 0 is purely bullets/numbers
+                if len(tbl.columns) == 2:
+                    col0_text = "".join(r.cells[0].text for r in tbl.rows).strip()
+                    # Check if column 0 contains exclusively bullet symbols / dashes
+                    is_bullet_col = bool(re.match(r"^[\s\•\-\*\·\d\.\)\uff0d\uf0b7]+$", col0_text))
+                    if is_bullet_col and len(tbl.rows) > 0:
+                        for r in tbl.rows:
+                            b_text = r.cells[1].text.strip()
+                            if b_text:
+                                new_p = doc.add_paragraph(f"•  {b_text}")
+                                new_p.paragraph_format.left_indent = Inches(0.25)
+                                new_p.paragraph_format.space_before = Pt(1.5)
+                                new_p.paragraph_format.space_after = Pt(1.5)
+                                tbl._element.addprevious(new_p._element)
+                        tables_to_remove.append(tbl)
+                        continue
+
+            for tbl in tables_to_remove:
+                parent = tbl._element.getparent()
+                if parent is not None:
+                    parent.remove(tbl._element)
+
+            doc.save(docx_path)
+            logger.info(f"Successfully normalized sections and cleaned {len(tables_to_remove)} clumsy tables in {docx_path}")
+
+        except Exception as exc:
+            logger.warning(f"Could not normalize converted docx {docx_path}: {exc}")
 
     def _insert_word_document_native(
         self,
@@ -1050,15 +1132,12 @@ class DossierService:
                 else:
                     consecutive_empty = 0
 
-                # Spacing adjustments directly on python-docx paragraph format
+                # Clamp only excessively large blank spaces (> 24pt) to 12pt; preserve natural font styling and paragraph formatting
                 if resume_start_idx is not None and idx > resume_start_idx:
-                    p.paragraph_format.line_spacing = 1.0
-                    if p.paragraph_format.space_before and p.paragraph_format.space_before.pt > 3.0:
-                        p.paragraph_format.space_before = Pt(2.0)
-                    if p.paragraph_format.space_after and p.paragraph_format.space_after.pt > 3.0:
-                        p.paragraph_format.space_after = Pt(2.0)
-                    if len(text) > 40:
-                        p.paragraph_format.keep_with_next = False
+                    if p.paragraph_format.space_before and p.paragraph_format.space_before.pt > 24.0:
+                        p.paragraph_format.space_before = Pt(12.0)
+                    if p.paragraph_format.space_after and p.paragraph_format.space_after.pt > 24.0:
+                        p.paragraph_format.space_after = Pt(12.0)
 
             # Remove marked empty paragraphs safely from DOM
             for p in empty_paragraphs_to_remove:
@@ -1071,12 +1150,12 @@ class DossierService:
                         pass
 
             doc.save(docx_path)
-            logger.info(f"Cleaned spacing and empty lines in {docx_path}")
+            logger.info(f"Cleaned redundant blank lines in {docx_path}")
 
         except Exception as exc:
             logger.warning(f"Error during gap cleanup on {docx_path}: {exc}")
 
-        # Step 2: High-fidelity layout optimization via Word COM (if available on Windows)
+        # Step 2: Clean repagination via Word COM (if available on Windows)
         word = self._create_word_app()
         if not word:
             return
@@ -1084,53 +1163,11 @@ class DossierService:
         wdoc = None
         try:
             wdoc = word.Documents.Open(FileName=os.path.normpath(os.path.abspath(docx_path)))
-            in_resume = False
-            has_resume_heading = False
-
-            for p in wdoc.Paragraphs:
-                if "Candidate Resume" in p.Range.Text:
-                    has_resume_heading = True
-                    break
-
-            for p in wdoc.Paragraphs:
-                txt = p.Range.Text.strip()
-                if has_resume_heading:
-                    if "Candidate Resume" in txt:
-                        in_resume = True
-                        continue
-                    if not in_resume:
-                        continue
-
-                # Set single line spacing (wdLineSpaceSingle = 0)
-                try:
-                    p.Format.LineSpacingRule = 0
-                except Exception:
-                    pass
-
-                # Tighten spacing before and after
-                try:
-                    if p.Format.SpaceBefore > 3.0:
-                        p.Format.SpaceBefore = 2.0
-                except Exception:
-                    pass
-
-                try:
-                    if p.Format.SpaceAfter > 3.0:
-                        p.Format.SpaceAfter = 2.0
-                except Exception:
-                    pass
-
-                # Clear KeepWithNext on long content paragraphs to avoid cascading page breaks
-                try:
-                    if len(txt) > 40:
-                        p.Format.KeepWithNext = False
-                except Exception:
-                    pass
-
+            wdoc.Repaginate()
             wdoc.Save()
-            logger.info(f"Optimized paragraph spacing and pagination via Word COM for {docx_path}")
+            logger.info(f"Repaginated and saved {docx_path} via Word COM")
         except Exception as exc:
-            logger.warning(f"Error during Word COM layout optimization on {docx_path}: {exc}")
+            logger.warning(f"Error during Word COM repagination on {docx_path}: {exc}")
         finally:
             self._quit_word_app(word, wdoc)
 
