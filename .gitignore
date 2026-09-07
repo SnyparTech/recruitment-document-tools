@@ -57,3 +57,5 @@ geckodriver.log
 backend/storage/
 storage/
 *.docx
+scratch/
+*.visual-check.*
