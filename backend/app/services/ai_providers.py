@@ -286,11 +286,14 @@ class DeterministicFallbackParser:
     Guarantees 100% preservation of all candidate data without dropping,
     summarizing, or inventing any content, even when LLM is unavailable.
 
-    Improvements over basic parser:
+    Improvements:
     - Detects "Category: value" lines as skills (e.g. "Cloud: Microsoft Azure")
+    - Joins continuation lines for skills split across PDF lines
+    - Parses HEADER section content to extract skills, objective, experience
+    - Parses mixed EDUCATION sections that contain projects/experience
+    - Detects numbered projects (1., 2., 3.) inside any section
     - Parses company / role / date headers from experience sections
     - Extracts location from pipe-separated header lines
-    - Handles two-column PDF interleaving by recognising and filtering skill-category lines
     """
 
     EMAIL_RE    = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b")
@@ -315,8 +318,194 @@ class DeterministicFallbackParser:
         re.IGNORECASE,
     )
 
-    # "Category: value" skill pattern (e.g. "Cloud: Microsoft Azure")
-    SKILL_LINE_RE = re.compile(r"^([A-Za-z][A-Za-z\s&/]{2,40})\s*:\s*(.{3,})$")
+    # "Category: value" skill pattern (e.g. "Cloud: Microsoft Azure", "Framework & Languages: .Net Core")
+    SKILL_LINE_RE = re.compile(r"^([A-Za-z][A-Za-z\s&/]{2,50})\s*:\s*(.{2,})$")
+
+    # Numbered project/item heading: "1.", "2.", "1)" etc.
+    NUMBERED_ITEM_RE = re.compile(r"^(\d+)[.)\s]\s*(.+)$")
+
+    @classmethod
+    def _join_continuation_lines(cls, lines: List[str]) -> List[str]:
+        """
+        Join continuation lines that belong to the same logical line.
+        Handles:
+        - Skill values split across lines: 'Framework: .Net Core, and' + 'Angular(5-12)'
+        - Job history split across lines: 'Senior SE at Q3 from' + 'January 2024 to March 2026.'
+        - Strips standalone Wingdings/PDF bullet chars (\uf0b7, \uf0a7, etc.)
+        """
+        if not lines:
+            return lines
+
+        # Strip standalone bullet-only lines (Wingdings \uf0b7, \u2022, etc.)
+        SOLO_BULLET = re.compile(r"^[\uf0b7\uf0a7\u2022\u25aa\u25ab\u25b6\u2713\u00b7•\-]$")
+        lines = [l for l in lines if not SOLO_BULLET.match(l.strip())]
+
+        joined: List[str] = []
+        # Trail patterns that indicate the line continues on the next line
+        CONTINUATION_TRAIL = re.compile(
+            r"[,]\s*$|\b(?:and|or|from|at|to|of|the|a|an|in|on|for|with|by|as)\s*$",
+            re.IGNORECASE,
+        )
+        BULLET_START = re.compile(r"^[\u2022\uf0b7\uf0a7\-\u2013\u2014\*\u25aa\u25ab\u25ba\u2713o\u00b7]|^\d+[.)]", re.UNICODE)
+
+        for line in lines:
+            if (
+                joined
+                and CONTINUATION_TRAIL.search(joined[-1])
+                and not cls.SKILL_LINE_RE.match(line)
+                and not BULLET_START.match(line)
+                and not cls.DATE_RE.search(joined[-1])  # don't extend completed date lines
+            ):
+                joined[-1] = joined[-1].rstrip() + " " + line
+            else:
+                joined.append(line)
+        return joined
+
+    @classmethod
+    def _extract_skills_from_lines(cls, lines: List[str], skills_dict: Dict) -> List[str]:
+        """
+        Parse 'Category: value(s)' skill lines into skills_dict.
+        Returns unconsumed lines.
+        """
+        remaining: List[str] = []
+        lines = cls._join_continuation_lines(lines)
+        for line in lines:
+            m = cls.SKILL_LINE_RE.match(line)
+            if m:
+                category = m.group(1).strip().rstrip()
+                raw_val = m.group(2).strip()
+                values = [v.strip() for v in re.split(r"[,]", raw_val) if v.strip()]
+                if values:
+                    entry = f"{category}: {', '.join(values)}"
+                    if entry not in skills_dict["additional_skills"]:
+                        skills_dict["additional_skills"].append(entry)
+            else:
+                remaining.append(line)
+        return remaining
+
+    @classmethod
+    def _extract_experience_from_header(
+        cls,
+        header_lines: List[str],
+    ) -> List[Dict]:
+        """
+        Vikas-style PDFs embed the job history (with dates) in the header/left-column.
+        Handles both single-line and two-line patterns:
+          Single: 'Senior SE at Q3 Technologies from January 2024 to March 2026.'
+          Two-line: 'Software Engineer at Celebal Technologies Private Limited' +
+                    'from June 2021 to October 2023.'
+        """
+        # Pass 1: join lines where the NEXT line starts with 'from '
+        merged: List[str] = []
+        i = 0
+        FROM_START = re.compile(r"^from\s+", re.IGNORECASE)
+        while i < len(header_lines):
+            line = header_lines[i].strip()
+            if i + 1 < len(header_lines) and FROM_START.match(header_lines[i + 1].strip()):
+                line = line + " " + header_lines[i + 1].strip()
+                i += 2
+            else:
+                i += 1
+            merged.append(line)
+
+        entries: List[Dict] = []
+        AT_FROM_RE = re.compile(
+            r"^(.+?)\s+at\s+(.+?)\s+from\s+"
+            r"((?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+            r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)[\s\-]?\d{2,4})"
+            r"\s+to\s+"
+            r"((?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+            r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)[\s\-]?\d{2,4}|Present|Current|Till Date)"
+            r"\.?\s*$",
+            re.IGNORECASE,
+        )
+        for line in merged:
+            line = line.strip().rstrip(".")
+            m = AT_FROM_RE.match(line)
+            if m:
+                entries.append({
+                    "role":       m.group(1).strip().title(),
+                    "company":    m.group(2).strip(),
+                    "location":   None,
+                    "start_date": m.group(3).strip(),
+                    "end_date":   m.group(4).strip(),
+                    "bullets":    [],
+                })
+        return entries
+
+    @classmethod
+    def _split_mixed_education_section(
+        cls,
+        sec_lines: List[str],
+    ):
+        """
+        When a PDF lumps everything after EDUCATION into one section, split it into:
+        - proper education entries
+        - numbered projects (1. Title / 2. Title)
+        Returns (education_lines, projects_data) where projects_data is
+        a list of {title, description} dicts.
+        """
+        # Find where numbered projects start (lines like '1. FirstGroup...' or '2. L&T...')
+        edu_lines: List[str] = []
+        proj_lines: List[str] = []
+        in_projects = False
+
+        for line in sec_lines:
+            m = cls.NUMBERED_ITEM_RE.match(line)
+            if m and int(m.group(1)) == 1:
+                in_projects = True
+            if in_projects:
+                proj_lines.append(line)
+            else:
+                edu_lines.append(line)
+
+        if not proj_lines:
+            return sec_lines, []
+
+        projects = cls._parse_numbered_projects(proj_lines)
+        return edu_lines, projects
+
+    @classmethod
+    def _parse_numbered_projects(cls, lines: List[str]) -> List[Dict]:
+        """
+        Parse lines like:
+          '1. FirstGroup - Railway Ticketing Platform (Web, Android & iOS)'
+          '   FirstGroup plc is a British...' (description lines)
+          '2. L&T ECC Approval'
+          ...
+        """
+        projects: List[Dict] = []
+        curr_num: Optional[int] = None
+        curr_title = ""
+        curr_desc: List[str] = []
+
+        def flush():
+            if curr_title:
+                projects.append({
+                    "title": curr_title,
+                    "description": "\n".join(curr_desc),
+                    "url": None,
+                })
+
+        for line in lines:
+            m = cls.NUMBERED_ITEM_RE.match(line)
+            if m:
+                num = int(m.group(1))
+                if num != curr_num:
+                    flush()
+                    curr_num = num
+                    curr_title = m.group(2).strip()
+                    curr_desc = []
+                else:
+                    curr_desc.append(line)
+            else:
+                # continuation — strip leading bullet chars
+                clean = line.lstrip("\u2022\u25aa-\u2013*\u25b6 ")
+                if clean:
+                    curr_desc.append(clean)
+
+        flush()
+        return projects
 
     @classmethod
     def parse(cls, canonical_content: Dict[str, Any], sanitized_text: str) -> Dict[str, Any]:
@@ -386,26 +575,17 @@ class DeterministicFallbackParser:
                 continue
 
             sec_lines = [l.strip() for l in content.splitlines() if l.strip()]
+            # Join continuation lines (e.g. multi-line skill values in two-column PDFs)
+            sec_lines = cls._join_continuation_lines(sec_lines)
 
             if any(k in title for k in ["OBJECTIVE", "SUMMARY", "PROFILE"]):
                 objective = content if not objective else f"{objective}\n\n{content}"
 
-            elif any(k in title for k in ["SKILL", "COMPETENC", "EXPERTISE", "TECHNOLOGIES"]):
-                for line in sec_lines:
-                    m = cls.SKILL_LINE_RE.match(line)
-                    if m:
-                        category = m.group(1).strip()
-                        values   = [v.strip() for v in m.group(2).split(",") if v.strip()]
-                        if values:
-                            skills_dict["additional_skills"].append(f"{category}: {', '.join(values)}")
-                        continue
-                    tokens = re.split(r"[,|•\n]", line)
-                    for t in tokens:
-                        clean_t = t.strip().lstrip("•-\u2013* ")
-                        if clean_t and len(clean_t) > 1 and clean_t not in skills_dict["technical_skills"]:
-                            skills_dict["technical_skills"].append(clean_t)
+            elif any(k in title for k in ["SKILL", "COMPETENC", "EXPERTISE", "TECHNOLOGIES", "TECHNICAL"]):
+                cls._extract_skills_from_lines(sec_lines, skills_dict)
 
-            elif any(k in title for k in ["EXPERIENCE", "EMPLOYMENT", "WORK HISTORY", "WORK EXPERIENCE"]):
+            elif any(k in title for k in ["EXPERIENCE", "EMPLOYMENT", "WORK HISTORY", "WORK EXPERIENCE",
+                                           "PROFESSIONAL EXPERIENCE"]):
                 parsed_exp, found_skills = cls._parse_experience_section(sec_lines)
                 experience_list.extend(parsed_exp)
                 for sk in found_skills:
@@ -413,16 +593,60 @@ class DeterministicFallbackParser:
                         skills_dict["additional_skills"].append(sk)
 
             elif any(k in title for k in ["EDUCATION", "ACADEMIC"]):
-                education_list.extend(cls._parse_education_section(sec_lines))
+                # Vikas-style: education section may contain projects after certs
+                edu_lines, mixed_projects = cls._split_mixed_education_section(sec_lines)
+                education_list.extend(cls._parse_education_section(edu_lines))
+                projects_list.extend(mixed_projects)
 
             elif any(k in title for k in ["PROJECT"]):
-                projects_list.extend(cls._parse_projects_section(sec_lines, content))
+                # Check if they are numbered; if so parse as proper projects
+                if any(cls.NUMBERED_ITEM_RE.match(l) for l in sec_lines):
+                    projects_list.extend(cls._parse_numbered_projects(sec_lines))
+                else:
+                    projects_list.extend(cls._parse_projects_section(sec_lines, content))
 
             elif any(k in title for k in ["LEADERSHIP"]):
                 leadership.extend(sec_lines)
 
             elif any(k in title for k in ["EXTRA", "ACTIVITY", "VOLUNTEER"]):
                 extra_curricular.extend(sec_lines)
+
+            elif title in ("HEADER", ""):
+                # Two-column PDF left-sidebar content:
+                # Contains skills (Category: value lines), objective bullets, job history
+                header_skill_lines = []
+                header_other_lines = []
+                for line in sec_lines:
+                    # Skip personal contact info already captured
+                    if cls.EMAIL_RE.search(line) or cls.PHONE_RE.search(line):
+                        continue
+                    if cls.SKILL_LINE_RE.match(line):
+                        header_skill_lines.append(line)
+                    else:
+                        header_other_lines.append(line)
+
+                # Extract skills from Category: value lines
+                cls._extract_skills_from_lines(header_skill_lines, skills_dict)
+
+                # Extract work history ("Role at Company from Month Year to Month Year")
+                hdr_experience = cls._extract_experience_from_header(header_other_lines)
+                if hdr_experience:
+                    # These are supplemental — add bullets from experience_list if needed
+                    experience_list = hdr_experience + experience_list
+
+                # Any remaining non-skill, non-experience lines → objective / summary
+                AT_PATTERN = re.compile(r"\bat\s+", re.IGNORECASE)
+                summary_lines = [
+                    l for l in header_other_lines
+                    if not cls.DATE_RE.search(l)
+                    and not AT_PATTERN.search(l)
+                    and not cls.COMPANY_KEYWORDS.search(l)
+                    and l not in (name, "Professional Background", "Technical Expertise")
+                    and not cls.PHONE_RE.search(l)
+                    and not cls.EMAIL_RE.search(l)
+                ]
+                if summary_lines and not objective:
+                    objective = " ".join(summary_lines)
 
             else:
                 additional_sections.append({"title": title, "items": sec_lines})
@@ -551,10 +775,24 @@ class DeterministicFallbackParser:
         if not sec_lines:
             return []
 
+        # Filter out spurious heading-only lines that aren't real degree entries
+        SKIP_HEADINGS = {"professional background", "academic background", "education",
+                         "academic qualifications", "microsoft certificate", "microsoft certificates",
+                         "certification", "certifications"}
         entries = []
         i = 0
         while i < len(sec_lines):
-            line       = sec_lines[i]
+            line = sec_lines[i]
+            # Skip bare heading lines
+            if line.lower().strip().rstrip(":") in SKIP_HEADINGS:
+                i += 1
+                continue
+
+            # Skip lone bullet chars
+            if len(line.strip()) <= 2:
+                i += 1
+                continue
+
             date_match = cls.DATE_RE.search(line)
             degree     = ""
             institution = ""
@@ -585,13 +823,15 @@ class DeterministicFallbackParser:
                 details.append(sec_lines[i])
                 i += 1
 
-            entries.append({
-                "degree":      degree,
-                "institution": institution,
-                "location":    None,
-                "date":        date_str,
-                "details":     details,
-            })
+            # Only append if we have meaningful content
+            if degree.strip() and degree.strip().lower() not in SKIP_HEADINGS:
+                entries.append({
+                    "degree":      degree,
+                    "institution": institution,
+                    "location":    None,
+                    "date":        date_str,
+                    "details":     details,
+                })
 
         return entries
 
