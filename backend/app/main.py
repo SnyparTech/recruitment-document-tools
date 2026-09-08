@@ -9,6 +9,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.dossier import router as dossier_router
 from app.api.profiles import router as profiles_router
+from app.api.resume_converter import router as resume_converter_router
 from app.api.search import router as search_router
 from app.core.config import settings
 from app.core.exceptions import ProfileBotException
@@ -124,12 +125,20 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     """Handles standard HTTP exceptions cleanly."""
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={
+    if isinstance(exc.detail, dict):
+        content = {
+            "error": exc.detail.get("error", f"HTTP_{exc.status_code}"),
+            "message": exc.detail.get("message", "An error occurred."),
+            **{k: v for k, v in exc.detail.items() if k not in ("error", "message")},
+        }
+    else:
+        content = {
             "error": f"HTTP_{exc.status_code}",
             "message": exc.detail or "An HTTP error occurred.",
-        },
+        }
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=content,
     )
 
 
@@ -162,6 +171,7 @@ async def generic_exception_handler(request: Request, exc: Exception):
 app.include_router(search_router)
 app.include_router(profiles_router)
 app.include_router(dossier_router)
+app.include_router(resume_converter_router)
 
 
 # ------------------------------------------------------------------------------
@@ -180,7 +190,7 @@ async def root():
         "name": "Candidate Intelligence & Dossier Compiler Suite",
         "status": "running",
         "security": "hardened-local",
-        "endpoints": ["/search", "/profiles", "/dossier"],
+        "endpoints": ["/search", "/profiles", "/dossier", "/api/resume"],
         "docs": "/docs",
     }
 

@@ -185,3 +185,32 @@ export function IconTarget({ size = 18, color = "currentColor", className = "" }
     </svg>
   );
 }
+
+export function IconSparkles({ size = 18, color = "currentColor", className = "" }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M12 3l1.912 4.888L18.8 9.8l-4.888 1.912L12 16.6l-1.912-4.888L5.2 9.8l4.888-1.912z" />
+      <path d="M19 15l.956 2.444L22.4 18.4l-2.444.956L19 21.8l-.956-2.444L15.6 18.4l2.444-.956z" />
+    </svg>
+  );
+}
+
+
+export function IconCopy({ size = 18, color = "currentColor", className = "" }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </svg>
+  );
+}
+
+export function IconClose({ size = 18, color = "currentColor", className = "" }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
+  );
+}
+

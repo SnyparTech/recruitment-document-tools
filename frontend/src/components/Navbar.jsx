@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { getApiBase, setApiBase } from '../config';
-import { IconTarget, IconUser, IconDocument, IconEdit } from './Icons';
+import { IconTarget, IconUser, IconDocument, IconEdit, IconSparkles } from './Icons';
 
 export default function Navbar({ activeTab, setActiveTab }) {
   const [currentBase, setCurrentBase] = useState(getApiBase());
@@ -58,6 +58,18 @@ export default function Navbar({ activeTab, setActiveTab }) {
           <IconDocument size={17} />
           <span className="tab-label-full">Dossier Compiler</span>
           <span className="tab-label-short">Dossier</span>
+        </button>
+
+        <button
+          type="button"
+          className={`top-nav-tab ${activeTab === 'resume-converter' ? 'active' : ''}`}
+          onClick={() => setActiveTab('resume-converter')}
+          id="tab-resume-converter"
+          title="Convert Resume to LaTeX & DOCX"
+        >
+          <IconSparkles size={17} color={activeTab === 'resume-converter' ? '#6366F1' : 'currentColor'} />
+          <span className="tab-label-full">AI Resume Converter</span>
+          <span className="tab-label-short">Converter</span>
         </button>
       </div>
 
