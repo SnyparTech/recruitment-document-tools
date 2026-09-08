@@ -94,7 +94,14 @@ class ResumeExtractor:
 
     @classmethod
     def _extract_from_pdf(cls, file_path: str) -> Dict[str, Any]:
-        """High-fidelity extraction from PDF using PyMuPDF preserving reading order & spans."""
+        """
+        High-fidelity extraction from PDF using PyMuPDF.
+
+        Automatically detects two-column layouts (common in resumes) and reads
+        the left column fully before the right column, preventing content from
+        being interleaved when the two columns are read in visual (top-to-bottom
+        across both columns) order.
+        """
         raw_text_parts: List[str] = []
         bullets: List[str] = []
         metadata: Dict[str, Any] = {"source_type": "pdf"}
@@ -106,29 +113,63 @@ class ResumeExtractor:
 
             for page_idx in range(len(doc)):
                 page = doc[page_idx]
-                # Extract text blocks preserving top-to-bottom reading order
+                page_width = page.rect.width
+
+                # Get all text blocks with coordinates
                 blocks = page.get_text("blocks", sort=True)
-                for b in blocks:
-                    # b: (x0, y0, x1, y1, text, block_no, block_type)
-                    block_text = b[4].strip() if len(b) > 4 and isinstance(b[4], str) else ""
+                text_blocks = [
+                    b for b in blocks
+                    if len(b) > 4 and isinstance(b[4], str) and b[4].strip()
+                ]
+
+                if not text_blocks:
+                    continue
+
+                # ── Multi-column detection ──────────────────────────────────
+                # Check if blocks are clustered in both halves of the page.
+                page_mid = page_width / 2.0
+                x_mids = [(b[0] + b[2]) / 2.0 for b in text_blocks]
+                left_count  = sum(1 for x in x_mids if x < page_mid)
+                right_count = sum(1 for x in x_mids if x >= page_mid)
+
+                is_two_col = (
+                    left_count >= 2
+                    and right_count >= 2
+                    and min(left_count, right_count) / max(left_count, right_count) > 0.15
+                )
+
+                if is_two_col:
+                    # Read left column top-to-bottom, then right column top-to-bottom.
+                    left_blocks  = sorted(
+                        [b for b in text_blocks if (b[0] + b[2]) / 2.0 < page_mid],
+                        key=lambda b: b[1],
+                    )
+                    right_blocks = sorted(
+                        [b for b in text_blocks if (b[0] + b[2]) / 2.0 >= page_mid],
+                        key=lambda b: b[1],
+                    )
+                    ordered_blocks = left_blocks + right_blocks
+                else:
+                    # Single column: natural top-to-bottom order
+                    ordered_blocks = sorted(text_blocks, key=lambda b: b[1])
+
+                for b in ordered_blocks:
+                    block_text = b[4].strip()
                     if not block_text:
                         continue
-
                     raw_text_parts.append(block_text)
 
-                    # Extract bullets
-                    lines = block_text.splitlines()
-                    for line in lines:
+                    # Collect bullet lines
+                    for line in block_text.splitlines():
                         s_line = line.strip()
-                        if s_line.startswith(BULLET_CHARS) or re.match(r"^\d+[\.\)]\s+", s_line):
-                            cleaned_bullet = re.sub(r"^[\s•\-–—\*▪▫►✓o·\d\.\)]+\s*", "", s_line).strip()
-                            if cleaned_bullet:
-                                bullets.append(cleaned_bullet)
+                        if s_line.startswith(BULLET_CHARS) or re.match(r"^\d+[\.)] +", s_line):
+                            cleaned = re.sub(r"^[\s•\-–—\*▪▫►✓o·\d\.)]+\s*", "", s_line).strip()
+                            if cleaned:
+                                bullets.append(cleaned)
 
             doc.close()
         except Exception as exc:
             logger.error(f"PyMuPDF extraction error: {exc}")
-            # Fallback to pdfplumber if PyMuPDF fails
             raw_text_parts, bullets = cls._extract_pdfplumber_fallback(file_path)
 
         full_raw_text = "\n\n".join(raw_text_parts).strip()

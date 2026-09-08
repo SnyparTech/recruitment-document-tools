@@ -193,7 +193,7 @@ class GroqResumeAIProvider(ResumeAIProvider):
                         "response_format": {"type": "json_object"},
                     }
                     response = await client.post(self.api_url, headers=headers, json=payload)
-                    
+
                     if response.status_code == 200:
                         data = response.json()
                         raw_content = data["choices"][0]["message"]["content"]
@@ -282,15 +282,41 @@ class NvidiaNimResumeAIProvider(ResumeAIProvider):
 class DeterministicFallbackParser:
     """
     High-fidelity deterministic local structuring engine.
-    
+
     Guarantees 100% preservation of all candidate data without dropping,
     summarizing, or inventing any content, even when LLM is unavailable.
+
+    Improvements over basic parser:
+    - Detects "Category: value" lines as skills (e.g. "Cloud: Microsoft Azure")
+    - Parses company / role / date headers from experience sections
+    - Extracts location from pipe-separated header lines
+    - Handles two-column PDF interleaving by recognising and filtering skill-category lines
     """
 
-    EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b")
-    PHONE_RE = re.compile(r"(?:\+?\d{1,3}[-.\s]?)?\(?\d{2,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{3,4}\b")
+    EMAIL_RE    = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b")
+    PHONE_RE    = re.compile(r"(?:\+?\d{1,3}[-.\s]?)?\(?\d{2,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{3,4}\b")
     LINKEDIN_RE = re.compile(r"(?:https?://(?:www\.)?linkedin\.com/in/[\w\-]+|linkedin\.com/in/[\w\-]+)", re.IGNORECASE)
-    URL_RE = re.compile(r"https?://(?:www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b(?:[-a-zA-Z0-9()@:%_\+.~#?&//=]*)")
+    URL_RE      = re.compile(r"https?://(?:www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b(?:[-a-zA-Z0-9()@:%_\+.~#?&//=]*)")
+
+    # Date patterns
+    DATE_RE = re.compile(
+        r"\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?"
+        r"|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+        r"[\s\-]?\d{2,4}\b"
+        r"|\b\d{4}\s*[-\u2013]\s*(?:\d{4}|Present|Current|Till Date)\b"
+        r"|\bPresent\b|\bCurrent\b|\bTill Date\b",
+        re.IGNORECASE,
+    )
+
+    # Company/org identifiers
+    COMPANY_KEYWORDS = re.compile(
+        r"\b(?:pvt\.?\s*ltd\.?|llp|llc|inc\.?|corp\.?|technologies|solutions|systems|"
+        r"consultancy|services|limited|private|enterprises|infotech|software|infosystems)\b",
+        re.IGNORECASE,
+    )
+
+    # "Category: value" skill pattern (e.g. "Cloud: Microsoft Azure")
+    SKILL_LINE_RE = re.compile(r"^([A-Za-z][A-Za-z\s&/]{2,40})\s*:\s*(.{3,})$")
 
     @classmethod
     def parse(cls, canonical_content: Dict[str, Any], sanitized_text: str) -> Dict[str, Any]:
@@ -298,46 +324,63 @@ class DeterministicFallbackParser:
         raw_text = sanitized_text or canonical_content.get("raw_text", "")
         lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
 
-        # 1. Personal Information
-        name = "Candidate"
-        if lines:
-            # First non-empty line without email/phone is usually the name
-            for candidate_line in lines[:5]:
-                if not cls.EMAIL_RE.search(candidate_line) and not cls.PHONE_RE.search(candidate_line) and len(candidate_line) < 50:
-                    name = candidate_line
-                    break
+        # ── 1. Personal Information ──────────────────────────────────────
+        name     = "Candidate"
+        location = None
 
-        email_match = cls.EMAIL_RE.search(raw_text)
-        email = email_match.group(0) if email_match else None
+        for candidate_line in lines[:8]:
+            if (
+                not cls.EMAIL_RE.search(candidate_line)
+                and not cls.PHONE_RE.search(candidate_line)
+                and not cls.DATE_RE.search(candidate_line)
+                and len(candidate_line) < 50
+                and len(candidate_line.split()) <= 5
+            ):
+                name = candidate_line
+                break
 
-        phone_match = cls.PHONE_RE.search(raw_text)
-        phone = phone_match.group(0) if phone_match else None
+        email_match    = cls.EMAIL_RE.search(raw_text)
+        email          = email_match.group(0) if email_match else None
+
+        phone_match    = cls.PHONE_RE.search(raw_text)
+        phone          = phone_match.group(0) if phone_match else None
 
         linkedin_match = cls.LINKEDIN_RE.search(raw_text)
-        linkedin = linkedin_match.group(0) if linkedin_match else None
+        linkedin       = linkedin_match.group(0) if linkedin_match else None
+
+        # Extract location from "|"-separated header line
+        for hdr_line in lines[:8]:
+            if "|" in hdr_line:
+                parts = [p.strip() for p in hdr_line.split("|") if p.strip()]
+                for part in parts:
+                    if not cls.PHONE_RE.search(part) and not cls.EMAIL_RE.search(part):
+                        location = part
+                        break
+                if location:
+                    break
 
         personal_information = {
-            "name": name,
-            "phone": phone,
-            "location": None,
-            "email": email,
+            "name":     name,
+            "phone":    phone,
+            "location": location,
+            "email":    email,
             "linkedin": linkedin,
-            "website": None,
+            "website":  None,
         }
 
-        # 2. Extract sections from canonical data
-        sections = canonical_content.get("sections", [])
-        education_list = []
-        experience_list = []
-        projects_list = []
-        skills_dict = {"technical_skills": [], "soft_skills": [], "additional_skills": []}
-        additional_sections = []
-        objective = None
-        extra_curricular = []
-        leadership = []
+        # ── 2. Section-by-section parsing ────────────────────────────────
+        sections          = canonical_content.get("sections", [])
+        education_list    : List[Dict] = []
+        experience_list   : List[Dict] = []
+        projects_list     : List[Dict] = []
+        skills_dict       = {"technical_skills": [], "soft_skills": [], "additional_skills": []}
+        additional_sections: List[Dict] = []
+        objective         = None
+        extra_curricular  : List[str] = []
+        leadership        : List[str] = []
 
         for sec in sections:
-            title = sec.get("title", "").strip().upper()
+            title   = sec.get("title", "").strip().upper()
             content = sec.get("content", "").strip()
             if not content:
                 continue
@@ -348,39 +391,32 @@ class DeterministicFallbackParser:
                 objective = content if not objective else f"{objective}\n\n{content}"
 
             elif any(k in title for k in ["SKILL", "COMPETENC", "EXPERTISE", "TECHNOLOGIES"]):
-                # Split skills by comma, bullet, or pipe
-                tokens = re.split(r"[,|•\n]", content)
-                for t in tokens:
-                    clean_t = t.strip().lstrip("•-–* ")
-                    if clean_t and clean_t not in skills_dict["technical_skills"]:
-                        skills_dict["technical_skills"].append(clean_t)
+                for line in sec_lines:
+                    m = cls.SKILL_LINE_RE.match(line)
+                    if m:
+                        category = m.group(1).strip()
+                        values   = [v.strip() for v in m.group(2).split(",") if v.strip()]
+                        if values:
+                            skills_dict["additional_skills"].append(f"{category}: {', '.join(values)}")
+                        continue
+                    tokens = re.split(r"[,|•\n]", line)
+                    for t in tokens:
+                        clean_t = t.strip().lstrip("•-\u2013* ")
+                        if clean_t and len(clean_t) > 1 and clean_t not in skills_dict["technical_skills"]:
+                            skills_dict["technical_skills"].append(clean_t)
 
-            elif any(k in title for k in ["EXPERIENCE", "EMPLOYMENT", "WORK HISTORY"]):
-                # Group lines into role/company entries
-                experience_list.append({
-                    "role": "Professional Role",
-                    "company": "Organization",
-                    "location": None,
-                    "start_date": "",
-                    "end_date": "Present",
-                    "bullets": sec_lines,
-                })
+            elif any(k in title for k in ["EXPERIENCE", "EMPLOYMENT", "WORK HISTORY", "WORK EXPERIENCE"]):
+                parsed_exp, found_skills = cls._parse_experience_section(sec_lines)
+                experience_list.extend(parsed_exp)
+                for sk in found_skills:
+                    if sk not in skills_dict["additional_skills"]:
+                        skills_dict["additional_skills"].append(sk)
 
             elif any(k in title for k in ["EDUCATION", "ACADEMIC"]):
-                education_list.append({
-                    "degree": sec_lines[0] if sec_lines else "Degree",
-                    "institution": sec_lines[1] if len(sec_lines) > 1 else "Institution",
-                    "location": None,
-                    "date": "",
-                    "details": sec_lines[2:] if len(sec_lines) > 2 else [],
-                })
+                education_list.extend(cls._parse_education_section(sec_lines))
 
             elif any(k in title for k in ["PROJECT"]):
-                projects_list.append({
-                    "title": sec_lines[0] if sec_lines else "Key Project",
-                    "description": "\n".join(sec_lines[1:]) if len(sec_lines) > 1 else content,
-                    "url": None,
-                })
+                projects_list.extend(cls._parse_projects_section(sec_lines, content))
 
             elif any(k in title for k in ["LEADERSHIP"]):
                 leadership.extend(sec_lines)
@@ -389,32 +425,183 @@ class DeterministicFallbackParser:
                 extra_curricular.extend(sec_lines)
 
             else:
-                # Any other section preserved as an additional section
-                additional_sections.append({
-                    "title": title,
-                    "items": sec_lines,
-                })
+                additional_sections.append({"title": title, "items": sec_lines})
 
-        # Ensure all bullets from canonical extraction are preserved
+        # Promote additional_skills → technical_skills if technical_skills empty
+        if not skills_dict["technical_skills"] and skills_dict["additional_skills"]:
+            skills_dict["technical_skills"] = skills_dict.pop("additional_skills")
+            skills_dict["additional_skills"] = []
+
+        # Fallback: ensure canonical bullets not lost when no experience found
         canonical_bullets = canonical_content.get("bullets", [])
         if canonical_bullets and not experience_list:
             experience_list.append({
-                "role": "Professional Experience",
-                "company": "Organization",
-                "location": None,
+                "role":       "Professional Experience",
+                "company":    "Organization",
+                "location":   None,
                 "start_date": "",
-                "end_date": "Present",
-                "bullets": canonical_bullets,
+                "end_date":   "Present",
+                "bullets":    canonical_bullets,
             })
 
         return {
-            "personal_information": personal_information,
-            "objective": objective,
-            "education": education_list,
-            "skills": skills_dict,
-            "experience": experience_list,
-            "projects": projects_list,
+            "personal_information":    personal_information,
+            "objective":               objective,
+            "education":               education_list,
+            "skills":                  skills_dict,
+            "experience":              experience_list,
+            "projects":                projects_list,
             "extra_curricular_activities": extra_curricular,
-            "leadership": leadership,
-            "additional_sections": additional_sections,
+            "leadership":              leadership,
+            "additional_sections":     additional_sections,
         }
+
+    # ── Section parsers ───────────────────────────────────────────────
+
+    @classmethod
+    def _parse_experience_section(cls, sec_lines: List[str]):
+        """
+        Splits experience section into individual role entries.
+        Returns (entries, captured_skills) where captured_skills holds
+        any 'Category: value' lines that were interleaved from a two-column PDF layout.
+        """
+        entries: List[Dict] = []
+        captured_skills: List[str] = []
+
+        curr_role    = ""
+        curr_company = ""
+        curr_start   = ""
+        curr_end     = ""
+        curr_loc     = ""
+        curr_bullets: List[str] = []
+
+        def flush():
+            if curr_role or curr_company or curr_bullets:
+                entries.append({
+                    "role":       curr_role or "Professional Role",
+                    "company":    curr_company or "Organization",
+                    "location":   curr_loc or None,
+                    "start_date": curr_start,
+                    "end_date":   curr_end or "Present",
+                    "bullets":    list(curr_bullets),
+                })
+
+        def reset():
+            nonlocal curr_role, curr_company, curr_start, curr_end, curr_loc, curr_bullets
+            curr_role = curr_company = curr_start = curr_end = curr_loc = ""
+            curr_bullets = []
+
+        for line in sec_lines:
+            # Capture "Category: value" lines from two-column PDF sidebar
+            m = cls.SKILL_LINE_RE.match(line)
+            if m:
+                category = m.group(1).strip()
+                values   = [v.strip() for v in m.group(2).split(",") if v.strip()]
+                if values:
+                    captured_skills.append(f"{category}: {', '.join(values)}")
+                continue
+
+            date_match = cls.DATE_RE.search(line)
+            is_short   = len(line) < 70
+            is_upper   = line.isupper() and len(line.split()) <= 8
+            is_company = bool(cls.COMPANY_KEYWORDS.search(line))
+
+            if is_company and is_short:
+                # Start a new experience entry at each company
+                if curr_company or curr_bullets:
+                    flush()
+                    reset()
+                curr_company = line
+
+            elif date_match and is_short:
+                raw_dates = re.findall(
+                    r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?"
+                    r"|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+                    r"[\s\-]?\d{2,4}|\d{4}|Present|Current|Till Date",
+                    line,
+                    re.IGNORECASE,
+                )
+                if len(raw_dates) >= 2:
+                    curr_start = raw_dates[0]
+                    curr_end   = raw_dates[-1]
+                elif raw_dates:
+                    curr_end = raw_dates[0]
+                role_candidate = cls.DATE_RE.sub("", line).strip(" -\u2013|")
+                if role_candidate and not curr_role:
+                    curr_role = role_candidate
+
+            elif is_upper and is_short and len(line.split()) <= 7 and not date_match:
+                # All-caps short line → role title
+                if not curr_role:
+                    curr_role = line.title()
+                elif not curr_company:
+                    curr_company = line
+
+            else:
+                clean = line.lstrip("\u2022\u25aa-\u2013*\u25b6 ")
+                if clean:
+                    curr_bullets.append(clean)
+
+        flush()
+        return entries, captured_skills
+
+    @classmethod
+    def _parse_education_section(cls, sec_lines: List[str]) -> List[Dict[str, Any]]:
+        """Parse education entries from section lines."""
+        if not sec_lines:
+            return []
+
+        entries = []
+        i = 0
+        while i < len(sec_lines):
+            line       = sec_lines[i]
+            date_match = cls.DATE_RE.search(line)
+            degree     = ""
+            institution = ""
+            date_str   = ""
+            details: List[str] = []
+
+            if date_match:
+                date_str = date_match.group(0)
+                degree   = cls.DATE_RE.sub("", line).strip(" ,")
+                if i + 1 < len(sec_lines) and not cls.DATE_RE.search(sec_lines[i + 1]):
+                    institution = sec_lines[i + 1]
+                    i += 1
+            else:
+                degree = line
+                if i + 1 < len(sec_lines):
+                    next_line = sec_lines[i + 1]
+                    date_m = cls.DATE_RE.search(next_line)
+                    if date_m:
+                        date_str    = date_m.group(0)
+                        institution = cls.DATE_RE.sub("", next_line).strip(" ,")
+                        i += 1
+                    else:
+                        institution = next_line
+                        i += 1
+
+            i += 1
+            while i < len(sec_lines) and len(sec_lines[i]) > 3:
+                details.append(sec_lines[i])
+                i += 1
+
+            entries.append({
+                "degree":      degree,
+                "institution": institution,
+                "location":    None,
+                "date":        date_str,
+                "details":     details,
+            })
+
+        return entries
+
+    @classmethod
+    def _parse_projects_section(cls, sec_lines: List[str], full_content: str) -> List[Dict[str, Any]]:
+        """Parse project entries — first line = title, rest = description."""
+        if not sec_lines:
+            return []
+        return [{
+            "title":       sec_lines[0],
+            "description": "\n".join(sec_lines[1:]) if len(sec_lines) > 1 else full_content,
+            "url":         None,
+        }]
