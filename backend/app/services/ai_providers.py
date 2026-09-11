@@ -140,15 +140,14 @@ class GroqResumeAIProvider(ResumeAIProvider):
     """Groq Cloud implementation with automatic model fallback and offline parser."""
 
     FALLBACK_MODELS = [
-        "qwen/qwen3.6-27b",
-        "llama-3.3-70b-versatile",
-        "qwen-2.5-32b",
         "llama-3.1-8b-instant",
+        "mixtral-8x7b-32768",
+        "gemma2-9b-it",
     ]
 
     def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
         self.api_key = api_key or settings.GROQ_API_KEY
-        self.model = model or getattr(settings, "GROQ_MODEL", "qwen/qwen3.6-27b")
+        self.model = model or getattr(settings, "GROQ_MODEL", "llama-3.1-8b-instant")
         self.api_url = getattr(
             settings, "GROQ_API_URL", "https://api.groq.com/openai/v1/chat/completions"
         )

@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Profile Bot AI — Full Project Architecture",
+    "quality_profile": "showcase",
+    "views": [
+      { "id": "search-flow", "label": "Search Pipeline", "focus": ["frontend", "search-api", "form-service", "requirement-agent", "groq-api", "selenium", "naukri-portal"], "note": "NL requirement to Resdex search." },
+      { "id": "dossier-flow", "label": "Dossier Pipeline", "focus": ["frontend", "dossier-api", "dossier-service", "extractors", "docx-gen", "storage"], "note": "Photo + ID + Resume to DOCX." },
+      { "id": "profiles-flow", "label": "Profile Matching", "focus": ["frontend", "profiles-api", "requirement-parser", "matching", "ranking"], "note": "Parse, match, rank." },
+      { "id": "security-stack", "label": "Security", "focus": ["middleware", "dlp"], "note": "OWASP, rate limit, DLP." }
+    ]
+  },
+  "components": [
+    { "id": "frontend", "type": "frontend", "label": "React Frontend", "sublabel": "Vite :5173", "pos": [20, 260], "size": [120, 56] },
+    { "id": "middleware", "type": "security", "label": "Security MW", "sublabel": "5-Layer", "pos": [190, 260], "size": [120, 56] },
+    { "id": "main-app", "type": "backend", "label": "FastAPI", "sublabel": ":8000", "pos": [360, 260], "size": [110, 56] },
+    { "id": "search-api", "type": "backend", "label": "Search API", "sublabel": "/search", "pos": [530, 80], "size": [110, 50] },
+    { "id": "profiles-api", "type": "backend", "label": "Profiles API", "sublabel": "/profiles", "pos": [540, 260], "size": [110, 50] },
+    { "id": "dossier-api", "type": "backend", "label": "Dossier API", "sublabel": "/dossier", "pos": [540, 440], "size": [110, 50] },
+    { "id": "form-service", "type": "backend", "label": "FormService", "sublabel": "Orchestrator", "pos": [700, 40], "size": [120, 50] },
+    { "id": "requirement-agent", "type": "backend", "label": "ReqAgent", "sublabel": "LLM+Rules", "pos": [700, 170], "size": [120, 50] },
+    { "id": "requirement-parser", "type": "backend", "label": "ReqParser", "sublabel": "NLP", "pos": [700, 290], "size": [120, 50] },
+    { "id": "dossier-service", "type": "backend", "label": "DossierSvc", "sublabel": "Compiler", "pos": [700, 440], "size": [120, 50] },
+    { "id": "extractors", "type": "backend", "label": "Extractors", "sublabel": "pdf+docx", "pos": [700, 570], "size": [120, 50] },
+    { "id": "selenium", "type": "backend", "label": "Selenium", "sublabel": "CDP :9222", "pos": [880, 80], "size": [120, 50] },
+    { "id": "naukri-portal", "type": "external", "label": "Naukri", "sublabel": "naukri.com", "pos": [1050, 170], "size": [120, 56] },
+    { "id": "groq-api", "type": "external", "label": "Groq API", "sublabel": "Qwen", "pos": [880, 220], "size": [120, 50] },
+    { "id": "matching", "type": "backend", "label": "Matching", "sublabel": "0-100", "pos": [880, 340], "size": [120, 50] },
+    { "id": "ranking", "type": "backend", "label": "Ranking", "sublabel": "Top-N", "pos": [880, 440], "size": [120, 50] },
+    { "id": "docx-gen", "type": "backend", "label": "DOCX Gen", "sublabel": "python-docx", "pos": [880, 550], "size": [120, 50] },
+    { "id": "storage", "type": "database", "label": "Storage", "sublabel": "dossiers/", "pos": [1050, 550], "size": [110, 50] },
+    { "id": "dlp", "type": "security", "label": "PII Mask", "sublabel": "DLP", "pos": [190, 440], "size": [120, 50] },
+    { "id": "config", "type": "backend", "label": "Config", "sublabel": ".env", "pos": [360, 460], "size": [110, 50] }
+  ],
+  "boundaries": [
+    { "kind": "security-group", "label": "Hardened Local-Only", "wraps": ["middleware", "main-app", "search-api", "profiles-api", "dossier-api", "form-service", "requirement-agent", "requirement-parser", "dossier-service", "extractors", "selenium", "matching", "ranking", "docx-gen", "storage", "dlp", "config"], "pad": 20 }
+  ],
+  "connections": [
+    { "id": "c1", "from": "frontend", "to": "middleware", "variant": "emphasis", "fromSide": "right", "toSide": "left", "labelAt": [180, 340] },
+    { "id": "c2", "from": "middleware", "to": "main-app", "fromSide": "right", "toSide": "left", "labelAt": [385, 340] },
+    { "id": "c3", "from": "main-app", "to": "search-api", "fromSide": "top", "toSide": "left", "labelAt": [540, 188] },
+    { "id": "c4", "from": "main-app", "to": "profiles-api", "fromSide": "right", "toSide": "left", "labelAt": [595, 294] },
+    { "id": "c5", "from": "main-app", "to": "dossier-api", "fromSide": "bottom", "toSide": "left", "labelAt": [540, 388] },
+    { "id": "c6", "from": "search-api", "to": "form-service", "fromSide": "right", "toSide": "left", "labelAt": [765, 104] },
+    { "id": "c7", "from": "form-service", "to": "requirement-agent", "fromSide": "bottom", "toSide": "top", "labelAt": [910, 154] },
+    { "id": "c8", "from": "requirement-agent", "to": "groq-api", "variant": "dashed", "fromSide": "right", "toSide": "left", "labelAt": [1020, 194] },
+    { "id": "c9", "from": "form-service", "to": "selenium", "fromSide": "right", "toSide": "left", "labelAt": [985, 64] },
+    { "id": "c10", "from": "selenium", "to": "naukri-portal", "variant": "emphasis", "fromSide": "right", "toSide": "left", "labelAt": [1200, 104] },
+    { "id": "c11", "from": "profiles-api", "to": "requirement-parser", "fromSide": "right", "toSide": "left", "labelAt": [790, 314] },
+    { "id": "c12", "from": "profiles-api", "to": "matching", "fromSide": "right", "toSide": "left", "labelAt": [1000, 314] },
+    { "id": "c13", "from": "matching", "to": "ranking", "fromSide": "bottom", "toSide": "top", "labelAt": [1125, 414] },
+    { "id": "c14", "from": "dossier-api", "to": "dossier-service", "fromSide": "right", "toSide": "left", "labelAt": [790, 464] },
+    { "id": "c15", "from": "dossier-service", "to": "extractors", "fromSide": "bottom", "toSide": "top", "labelAt": [910, 534] },
+    { "id": "c16", "from": "dossier-service", "to": "docx-gen", "fromSide": "right", "toSide": "left", "labelAt": [1000, 464] },
+    { "id": "c17", "from": "docx-gen", "to": "storage", "fromSide": "right", "toSide": "left", "labelAt": [1200, 574] },
+    { "id": "c18", "from": "main-app", "to": "config", "variant": "dashed", "fromSide": "bottom", "toSide": "top", "labelAt": [500, 418] },
+    { "id": "c19", "from": "main-app", "to": "dlp", "variant": "dashed", "fromSide": "left", "toSide": "right", "labelAt": [385, 464] }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Frontend", "items": ["React + Vite SPA", "SearchAgentView", "DossierUploadWorkspace"] },
+    { "dot": "emerald", "title": "Search Pipeline", "items": ["RequirementAgent: Groq LLM + rules", "FormService: parse-validate-execute", "Selenium CDP :9222", "Resdex auto-fill"] },
+    { "dot": "violet", "title": "Dossier Compiler", "items": ["DossierService: text extraction", "PyMuPDF 150 DPI render", "Pillow photo 400x400", "python-docx OpenXML"] },
+    { "dot": "amber", "title": "Profile Matching", "items": ["RequirementParser: regex NLP", "MatchingService: 0-100", "RankingService: top-N", "NaukriPortal: mock/live"] },
+    { "dot": "rose", "title": "Security", "items": ["OWASP headers", "Localhost guard", "Rate limiter 30MB", "PII masking"] }
+  ]
+}

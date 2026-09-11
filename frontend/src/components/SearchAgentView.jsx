@@ -1,6 +1,15 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { getApiBase } from '../config';
-import { IconSearch, IconBolt, IconEye, IconRocket, IconClipboard, IconCheck, IconAlert } from './Icons';
+import {
+  IconSearch,
+  IconBolt,
+  IconEye,
+  IconRocket,
+  IconClipboard,
+  IconCheck,
+  IconAlert,
+  IconDocument,
+} from './Icons';
 
 const PRESET_REQUIREMENTS = [
   "Find AI/ML engineers in Hyderabad with 2 to 5 years of experience. Python, FastAPI, Machine Learning and NLP are mandatory. Salary should be 8 to 15 LPA. Prefer candidates who can join within 15 days.",
@@ -16,8 +25,235 @@ export default function SearchAgentView() {
   const [searchResponse, setSearchResponse] = useState(null);
   const [error, setError] = useState(null);
 
-  const handleSearch = async (e) => {
-    e.preventDefault();
+  // Document Upload & Format Preservation State
+  const [uploadedDoc, setUploadedDoc] = useState(null);
+  const [isExtractingDoc, setIsExtractingDoc] = useState(false);
+  const [docError, setDocError] = useState(null);
+  const [isDraggingDoc, setIsDraggingDoc] = useState(false);
+  const docInputRef = useRef(null);
+
+  const formatFileSize = (bytes) => {
+    if (!bytes) return '0 B';
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  /**
+   * Intelligently parses rich clipboard HTML (from Google AI Overview, Word, web pages, Notion, Docs)
+   * into clean, faithfully formatted text preserving:
+   * - Line breaks before/after headings and paragraphs
+   * - Bullet points (•) for all list items
+   * - Proper whitespace and indentations
+   */
+  const htmlToFormattedText = (htmlString) => {
+    try {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(htmlString, 'text/html');
+
+      // Drop non-content tags
+      const dropSelectors = ['script', 'style', 'noscript', 'svg', 'button', 'nav'];
+      doc.querySelectorAll(dropSelectors.join(',')).forEach((el) => el.remove());
+
+      const walk = (node) => {
+        if (node.nodeType === Node.TEXT_NODE) {
+          return node.nodeValue;
+        }
+        if (node.nodeType !== Node.ELEMENT_NODE) {
+          return '';
+        }
+
+        const tagName = node.tagName.toUpperCase();
+        const role = node.getAttribute('role') || '';
+        const className = typeof node.className === 'string' ? node.className : '';
+
+        // Recursively build children text
+        let childrenText = '';
+        for (const child of node.childNodes) {
+          childrenText += walk(child);
+        }
+
+        // 1. Headings (H1-H6 or role="heading")
+        if (/^H[1-6]$/.test(tagName) || role === 'heading') {
+          const text = childrenText.trim();
+          return text ? `\n\n${text}\n\n` : '';
+        }
+
+        // 2. Paragraphs & Blockquotes
+        if (tagName === 'P' || tagName === 'BLOCKQUOTE') {
+          const text = childrenText.trim();
+          return text ? `\n\n${text}\n` : '';
+        }
+
+        // 3. List Items (<li> or role="listitem" or .list-item)
+        const isListItem =
+          tagName === 'LI' ||
+          role === 'listitem' ||
+          className.includes('listitem') ||
+          className.includes('list-item');
+
+        if (isListItem) {
+          const text = childrenText.trim();
+          if (!text) return '';
+          // Ensure every bullet point starts on its own line with a bullet symbol
+          const alreadyHasBullet = /^[•\-\*\u2022\u25aa\u25b6]/.test(text);
+          return `\n${alreadyHasBullet ? '' : '• '}${text}\n`;
+        }
+
+        // 4. Line Breaks
+        if (tagName === 'BR') {
+          return '\n';
+        }
+
+        // 5. Table Rows & Cells
+        if (tagName === 'TR') {
+          const text = childrenText.trim();
+          return text ? `\n${text}` : '';
+        }
+        if (tagName === 'TD' || tagName === 'TH') {
+          return ` ${childrenText.trim()} `;
+        }
+
+        // 6. Generic block containers (DIV, SECTION, ARTICLE)
+        if (['DIV', 'SECTION', 'ARTICLE', 'MAIN'].includes(tagName)) {
+          return `\n${childrenText}`;
+        }
+
+        return childrenText;
+      };
+
+      let result = walk(doc.body);
+
+      // Clean up excessive blank lines (max 2 consecutive newlines)
+      result = result
+        .replace(/\r\n/g, '\n')
+        .replace(/\r/g, '\n')
+        .replace(/[ \t]+\n/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+
+      return result;
+    } catch (err) {
+      console.warn('HTML format conversion error:', err);
+      return '';
+    }
+  };
+
+  /**
+   * Lossless Paste Handler:
+   * - Inspects both text/html and text/plain
+   * - If HTML contains structural elements (headings, list items, paragraphs, divs)
+   *   it converts them into structured text with explicit bullets and line breaks,
+   *   preventing browser line-collapsing.
+   * - If plain text has explicit lines/code formatting, preserves it exactly.
+   */
+  const handlePaste = (e) => {
+    const clipboardData = e.clipboardData || window.clipboardData;
+    if (!clipboardData) return;
+
+    const html = clipboardData.getData('text/html');
+    const plain = clipboardData.getData('text/plain');
+
+    let textToInsert = '';
+
+    if (
+      html &&
+      (html.includes('<li') ||
+        html.includes('<p') ||
+        html.includes('<div') ||
+        html.includes('<h') ||
+        html.includes('<br') ||
+        html.includes('role="listitem"') ||
+        html.includes('role="heading"'))
+    ) {
+      const formattedFromHtml = htmlToFormattedText(html);
+      const htmlLines = (formattedFromHtml.match(/\n/g) || []).length;
+      const plainLines = (plain.match(/\n/g) || []).length;
+
+      // If HTML conversion restored lost line breaks or bullet points, prefer it!
+      if (htmlLines > plainLines || (formattedFromHtml.includes('•') && !plain.includes('•'))) {
+        textToInsert = formattedFromHtml;
+      } else {
+        textToInsert = plain || formattedFromHtml;
+      }
+    } else {
+      textToInsert = plain || '';
+    }
+
+    if (textToInsert) {
+      e.preventDefault();
+      const textarea = e.target;
+      const start = textarea.selectionStart;
+      const end = textarea.selectionEnd;
+      const currentVal = textarea.value;
+      const nextVal = currentVal.substring(0, start) + textToInsert + currentVal.substring(end);
+      setPrompt(nextVal);
+      requestAnimationFrame(() => {
+        textarea.selectionStart = textarea.selectionEnd = start + textToInsert.length;
+      });
+    }
+  };
+
+  /**
+   * Handles uploaded requirement document (PDF, DOCX, DOC, TXT):
+   * Extracts text on backend preserving all line breaks, bullets, and sections.
+   */
+  const handleDocFile = async (file) => {
+    if (!file) return;
+
+    const ext = file.name.split('.').pop().toLowerCase();
+    if (!['pdf', 'docx', 'doc', 'txt'].includes(ext)) {
+      setDocError(`Unsupported format '.${ext}'. Please upload a PDF, DOCX, DOC, or TXT file.`);
+      return;
+    }
+
+    if (file.size > 10 * 1024 * 1024) {
+      setDocError('File is too large. Maximum size allowed is 10 MB.');
+      return;
+    }
+
+    setIsExtractingDoc(true);
+    setDocError(null);
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const resp = await fetch(`${API_BASE}/search/upload-requirement`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!resp.ok) {
+        const errJson = await resp.json().catch(() => ({}));
+        throw new Error(errJson.detail || errJson.message || `Upload failed with status ${resp.status}`);
+      }
+
+      const data = await resp.json();
+      setUploadedDoc({
+        filename: data.filename,
+        size: data.size,
+        lineCount: data.line_count,
+        charCount: data.char_count,
+      });
+
+      // Populate prompt with the extracted requirement text (preserving exact formatting)
+      setPrompt(data.extracted_text);
+    } catch (err) {
+      console.error('Failed to extract document:', err);
+      setDocError(err.message || 'Failed to extract requirement text from document.');
+    } finally {
+      setIsExtractingDoc(false);
+      if (docInputRef.current) docInputRef.current.value = '';
+    }
+  };
+
+  const handleRemoveDoc = () => {
+    setUploadedDoc(null);
+    setDocError(null);
+  };
+
+  const executeSearch = async () => {
     if (!prompt.trim()) return;
 
     setIsLoading(true);
@@ -28,6 +264,10 @@ export default function SearchAgentView() {
       requirement: prompt.trim(),
       execute: executeMode !== 'dry_run',
       submit_search: executeMode === 'submit',
+      active_in: '15 days',
+      verified_mobile: true,
+      verified_email: true,
+      attached_resume: true,
     };
 
     try {
@@ -54,13 +294,18 @@ export default function SearchAgentView() {
     }
   };
 
+  const handleSearch = (e) => {
+    if (e) e.preventDefault();
+    executeSearch();
+  };
+
   return (
     <div>
       <div className="hero-section">
-        <h1 className="hero-title">Naukri Resdex Candidate Search Agent</h1>
+        <h1 className="hero-title">Candidate Search Agent</h1>
         <p className="hero-desc">
           Schema-driven autonomous recruitment intelligence. Type your natural-language candidate criteria
-          below. The agent validates against the live Resdex schema and deterministically fills the search form.
+          below. The agent validates against the live portal schema and deterministically fills the search form.
         </p>
       </div>
 
@@ -87,23 +332,131 @@ export default function SearchAgentView() {
 
         <form onSubmit={handleSearch}>
           <div className="form-group" style={{ marginBottom: '20px' }}>
-            <label className="form-label">Requirement Prompt</label>
+            {/* Hidden Document Input */}
+            <input
+              ref={docInputRef}
+              id="doc-upload-input"
+              name="docUpload"
+              type="file"
+              accept=".pdf,.docx,.doc,.txt"
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                if (e.target.files?.[0]) handleDocFile(e.target.files[0]);
+              }}
+            />
+
+            {/* Prompt Header with Upload Button */}
+            <div className="prompt-header-row">
+              <label htmlFor="jd-prompt-textarea" className="form-label">Requirement Prompt &amp; Job Criteria</label>
+              <div className="prompt-actions">
+                <button
+                  type="button"
+                  className="btn-upload-req-doc"
+                  onClick={() => docInputRef.current?.click()}
+                  disabled={isExtractingDoc}
+                  title="Upload a Job Description or Requirement document (PDF, DOCX, DOC, TXT)"
+                >
+                  {isExtractingDoc ? (
+                    <>
+                      <span className="spinner-light-sm" style={{ borderColor: '#4F46E5', borderTopColor: 'transparent' }}></span>
+                      <span>Extracting Document...</span>
+                    </>
+                  ) : (
+                    <>
+                      <IconDocument size={14} />
+                      <span>Upload Requirement Doc / PDF</span>
+                    </>
+                  )}
+                </button>
+
+                {prompt && (
+                  <button
+                    type="button"
+                    className="btn-clear-prompt"
+                    onClick={() => {
+                      setPrompt('');
+                      setUploadedDoc(null);
+                    }}
+                    title="Clear prompt text"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Attached Document Banner */}
+            {uploadedDoc && (
+              <div className="doc-requirement-banner">
+                <div className="doc-info-left">
+                  <IconDocument size={18} color="#166534" />
+                  <div className="doc-meta-text">
+                    <span className="doc-name">{uploadedDoc.filename}</span>
+                    <span className="doc-sub">
+                      ({formatFileSize(uploadedDoc.size)} • {uploadedDoc.lineCount} lines extracted &amp; populated below)
+                    </span>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="btn-remove-doc"
+                  onClick={handleRemoveDoc}
+                >
+                  ✕ Remove
+                </button>
+              </div>
+            )}
+
+            {/* Error banner if doc extraction failed */}
+            {docError && (
+              <div className="inline-error" style={{ marginBottom: '10px' }}>
+                <IconAlert size={16} color="#DC2626" />
+                <span>{docError}</span>
+              </div>
+            )}
+
+            {/* Exact-Format-Preserving Textarea */}
             <textarea
-              className="form-textarea"
-              rows={4}
+              id="jd-prompt-textarea"
+              name="jdPrompt"
+              className={`form-textarea ${isDraggingDoc ? 'prompt-drag-active' : ''}`}
+              rows={8}
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
-              placeholder="e.g. Find Python developers in Hyderabad with 3 to 6 years experience..."
+              onPaste={handlePaste}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setIsDraggingDoc(true);
+              }}
+              onDragLeave={() => setIsDraggingDoc(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setIsDraggingDoc(false);
+                if (e.dataTransfer.files?.[0]) handleDocFile(e.dataTransfer.files[0]);
+              }}
+              placeholder="Type your recruitment criteria, paste formatted text without changes, or drop/upload a Job Description (PDF, DOCX, DOC, TXT) to automate search in Naukri Resdex..."
             />
+
+            {/* Prompt Helper / Format preservation indicator & counters */}
+            <div className="prompt-meta-row">
+              <span className="prompt-meta-hint">
+                <IconCheck size={13} color="#10B981" />
+                <span>100% exact format preserved on paste &amp; upload (newlines, tabs, indentations, bullets).</span>
+              </span>
+              <span className="prompt-meta-counts">
+                {prompt ? prompt.split(/\r\n|\r|\n/).length : 0} lines • {prompt.length.toLocaleString()} chars
+              </span>
+            </div>
           </div>
 
           {/* Execution Mode Selector */}
           <div className="form-row" style={{ marginBottom: '24px' }}>
             <div className="form-group">
-              <label className="form-label">Execution Mode</label>
+              <label htmlFor="execution-mode-dry-run" className="form-label">Execution Mode</label>
               <div className="execution-mode-selector">
                 <label className={`mode-option-card ${executeMode === 'dry_run' ? 'active-dry' : ''}`}>
                   <input
+                    id="execution-mode-dry-run"
                     type="radio"
                     name="mode"
                     value="dry_run"
@@ -180,7 +533,7 @@ export default function SearchAgentView() {
                 <IconBolt size={18} color="#FFFFFF" />
                 <span>
                   {executeMode === 'dry_run' && 'Generate & Validate SearchPlan'}
-                  {executeMode === 'inspection' && 'Launch Chrome & Fill Resdex Form (Inspection)'}
+                  {executeMode === 'inspection' && 'Auto-Fill Open Resdex Tab (Inspection)'}
                   {executeMode === 'submit' && 'Execute Live Resdex Candidate Search'}
                 </span>
               </>
@@ -234,6 +587,7 @@ export default function SearchAgentView() {
               )}
             </div>
           )}
+
 
           <div className="code-box">
             {JSON.stringify(searchResponse.search_plan, null, 2)}

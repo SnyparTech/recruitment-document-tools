@@ -13,19 +13,26 @@ class Settings(BaseSettings):
 
     # Selenium Persistent Session & Visual Configuration
     SELENIUM_HEADLESS: bool = False  # Set to False so the browser screen is visible
-    SELENIUM_TIMEOUT: int = 20
+    SELENIUM_TIMEOUT: int = 25
     LOGIN_WAIT_TIMEOUT: int = 300  # Time allowed on first run if login is needed (5 minutes)
     SELENIUM_BROWSER: str = "chrome"
-    SELENIUM_USER_DATA_DIR: Optional[str] = "./selenium_profile"  # Persistent profile for active sessions
+    CHROME_BINARY_PATH: str = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+    CHROME_PROFILE_DIRECTORY: str = "Profile 18"
+    SELENIUM_USER_DATA_DIR: str = r"C:\Users\sriha\AppData\Local\Google\Chrome\User Data"
+    CHROME_AUTOMATION_USER_DATA_DIR: str = r"C:\Users\sriha\AppData\Local\Google\Chrome\NaukriAutomation"
+    SELENIUM_REMOTE_DEBUGGING_PORT: int = 9222
 
     # Candidate Portal URLs (Naukri Resdex Candidate Search)
     NAUKRI_BASE_URL: str = "https://www.naukri.com"
     NAUKRI_RESDEX_URL: str = "https://resdex.naukri.com"
 
-    # Groq LLM Configuration
+    # LLM Configuration (Groq / Gemini)
     GROQ_API_KEY: Optional[str] = None
-    GROQ_MODEL: str = "qwen/qwen3.6-27b"
+    GROQ_MODEL: str = "openai/gpt-oss-20b"
     GROQ_API_URL: str = "https://api.groq.com/openai/v1/chat/completions"
+
+    GEMINI_API_KEY: Optional[str] = None
+    GEMINI_MODEL: str = "gemini-1.5-flash"
 
     # Security, Isolation & DLP Configuration
     LOCAL_API_KEY: Optional[str] = None

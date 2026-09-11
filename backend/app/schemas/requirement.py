@@ -9,8 +9,8 @@ class CandidateSearchRequest(BaseModel):
     requirement: str = Field(
         ...,
         min_length=3,
-        max_length=2000,
-        description="Natural language recruitment requirement prompt (sanitized, max 2000 characters)",
+        max_length=50000,
+        description="Natural language recruitment requirement prompt or extracted document content (sanitized, max 50000 characters)",
         examples=[
             "Find AI/ML engineers in Hyderabad with 2 to 5 years of experience. Python, FastAPI, Machine Learning and NLP are mandatory. Salary should be 8 to 15 LPA. Prefer candidates who can join within 15 days."
         ],
@@ -22,6 +22,22 @@ class CandidateSearchRequest(BaseModel):
     submit_search: bool = Field(
         default=False,
         description="Whether to submit the search after filling form fields (default: false for safe inspection)",
+    )
+    active_in: Optional[str] = Field(
+        default="15 days",
+        description="Dynamic Search active period ('15 days', '30 days', '2 months', '3 months', '6 months')",
+    )
+    verified_mobile: bool = Field(
+        default=True,
+        description="Whether to tick 'Verified mobile number' in Resdex",
+    )
+    verified_email: bool = Field(
+        default=True,
+        description="Whether to tick 'Verified email ID' in Resdex",
+    )
+    attached_resume: bool = Field(
+        default=True,
+        description="Whether to tick 'Attached resume' in Resdex",
     )
 
     @field_validator("requirement")

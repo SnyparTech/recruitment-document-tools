@@ -171,20 +171,20 @@ class SearchPlan(BaseModel):
         description="Candidate display option ('All candidates', 'Modified candidates')",
     )
     verified_mobile: Optional[bool] = Field(
-        default=None,
+        default=True,
         description="Require verified mobile number",
     )
     verified_email: Optional[bool] = Field(
-        default=None,
+        default=True,
         description="Require verified email ID",
     )
     attached_resume: Optional[bool] = Field(
-        default=None,
+        default=True,
         description="Require attached resume",
     )
     active_in: Optional[str] = Field(
-        default="6 months",
-        description="Search active period (e.g. '30 days', '6 months')",
+        default="15 days",
+        description="Search active period (e.g. '15 days', '30 days', '2 months', '3 months', '6 months')",
     )
 
     # Confidence and Uncertainty Tracking

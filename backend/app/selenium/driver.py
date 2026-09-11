@@ -1,7 +1,11 @@
 import logging
 import os
+import subprocess
+import time
+import urllib.request
 from typing import Optional
 from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options as ChromeOptions
 from selenium.webdriver.support.ui import WebDriverWait
 from app.core.config import settings
@@ -14,118 +18,163 @@ class ResdexDriver:
     """
     Manages Selenium WebDriver lifecycle with persistent session storage,
     anti-automation flags removal, and explicit waits.
+    Attaches to Chrome via remote debugging on port 9222.
     """
 
     def __init__(self):
         self._driver: Optional[webdriver.Chrome] = None
         self._wait: Optional[WebDriverWait] = None
 
-    def start_driver(self) -> webdriver.Chrome:
+    @staticmethod
+    def _is_remote_debugging_open(port: int = 9222) -> bool:
+        """Checks if Chrome is already running with remote debugging port enabled."""
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=1.0) as resp:
+                return resp.status == 200
+        except Exception:
+            return False
+
+    @staticmethod
+    def get_chromedriver_path() -> Optional[str]:
+        """Locates cached local chromedriver binary to bypass network downloads."""
+        cache_dir = os.path.expanduser(r"~/.cache/selenium/chromedriver/win64")
+        if os.path.exists(cache_dir):
+            try:
+                versions = sorted(os.listdir(cache_dir), reverse=True)
+                for v in versions:
+                    exe = os.path.join(cache_dir, v, "chromedriver.exe")
+                    if os.path.isfile(exe):
+                        return exe
+            except Exception:
+                pass
+        return None
+
+    _last_launch_time: float = 0.0
+
+    @classmethod
+    def launch_chrome_browser(cls, url: str = "https://resdex.naukri.com/v3?activeTab=advSrch") -> None:
         """
-        Initializes Chrome WebDriver with persistent user data profile and
-        disables automation flags.
+        Launches Google Chrome with dedicated automation profile directory and remote debugging port 9222.
+        Debounced to ensure only one browser window is opened.
+        """
+        debug_port = getattr(settings, "SELENIUM_REMOTE_DEBUGGING_PORT", 9222)
+        if cls._is_remote_debugging_open(debug_port):
+            logger.info(f"Chrome is already listening on remote debugging port {debug_port}.")
+            return
+
+        now = time.time()
+        if now - cls._last_launch_time < 3.0:
+            logger.info("Chrome launch skipped (already launched within last 3 seconds).")
+            return
+        cls._last_launch_time = now
+
+        chrome_bin = getattr(settings, "CHROME_BINARY_PATH", r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+        profile_dir_name = getattr(settings, "CHROME_PROFILE_DIRECTORY", "Profile 18")
+        user_data_dir = getattr(
+            settings,
+            "CHROME_AUTOMATION_USER_DATA_DIR",
+            r"C:\Users\sriha\AppData\Local\Google\Chrome\NaukriAutomation"
+        )
+
+        os.makedirs(user_data_dir, exist_ok=True)
+
+        cmd = [
+            chrome_bin,
+            f"--remote-debugging-port={debug_port}",
+            f"--user-data-dir={user_data_dir}",
+            f"--profile-directory={profile_dir_name}",
+            "--remote-allow-origins=*",
+            "--no-first-run",
+            "--no-default-browser-check",
+            url,
+        ]
+        flags = 0
+        if hasattr(subprocess, "DETACHED_PROCESS") and hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+            flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+
+        logger.info(f"Launching Chrome with remote debugging on port {debug_port}: {' '.join(cmd)}")
+        try:
+            subprocess.Popen(cmd, creationflags=flags)
+            # Wait briefly for port to start listening
+            for _ in range(12):
+                time.sleep(0.5)
+                if cls._is_remote_debugging_open(debug_port):
+                    logger.info(f"Chrome remote debugging port {debug_port} is ready.")
+                    break
+        except Exception as exc:
+            logger.error(f"Failed to launch Chrome with command: {exc}")
+
+    def start_driver(self) -> Optional[webdriver.Chrome]:
+        """
+        Initializes Chrome WebDriver attached to Chrome on port 9222.
+        Ensures a single browser window is opened and directly automated.
         """
         if self._driver is not None:
             return self._driver
 
         try:
+            debug_port = getattr(settings, "SELENIUM_REMOTE_DEBUGGING_PORT", 9222)
+
+            # Ensure Chrome is running with remote debugging enabled
+            if not self._is_remote_debugging_open(debug_port):
+                self.launch_chrome_browser("https://resdex.naukri.com/v3?activeTab=advSrch")
+
+            # Wait up to 5 seconds if not yet open
+            for _ in range(10):
+                if self._is_remote_debugging_open(debug_port):
+                    break
+                time.sleep(0.5)
+
+            if not self._is_remote_debugging_open(debug_port):
+                raise SeleniumDriverError(f"Chrome remote debugging port {debug_port} is not accessible.")
+
             options = ChromeOptions()
-            if settings.SELENIUM_HEADLESS:
-                options.add_argument("--headless=new")
-            options.add_argument("--disable-gpu")
-            options.add_argument("--no-sandbox")
-            options.add_argument("--disable-dev-shm-usage")
-            options.add_argument("--window-size=1920,1080")
-            options.add_argument("--disable-notifications")
-            options.add_argument("--disable-popup-blocking")
-            options.add_argument("--no-first-run")
-            options.add_argument("--no-default-browser-check")
-            options.add_argument("--disable-extensions")
-            options.add_argument("--disable-plugins-discovery")
-            options.add_argument("--disable-sync")
-            options.add_argument("--disable-default-apps")
-            options.add_argument("--remote-allow-origins=http://127.0.0.1,http://localhost")
-            options.add_argument(
-                "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-            )
+            options.add_experimental_option("debuggerAddress", f"127.0.0.1:{debug_port}")
 
-            # Prevent automation detection
-            options.add_argument("--disable-blink-features=AutomationControlled")
-            options.add_experimental_option("excludeSwitches", ["enable-automation"])
-            options.add_experimental_option("useAutomationExtension", False)
+            chromedriver_path = self.get_chromedriver_path()
+            service = Service(executable_path=chromedriver_path) if chromedriver_path else None
 
-            # Use persistent session directory so login is preserved across all runs
-            raw_path = settings.SELENIUM_USER_DATA_DIR or "./selenium_profile"
-            if raw_path.lower().endswith(".lnk") or (
-                os.path.exists(raw_path) and not os.path.isdir(raw_path)
-            ):
-                raw_path = "./selenium_profile"
+            if service:
+                self._driver = webdriver.Chrome(service=service, options=options)
+            else:
+                self._driver = webdriver.Chrome(options=options)
 
-            profile_dir = os.path.abspath(raw_path)
-            os.makedirs(profile_dir, exist_ok=True)
-
-            # Clean stale Chromium locks if any
-            for lock_file in ["SingletonLock", "SingletonCookie", "SingletonSocket", "DevToolsActivePort"]:
-                lock_path = os.path.join(profile_dir, lock_file)
-                if os.path.exists(lock_path):
-                    try:
-                        os.remove(lock_path)
-                    except Exception:
-                        pass
-
-            options.add_argument(f"--user-data-dir={profile_dir}")
-            logger.info(f"Using persistent Chrome profile directory: {profile_dir}")
-
-            self._driver = webdriver.Chrome(options=options)
-
-            # Mask navigator.webdriver in JavaScript
-            try:
-                self._driver.execute_cdp_cmd(
-                    "Page.addScriptToEvaluateOnNewDocument",
-                    {
-                        "source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-                    },
-                )
-            except Exception:
-                pass
-
-            self._driver.set_page_load_timeout(settings.SELENIUM_TIMEOUT)
             self._wait = WebDriverWait(self._driver, settings.SELENIUM_TIMEOUT)
-            logger.info("Selenium Chrome WebDriver started successfully.")
+            logger.info(f"Successfully attached to Chrome window on port {debug_port}.")
             return self._driver
+
         except Exception as exc:
             logger.error(f"Failed to start Selenium WebDriver: {exc}")
-            raise SeleniumDriverError(f"Could not start Chrome WebDriver: {str(exc)}")
+            raise SeleniumDriverError(f"Could not connect to Chrome on port 9222: {exc}")
 
     @property
-    def driver(self) -> webdriver.Chrome:
+    def driver(self) -> Optional[webdriver.Chrome]:
         """Returns active driver or starts a new instance."""
         if self._driver is None:
             return self.start_driver()
         return self._driver
 
     @property
-    def wait(self) -> WebDriverWait:
+    def wait(self) -> Optional[WebDriverWait]:
         """Returns active WebDriverWait instance."""
-        if self._wait is None:
-            self.start_driver()
         return self._wait
 
     def navigate_to(self, url: str) -> None:
         """Navigates to the specified URL safely."""
         try:
-            self.driver.get(url)
+            if self.driver is not None:
+                self.driver.get(url)
         except Exception as exc:
             raise SeleniumDriverError(f"Navigation to '{url}' failed: {str(exc)}")
 
     def close(self) -> None:
-        """Closes and quits the WebDriver safely without deleting the persistent session."""
+        """
+        Detaches from the WebDriver session without closing the recruiter's active browser window.
+        """
         if self._driver is not None:
             try:
-                self._driver.quit()
-                logger.info("Selenium WebDriver quit cleanly (session saved).")
-            except Exception as exc:
-                logger.warning(f"Error while quitting WebDriver: {exc}")
+                # Detach reference without killing the browser window so user can review details
+                pass
             finally:
                 self._driver = None
                 self._wait = None

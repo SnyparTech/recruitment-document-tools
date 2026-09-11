@@ -12,10 +12,23 @@
           "type": "dynamic_multiselect",
           "description": "Skills and technical search keywords",
           "properties": {
-            "required": { "type": "array", "items": { "type": "string" }, "description": "Mandatory skills" },
+            "required": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Mandatory skills (automatically selected with star ⭐ on keyword chips in portal)"
+            },
             "preferred": { "type": "array", "items": { "type": "string" }, "description": "Preferred/optional skills" },
             "excluded": { "type": "array", "items": { "type": "string" }, "description": "Keywords to exclude" },
-            "mandatory": { "type": "boolean", "description": "Mark all keywords as mandatory" },
+            "mandatory": {
+              "type": "boolean",
+              "default": true,
+              "description": "Mark all keywords as mandatory and select mandatory star ⭐"
+            },
+            "auto_star_mandatory": {
+              "type": "boolean",
+              "default": true,
+              "description": "Automatically select the star for mandatory skills in keyword chips"
+            },
             "search_scope": {
               "type": "select",
               "options": ["Entire resume", "Resume title", "Key skills", "Resume title and Key skills"],
@@ -262,22 +275,29 @@
         "verified_mobile": {
           "id": "verified_mobile",
           "label": "Verified mobile number",
-          "type": "checkbox"
+          "type": "checkbox",
+          "default": true,
+          "description": "Show only candidates with verified mobile number (automatically checked)"
         },
         "verified_email": {
           "id": "verified_email",
           "label": "Verified email ID",
-          "type": "checkbox"
+          "type": "checkbox",
+          "default": true,
+          "description": "Show only candidates with verified email ID (automatically checked)"
         },
         "attached_resume": {
           "id": "attached_resume",
           "label": "Attached resume",
-          "type": "checkbox"
+          "type": "checkbox",
+          "default": true,
+          "description": "Show only candidates with attached resume (automatically checked)"
         }
       }
     },
     "search_active_period": {
       "title": "Search Active Period",
+      "description": "Active in status (dynamically cycles through: 15 days -> 30 days -> 2 months -> 3 months -> 6 months)",
       "fields": {
         "active_in": {
           "id": "active_in",
@@ -292,7 +312,15 @@
             "3 months",
             "6 months"
           ],
-          "default": "6 months"
+          "default": "15 days",
+          "active_in_tiers": [
+            "15 days",
+            "30 days",
+            "2 months",
+            "3 months",
+            "6 months"
+          ],
+          "description": "Active in status dynamically changes on Next Top Candidates (default: 15 days)"
         }
       }
     }

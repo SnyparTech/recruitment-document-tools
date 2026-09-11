@@ -1,12 +1,24 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { getApiBase } from '../config';
 import DossierResultCard from './DossierResultCard';
+import ConvertedResumePreviewModal from './ConvertedResumePreviewModal';
+import { IconSparkles, IconCheck, IconEye } from '../components/Icons';
 
 export default function DossierUploadWorkspace({ initialCandidate, onBack }) {
   const [photo, setPhoto] = useState(null);
   const [photoPreview, setPhotoPreview] = useState(null);
   const [idProof, setIdProof] = useState(null);
   const [resume, setResume] = useState(null);
+  const [originalResume, setOriginalResume] = useState(null);
+
+  // AI Resume Conversion & Confirmation state
+  const [isAiConverting, setIsAiConverting] = useState(false);
+  const [isRegenerating, setIsRegenerating] = useState(false);
+  const [isConfirming, setIsConfirming] = useState(false);
+  const [aiConversionData, setAiConversionData] = useState(null);
+  const [isAiConfirmed, setIsAiConfirmed] = useState(false);
+  const [showAiPreviewModal, setShowAiPreviewModal] = useState(false);
+  const [autoConvertOnSelect, setAutoConvertOnSelect] = useState(false);
 
   const [candidateName, setCandidateName] = useState(initialCandidate?.name || '');
   const [recruiterNotes, setRecruiterNotes] = useState(initialCandidate?.notes || '');
@@ -51,14 +63,167 @@ export default function DossierUploadWorkspace({ initialCandidate, onBack }) {
     setErrorMessage(null);
   };
 
-  const handleResumeFile = (file) => {
+  const handleResumeFile = async (file, shouldAutoConvert = false) => {
     if (!file) return;
     if (file.size > 10 * 1024 * 1024) {
       setErrorMessage('Resume exceeds maximum allowed size of 10 MB.');
       return;
     }
     setResume(file);
+    setOriginalResume(file);
+    setIsAiConfirmed(false);
+    setAiConversionData(null);
     setErrorMessage(null);
+
+    if (shouldAutoConvert || autoConvertOnSelect) {
+      setAutoConvertOnSelect(false);
+      await triggerAiConversion(file);
+    }
+  };
+
+  const triggerAiConversion = async (fileToConvert) => {
+    const targetFile = fileToConvert || resume || originalResume;
+    if (!targetFile) {
+      setAutoConvertOnSelect(true);
+      resumeInputRef.current?.click();
+      return;
+    }
+
+    setIsAiConverting(true);
+    setErrorMessage(null);
+
+    const formData = new FormData();
+    formData.append('file', targetFile);
+
+    try {
+      // 1. Upload to resume converter endpoint
+      const uploadRes = await fetch(`${API_BASE}/api/resume/upload`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!uploadRes.ok) {
+        const errData = await uploadRes.json().catch(() => ({}));
+        throw new Error(errData?.detail?.message || errData?.message || 'Failed to upload resume for AI conversion.');
+      }
+
+      const uploadData = await uploadRes.json();
+
+      // 2. Convert resume into standard LaTeX template format
+      const convertRes = await fetch(`${API_BASE}/api/resume/convert`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ upload_id: uploadData.upload_id }),
+      });
+
+      if (!convertRes.ok) {
+        const errData = await convertRes.json().catch(() => ({}));
+        throw new Error(errData?.detail?.message || errData?.message || 'Failed to convert resume format.');
+      }
+
+      const convertData = await convertRes.json();
+
+      // 3. Fetch full preview details
+      const previewRes = await fetch(`${API_BASE}/api/resume/preview/${convertData.task_id}`);
+      const previewData = previewRes.ok ? await previewRes.json() : convertData;
+
+      const combinedData = {
+        ...convertData,
+        ...previewData,
+        upload_id: uploadData.upload_id,
+      };
+
+      setAiConversionData(combinedData);
+
+      if (!candidateName.trim() && (combinedData.candidate_name || previewData.candidate_name)) {
+        setCandidateName(combinedData.candidate_name || previewData.candidate_name);
+      }
+
+      // Display preview modal for confirmation
+      setShowAiPreviewModal(true);
+    } catch (err) {
+      console.error('AI conversion failed:', err);
+      setErrorMessage(`AI Resume Conversion failed: ${err.message}`);
+    } finally {
+      setIsAiConverting(false);
+    }
+  };
+
+  const handleRegenerateAiConversion = async () => {
+    if (!aiConversionData?.upload_id) {
+      return triggerAiConversion(originalResume || resume);
+    }
+
+    setIsRegenerating(true);
+    setErrorMessage(null);
+
+    try {
+      const convertRes = await fetch(`${API_BASE}/api/resume/convert`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ upload_id: aiConversionData.upload_id }),
+      });
+
+      if (!convertRes.ok) {
+        const errData = await convertRes.json().catch(() => ({}));
+        throw new Error(errData?.detail?.message || errData?.message || 'Failed to regenerate resume format.');
+      }
+
+      const convertData = await convertRes.json();
+      const previewRes = await fetch(`${API_BASE}/api/resume/preview/${convertData.task_id}`);
+      const previewData = previewRes.ok ? await previewRes.json() : convertData;
+
+      setAiConversionData((prev) => ({
+        ...prev,
+        ...convertData,
+        ...previewData,
+      }));
+    } catch (err) {
+      console.error('Regeneration failed:', err);
+      setErrorMessage(`Regeneration failed: ${err.message}`);
+    } finally {
+      setIsRegenerating(false);
+    }
+  };
+
+  const handleConfirmAiConversion = async () => {
+    if (!aiConversionData?.task_id) return;
+
+    setIsConfirming(true);
+    try {
+      const docxRes = await fetch(`${API_BASE}/api/resume/download/${aiConversionData.task_id}/docx`);
+      if (!docxRes.ok) {
+        throw new Error('Failed to download converted DOCX.');
+      }
+
+      const blob = await docxRes.blob();
+      const candName = aiConversionData.candidate_name || candidateName || 'Candidate';
+      const safeName = candName.replace(/[^\w\s-]/g, '').trim().replace(/\s+/g, '_') || 'Candidate';
+      const docxFileName = `${safeName}_Resume.docx`;
+
+      const convertedFile = new File([blob], docxFileName, {
+        type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        lastModified: Date.now(),
+      });
+
+      setResume(convertedFile);
+      setIsAiConfirmed(true);
+      setShowAiPreviewModal(false);
+    } catch (err) {
+      console.error('Failed to confirm converted resume:', err);
+      setErrorMessage(`Failed to apply converted resume: ${err.message}`);
+    } finally {
+      setIsConfirming(false);
+    }
+  };
+
+  const handleCancelAiConversion = () => {
+    // If not confirmed, ignore AI conversion completely
+    setShowAiPreviewModal(false);
+    if (originalResume) {
+      setResume(originalResume);
+    }
+    setIsAiConfirmed(false);
   };
 
   const formatFileSize = (bytes) => {
@@ -406,23 +571,88 @@ export default function DossierUploadWorkspace({ initialCandidate, onBack }) {
                       </div>
                       <div className="uploaded-file-details">
                         <div className="uploaded-file-name" title={resume.name}>{resume.name}</div>
-                        <div className="uploaded-file-size" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <div className="uploaded-file-size" style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
                           <span>{formatFileSize(resume.size)}</span>
-                          {resume.name.toLowerCase().endsWith('.pdf') && (
-                            <span style={{
-                              background: '#EEF2FF',
-                              color: '#4338CA',
-                              fontSize: '0.68rem',
-                              fontWeight: 700,
-                              padding: '1px 6px',
-                              borderRadius: '4px',
-                            }}>
-                              Auto-converting to DOCX
+                          {isAiConfirmed ? (
+                            <span className="badge-ai-confirmed">
+                              <IconCheck size={11} color="#15803D" />
+                              <span>AI Converted</span>
                             </span>
+                          ) : (
+                            resume.name.toLowerCase().endsWith('.pdf') && (
+                              <span style={{
+                                background: '#EEF2FF',
+                                color: '#4338CA',
+                                fontSize: '0.68rem',
+                                fontWeight: 700,
+                                padding: '1px 6px',
+                                borderRadius: '4px',
+                              }}>
+                                Auto-converting to DOCX
+                              </span>
+                            )
                           )}
                         </div>
                       </div>
                     </div>
+
+                    {/* AI Conversion Status / Action Button */}
+                    {isAiConfirmed ? (
+                      <div className="slot-ai-confirmed-banner">
+                        <div className="confirmed-status-text">
+                          <IconCheck size={14} color="#10B981" />
+                          <span>Converted to LaTeX Template</span>
+                        </div>
+                        <div className="confirmed-actions-row">
+                          <button
+                            type="button"
+                            className="btn-slot-action-sm btn-preview-confirmed"
+                            onClick={() => setShowAiPreviewModal(true)}
+                          >
+                            <IconEye size={12} />
+                            <span>Preview</span>
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-slot-action-sm btn-regenerate-confirmed"
+                            onClick={handleRegenerateAiConversion}
+                            disabled={isRegenerating}
+                          >
+                            <span>Regenerate</span>
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-slot-action-sm btn-revert-confirmed"
+                            onClick={handleCancelAiConversion}
+                            title="Discard AI conversion and revert to original resume"
+                          >
+                            <span>Cancel AI</span>
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="slot-ai-convert-cta">
+                        <button
+                          type="button"
+                          className="btn-card-ai-convert"
+                          onClick={() => triggerAiConversion(resume)}
+                          disabled={isAiConverting}
+                        >
+                          {isAiConverting ? (
+                            <>
+                              <span className="spinner-light-sm"></span>
+                              <span>Converting with AI...</span>
+                            </>
+                          ) : (
+                            <>
+                              <IconSparkles size={14} color="#FFFFFF" />
+                              <span>AI Converted Resume</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    )}
+
                     <div className="uploaded-actions-row">
                       <button
                         type="button"
@@ -434,34 +664,63 @@ export default function DossierUploadWorkspace({ initialCandidate, onBack }) {
                       <button
                         type="button"
                         className="btn-slot-action btn-slot-remove"
-                        onClick={() => setResume(null)}
+                        onClick={() => {
+                          setResume(null);
+                          setOriginalResume(null);
+                          setIsAiConfirmed(false);
+                          setAiConversionData(null);
+                        }}
                       >
                         Remove
                       </button>
                     </div>
                   </div>
                 ) : (
-                  <div
-                    className={`slot-dropzone ${dragSlot === 'resume' ? 'drag-active' : ''}`}
-                    onClick={() => resumeInputRef.current?.click()}
-                    onDragOver={(e) => { e.preventDefault(); setDragSlot('resume'); }}
-                    onDragLeave={() => setDragSlot(null)}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      setDragSlot(null);
-                      if (e.dataTransfer.files?.[0]) handleResumeFile(e.dataTransfer.files[0]);
-                    }}
-                  >
-                    <div className="dropzone-icon">
-                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                        <polyline points="17 8 12 3 7 8" />
-                        <line x1="12" y1="3" x2="12" y2="15" />
-                      </svg>
+                  <div className="slot-resume-actions">
+                    <button
+                      type="button"
+                      className="btn-ai-convert-slot-trigger"
+                      onClick={() => {
+                        setAutoConvertOnSelect(true);
+                        resumeInputRef.current?.click();
+                      }}
+                      disabled={isAiConverting}
+                    >
+                      {isAiConverting ? (
+                        <>
+                          <span className="spinner-light-sm" style={{ borderColor: '#4F46E5', borderTopColor: 'transparent' }}></span>
+                          <span>Converting with AI...</span>
+                        </>
+                      ) : (
+                        <>
+                          <IconSparkles size={14} color="#6366F1" />
+                          <span>AI Converted Resume</span>
+                        </>
+                      )}
+                    </button>
+
+                    <div
+                      className={`slot-dropzone ${dragSlot === 'resume' ? 'drag-active' : ''}`}
+                      onClick={() => resumeInputRef.current?.click()}
+                      onDragOver={(e) => { e.preventDefault(); setDragSlot('resume'); }}
+                      onDragLeave={() => setDragSlot(null)}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        setDragSlot(null);
+                        if (e.dataTransfer.files?.[0]) handleResumeFile(e.dataTransfer.files[0]);
+                      }}
+                    >
+                      <div className="dropzone-icon">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                          <polyline points="17 8 12 3 7 8" />
+                          <line x1="12" y1="3" x2="12" y2="15" />
+                        </svg>
+                      </div>
+                      <span className="dropzone-text">
+                        {dragSlot === 'resume' ? 'Drop resume here' : 'Drag & drop or click to upload'}
+                      </span>
                     </div>
-                    <span className="dropzone-text">
-                      {dragSlot === 'resume' ? 'Drop resume here' : 'Drag & drop or click to upload'}
-                    </span>
                   </div>
                 )}
               </div>
@@ -605,6 +864,17 @@ export default function DossierUploadWorkspace({ initialCandidate, onBack }) {
           </>
         )}
       </div>
+
+      {/* AI Converted Resume Preview & Confirmation Modal */}
+      <ConvertedResumePreviewModal
+        isOpen={showAiPreviewModal}
+        conversionData={aiConversionData}
+        isRegenerating={isRegenerating}
+        isConfirming={isConfirming}
+        onConfirm={handleConfirmAiConversion}
+        onRegenerate={handleRegenerateAiConversion}
+        onCancel={handleCancelAiConversion}
+      />
     </div>
   );
 }

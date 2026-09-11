@@ -999,19 +999,174 @@ body {
   border: 1px solid rgba(203, 213, 225, 0.8);
   border-radius: 10px;
   padding: 12px 14px;
-  font-family: var(--font-sans);
+  font-family: inherit;
   font-size: 0.88rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  tab-size: 4;
   color: #1E293B;
   background: rgba(255, 255, 255, 0.85);
   backdrop-filter: blur(10px);
   outline: none;
   resize: vertical;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
 }
 
 .form-textarea:focus {
   border-color: var(--primary-purple);
   background: #FFFFFF;
   box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15);
+}
+
+.form-textarea.prompt-drag-active {
+  border-color: #6366F1 !important;
+  background: #EEF2FF !important;
+  box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.25) !important;
+}
+
+/* Prompt Header & Document Upload Controls */
+.prompt-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.prompt-header-row .form-label {
+  margin-bottom: 0;
+}
+
+.prompt-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-upload-req-doc {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: linear-gradient(135deg, #EEF2FF 0%, #E0E7FF 100%);
+  border: 1.5px solid #C7D2FE;
+  border-radius: 6px;
+  color: #4F46E5;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 1px 3px rgba(79, 70, 229, 0.08);
+}
+
+.btn-upload-req-doc:hover:not(:disabled) {
+  background: linear-gradient(135deg, #4F46E5 0%, #6366F1 100%);
+  color: #FFFFFF;
+  border-color: #4F46E5;
+  transform: translateY(-1px);
+  box-shadow: 0 3px 8px rgba(79, 70, 229, 0.25);
+}
+
+.btn-upload-req-doc:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.btn-clear-prompt {
+  background: transparent;
+  border: none;
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: #64748B;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: all 0.15s ease;
+}
+
+.btn-clear-prompt:hover {
+  background: #F1F5F9;
+  color: #EF4444;
+}
+
+.doc-requirement-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: linear-gradient(135deg, #F0FDF4 0%, #DCFCE7 100%);
+  border: 1px solid #86EFAC;
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  animation: fadeIn 0.25s ease-in-out;
+}
+
+.doc-info-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.doc-meta-text {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.doc-name {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #166534;
+}
+
+.doc-sub {
+  font-size: 0.74rem;
+  color: #15803D;
+}
+
+.btn-remove-doc {
+  background: #FFFFFF;
+  border: 1px solid #FECACA;
+  color: #DC2626;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.btn-remove-doc:hover {
+  background: #FEF2F2;
+  border-color: #F87171;
+}
+
+.prompt-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 6px;
+  font-size: 0.74rem;
+  color: #64748B;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.prompt-meta-hint {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: #64748B;
+}
+
+.prompt-meta-counts {
+  font-weight: 600;
+  color: #475569;
 }
 
 .btn-primary-action {
@@ -2519,4 +2674,463 @@ body {
   border-radius: var(--radius-md);
   font-size: 0.8rem;
   color: #B91C1C;
+}
+
+/* ==============================================================================
+   AI CONVERTED RESUME BUTTON & PREVIEW MODAL STYLES (Dossier Compiler)
+   ============================================================================== */
+
+/* Trigger button on Resume slot (Empty State) */
+.slot-resume-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  margin-top: 8px;
+}
+
+.btn-ai-convert-slot-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 12px;
+  background: linear-gradient(135deg, #EEF2FF 0%, #E0E7FF 100%);
+  border: 1.5px solid #C7D2FE;
+  color: #4F46E5;
+  font-size: 0.78rem;
+  font-weight: 700;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 6px rgba(79, 70, 229, 0.08);
+}
+
+.btn-ai-convert-slot-trigger:hover {
+  background: linear-gradient(135deg, #4F46E5 0%, #6366F1 100%);
+  color: #FFFFFF;
+  border-color: #4F46E5;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(79, 70, 229, 0.25);
+}
+
+.btn-ai-convert-slot-trigger:hover svg {
+  stroke: #FFFFFF;
+}
+
+/* Prominent AI Convert button inside uploaded box */
+.slot-ai-convert-cta {
+  margin-top: 2px;
+  padding-top: 6px;
+  border-top: 1px dashed #E2E8F0;
+}
+
+.btn-card-ai-convert {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%);
+  color: #FFFFFF;
+  border: none;
+  border-radius: var(--radius-md);
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 3px 10px rgba(99, 102, 241, 0.25);
+}
+
+.btn-card-ai-convert:hover:not(:disabled) {
+  transform: translateY(-1.5px);
+  box-shadow: 0 6px 16px rgba(99, 102, 241, 0.35);
+  filter: brightness(1.06);
+}
+
+.btn-card-ai-convert:disabled {
+  opacity: 0.75;
+  cursor: not-allowed;
+}
+
+/* Confirmed AI Resume State Banner */
+.badge-ai-confirmed {
+  background: #DCFCE7;
+  color: #15803D;
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 4px;
+  border: 1px solid #BBF7D0;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.slot-ai-confirmed-banner {
+  background: linear-gradient(135deg, #F0FDF4 0%, #DCFCE7 100%);
+  border: 1px solid #86EFAC;
+  border-radius: var(--radius-md);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.confirmed-status-text {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: #166534;
+}
+
+.confirmed-actions-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.btn-slot-action-sm {
+  background: #FFFFFF;
+  border: 1px solid #CBD5E1;
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #334155;
+  transition: all 0.15s ease;
+}
+
+.btn-slot-action-sm:hover {
+  background: #F8FAFC;
+  border-color: #94A3B8;
+  color: #0F172A;
+}
+
+.btn-preview-confirmed {
+  color: #4F46E5;
+  border-color: #C7D2FE;
+}
+
+.btn-preview-confirmed:hover {
+  background: #EEF2FF;
+  border-color: #818CF8;
+}
+
+.btn-regenerate-confirmed {
+  color: #0284C7;
+  border-color: #BAE6FD;
+}
+
+.btn-regenerate-confirmed:hover {
+  background: #F0F9FF;
+  border-color: #7DD3FC;
+}
+
+.btn-revert-confirmed {
+  color: #DC2626;
+  border-color: #FECACA;
+}
+
+.btn-revert-confirmed:hover {
+  background: #FEF2F2;
+  border-color: #FCA5A5;
+}
+
+/* Modal Dialog Sizing & Enhancements */
+.resume-preview-dialog {
+  max-width: 860px;
+  max-height: 90vh;
+}
+
+.modal-icon-badge {
+  width: 32px;
+  height: 32px;
+  background: #EEF2FF;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.modal-heading {
+  font-size: 1.1rem;
+  font-weight: 800;
+  color: #0F172A;
+  margin: 0;
+}
+
+.modal-subheading {
+  font-size: 0.78rem;
+  color: #64748B;
+  margin: 2px 0 0 0;
+}
+
+.modal-subheading code {
+  background: #F1F5F9;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 0.75rem;
+  color: #4F46E5;
+}
+
+/* Footer of Preview Modal */
+.converter-modal-footer {
+  padding: 14px 22px;
+  background: #F8FAFC;
+  border-top: 1px solid #E2E8F0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.modal-footer-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.footer-hint {
+  font-size: 0.75rem;
+  color: #64748B;
+  font-style: italic;
+}
+
+.modal-footer-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.btn-modal-cancel {
+  background: #FFFFFF;
+  border: 1px solid #CBD5E1;
+  color: #475569;
+  padding: 8px 18px;
+  border-radius: var(--radius-md);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-modal-cancel:hover:not(:disabled) {
+  background: #F1F5F9;
+  border-color: #94A3B8;
+  color: #1E293B;
+}
+
+.btn-modal-regenerate {
+  background: #FFFFFF;
+  border: 1.5px solid #6366F1;
+  color: #4F46E5;
+  padding: 8px 18px;
+  border-radius: var(--radius-md);
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.2s ease;
+}
+
+.btn-modal-regenerate:hover:not(:disabled) {
+  background: #EEF2FF;
+  border-color: #4F46E5;
+  transform: translateY(-1px);
+}
+
+.btn-modal-confirm {
+  background: linear-gradient(135deg, #10B981 0%, #059669 100%);
+  border: none;
+  color: #FFFFFF;
+  padding: 8px 22px;
+  border-radius: var(--radius-md);
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.2s ease;
+  box-shadow: 0 3px 10px rgba(16, 185, 129, 0.25);
+}
+
+.btn-modal-confirm:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 5px 14px rgba(16, 185, 129, 0.35);
+  filter: brightness(1.05);
+}
+
+.spinner-light-sm {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #FFFFFF;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  display: inline-block;
+}
+
+/* Exact LaTeX Paper Simulation */
+.latex-paper-exact {
+  font-family: 'Times New Roman', Times, Georgia, serif !important;
+  color: #1A1A1A;
+  background: #FFFFFF;
+  padding: 34px 38px;
+  line-height: 1.35;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
+}
+
+.latex-sim-name {
+  text-align: center;
+  font-size: 1.55rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  margin: 0 0 6px 0;
+  color: #000000;
+}
+
+.latex-sim-contact {
+  text-align: center;
+  font-size: 0.82rem;
+  color: #333333;
+  margin-bottom: 16px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+}
+
+.latex-sim-sep {
+  color: #94A3B8;
+  font-weight: 300;
+}
+
+.latex-sim-section {
+  margin-top: 14px;
+}
+
+.latex-sim-sec-title {
+  font-size: 0.95rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: #000000;
+  margin-bottom: 3px;
+}
+
+.latex-sim-hrule {
+  height: 1.2px;
+  background: #000000;
+  width: 100%;
+  margin-bottom: 8px;
+}
+
+.latex-sim-objective-text {
+  font-size: 0.88rem;
+  color: #222222;
+  margin: 0;
+  text-align: justify;
+}
+
+.latex-sim-entry {
+  margin-bottom: 10px;
+}
+
+.latex-sim-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 0.88rem;
+}
+
+.latex-sim-primary {
+  font-weight: 700;
+  color: #000000;
+}
+
+.latex-sim-date {
+  font-size: 0.85rem;
+  color: #333333;
+  white-space: nowrap;
+}
+
+.latex-sim-subrow {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 0.85rem;
+  color: #444444;
+}
+
+.latex-sim-secondary {
+  font-style: italic;
+}
+
+.latex-sim-location {
+  font-style: italic;
+  font-size: 0.82rem;
+  color: #555555;
+}
+
+.latex-sim-bullets {
+  margin: 4px 0 0 18px;
+  padding: 0;
+  font-size: 0.85rem;
+  color: #222222;
+}
+
+.latex-sim-bullets li {
+  margin-bottom: 2.5px;
+}
+
+.latex-sim-skills-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 20px;
+  font-size: 0.85rem;
+}
+
+@media (max-width: 640px) {
+  .latex-sim-skills-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.latex-sim-skill-row {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+
+.latex-sim-skill-label {
+  font-weight: 700;
+  color: #000000;
+  white-space: nowrap;
+}
+
+.latex-sim-skill-val {
+  color: #222222;
+}
+
+.latex-sim-proj-desc {
+  font-size: 0.85rem;
+  color: #333333;
+  margin: 2px 0 4px 0;
+}
+
+.latex-sim-link {
+  font-size: 0.8rem;
+  color: #2563EB;
 }
