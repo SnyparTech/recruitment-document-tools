@@ -54,6 +54,14 @@
       cursor: pointer;
     }
     button:hover { background: #3b82f6; }
+    .btn-secondary {
+      background: #334155;
+      margin-top: 6px;
+      font-weight: 500;
+      font-size: 12px;
+    }
+    .btn-secondary:hover { background: #475569; }
+    .note { margin-top: 8px; font-size: 11px; color: #64748b; text-align: center; }
   </style>
 </head>
 <body>
@@ -64,6 +72,8 @@
   </div>
   <p>Connected directly to your Naukri Launcher session. Auto-fills mandatory skills with stars ⭐, checkboxes, and active period.</p>
   <button id="fill-btn">⚡ Auto-Fill Resdex Form Now</button>
+  <button id="force-btn" class="btn-secondary">🔄 Force Re-fill (Clear Cache)</button>
+  <div class="note">Auto-fill has a 90s cooldown. Use Force Re-fill to bypass.</div>
   <script src="popup.js"></script>
 </body>
 </html>

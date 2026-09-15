@@ -15,6 +15,9 @@ const BACKEND_URLS = [
 ];
 let lastProcessedTimestamp = 0;
 let isFilling = false;
+let lastFillCompletedAt = 0;
+const FILL_COOLDOWN_MS = 90_000; // 90s minimum between auto-triggered fills
+const FILL_CACHE_KEY = "snypar_last_fill_ts"; // sessionStorage key
 
 // Naukri Resdex URL patterns  (ground truth from selectors.py)
 // Form page:    https://resdex.naukri.com/v3?activeTab=advSrch
@@ -884,35 +887,50 @@ async function fillResdexForm(plan) {
     updateWidgetStatus("Clicking Search Candidates...", "busy");
     // Remove premature submit blocker before final submission
     window.removeEventListener("submit", blockSubmit, true);
-    await sleep(500);
+    await sleep(600);
 
     let searchClicked = false;
 
-    // Try known selectors first
-    const submitBtn = document.querySelector(
-      "button#searchButton, button[data-testid='search-btn'], a.searchProfiles, button.searchProfiles, button.search-btn, input[value*='Search Candidates'], input[value*='Search']"
-    );
-    if (submitBtn && submitBtn.offsetParent !== null) {
-      submitBtn.scrollIntoView({ behavior: "smooth", block: "center" });
-      await sleep(400);
-      submitBtn.click();
-      searchClicked = true;
+    // Strategy A: Precise Naukri class-based selectors (never match text inputs)
+    const preciseSelectors = [
+      "button#searchButton",
+      "button[data-testid='search-btn']",
+      "button[data-testid='searchButton']",
+      "a.searchProfiles",
+      "button.searchProfiles",
+      "button.search-btn",
+      "button[class*='searchBtn']",
+      "button[class*='search-btn']",
+      "button[class*='SearchBtn']",
+      "button[class*='srchBtn']",
+      "a[class*='searchProfiles']",
+    ];
+    for (const sel of preciseSelectors) {
+      const btn = document.querySelector(sel);
+      if (btn && btn.offsetParent !== null) {
+        btn.scrollIntoView({ behavior: "smooth", block: "center" });
+        await sleep(400);
+        btn.click();
+        searchClicked = true;
+        console.log(`[Snypar Bot] ✓ Search clicked via precise selector: ${sel}`);
+        break;
+      }
     }
 
+    // Strategy B: Text-content match — ONLY real <button> elements, not inputs
     if (!searchClicked) {
-      // Fallback: find any button whose text contains "search candidate"
-      const allBtns = Array.from(
-        document.querySelectorAll("button, input[type='button'], input[type='submit'], a.btn")
-      );
-      const searchBtn = allBtns.find((b) =>
-        b.textContent.toLowerCase().includes("search candidate") ||
-        b.value?.toLowerCase().includes("search candidate")
-      );
-      if (searchBtn && searchBtn.offsetParent !== null) {
+      const allBtns = Array.from(document.querySelectorAll("button, a[role='button']"));
+      const searchBtn = allBtns.find((b) => {
+        const txt = b.textContent.trim().toLowerCase();
+        return (txt === "search candidates" || txt === "search" && b.type === "submit") &&
+               b.offsetParent !== null;
+      });
+      if (searchBtn) {
         searchBtn.scrollIntoView({ behavior: "smooth", block: "center" });
         await sleep(400);
         searchBtn.click();
         searchClicked = true;
+        console.log(`[Snypar Bot] ✓ Search clicked via text match: "${searchBtn.textContent.trim()}"`);
       }
     }
 
@@ -922,6 +940,9 @@ async function fillResdexForm(plan) {
     } else {
       updateWidgetStatus("✓ All Fields Filled!", "online");
       showToast("✓ All criteria completed — manually click 'Search Candidates' if needed.");
+      console.warn("[Snypar Bot] Search button not found. Buttons on page:",
+        Array.from(document.querySelectorAll("button")).map(b => `[${b.className}] "${b.textContent.trim().substring(0,40)}"`).join(", ")
+      );
     }
   } catch (err) {
     console.error("[Snypar Bot] Auto-fill error:", err);
@@ -930,6 +951,7 @@ async function fillResdexForm(plan) {
   } finally {
     window.removeEventListener("submit", blockSubmit, true);
     isFilling = false;
+    lastFillCompletedAt = Date.now();
   }
 }
 
@@ -999,6 +1021,15 @@ async function ensureOnFormPage() {
 }
 
 async function fetchAndFill(forced = false) {
+  // ── Guard: if already filling, skip ────────────────────────────────────────
+  if (isFilling) return;
+
+  // ── Guard: on results page, just show stable status (don't auto-navigate) ──
+  if (isOnResultsPage()) {
+    updateWidgetStatus("✓ Search Results Active", "online");
+    return;
+  }
+
   let fetchedData = null;
   for (const url of BACKEND_URLS) {
     try {
@@ -1017,28 +1048,45 @@ async function fetchAndFill(forced = false) {
 
   try {
     if (fetchedData.has_plan && fetchedData.plan) {
-      if (forced || fetchedData.timestamp > lastProcessedTimestamp) {
-        // Check if we're on the form page before trying to fill
-        if (isOnResultsPage()) {
-          // We're on results — navigate to form and stop here.
-          // The script will reinitialise on the form page and pick up the plan.
-          await ensureOnFormPage();
-          return;
-        }
+      const planTs = String(fetchedData.timestamp);
 
-        // We're on the form page — wait for the form DOM to be ready
-        updateWidgetStatus("Waiting for form...", "busy");
-        const formReady = await waitForFormReady(15000);
-        if (!formReady) {
-          updateWidgetStatus("⚠ Form not found", "offline");
-          showToast("⚠ Could not find Resdex search form. Please navigate to the Resdex search page.");
-          return;
-        }
-
-        lastProcessedTimestamp = fetchedData.timestamp;
-        showToast("⚡ Snypar Bot: Auto-filling candidate search criteria...");
-        await fillResdexForm(fetchedData.plan);
+      // ── Guard: same plan already applied (sessionStorage cache) ────────────
+      const cachedTs = sessionStorage.getItem(FILL_CACHE_KEY);
+      if (!forced && cachedTs === planTs) {
+        updateWidgetStatus("✓ Plan Already Applied", "online");
+        return;
       }
+
+      // ── Guard: cooldown — don't re-trigger within 90s of last fill ──────────
+      const msSinceFill = Date.now() - lastFillCompletedAt;
+      if (!forced && lastFillCompletedAt > 0 && msSinceFill < FILL_COOLDOWN_MS) {
+        const secLeft = Math.ceil((FILL_COOLDOWN_MS - msSinceFill) / 1000);
+        updateWidgetStatus(`⏳ Cooldown (${secLeft}s)`, "busy");
+        return;
+      }
+
+      // ── Guard: only proceed on genuinely new plan (or forced) ───────────────
+      if (!forced && fetchedData.timestamp <= lastProcessedTimestamp) {
+        updateWidgetStatus("✓ Plan Already Applied", "online");
+        return;
+      }
+
+      // We're on the form page — wait for form DOM to be ready
+      updateWidgetStatus("Waiting for form...", "busy");
+      const formReady = await waitForFormReady(15000);
+      if (!formReady) {
+        updateWidgetStatus("⚠ Form not found", "offline");
+        showToast("⚠ Could not find Resdex search form. Please navigate to the Resdex search page.");
+        return;
+      }
+
+      lastProcessedTimestamp = fetchedData.timestamp;
+      showToast("⚡ Snypar Bot: Auto-filling candidate search criteria...");
+      await fillResdexForm(fetchedData.plan);
+
+      // ── Cache the applied plan timestamp so re-navigating doesn't re-fill ───
+      sessionStorage.setItem(FILL_CACHE_KEY, planTs);
+
     } else {
       updateWidgetStatus("⚡ Snypar Bot Active", "online");
     }
@@ -1053,6 +1101,14 @@ if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage)
     if (req.action === "TRIGGER_FILL") {
       fetchAndFill(true);
       sendResponse({ status: "filling" });
+    } else if (req.action === "FORCE_FILL") {
+      // Clear cache and cooldown, then force a fresh fill
+      sessionStorage.removeItem(FILL_CACHE_KEY);
+      lastFillCompletedAt = 0;
+      lastProcessedTimestamp = 0;
+      console.log("[Snypar Bot] Force Re-fill triggered — cache cleared.");
+      fetchAndFill(true);
+      sendResponse({ status: "force-filling" });
     }
   });
 }

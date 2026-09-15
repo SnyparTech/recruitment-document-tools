@@ -38,4 +38,14 @@ document.getElementById("fill-btn").addEventListener("click", async () => {
   });
 });
 
+document.getElementById("force-btn").addEventListener("click", async () => {
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (tabs[0]) {
+      chrome.tabs.sendMessage(tabs[0].id, { action: "FORCE_FILL" }, (res) => {
+        window.close();
+      });
+    }
+  });
+});
+
 checkStatus();
