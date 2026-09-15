@@ -9,6 +9,7 @@
  */
 
 const BACKEND_URLS = [
+  "https://recruitment-document-tools.onrender.com/search/active-plan",
   "http://127.0.0.1:8001/search/active-plan",
   "http://localhost:8001/search/active-plan",
 ];
