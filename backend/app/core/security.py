@@ -86,6 +86,10 @@ class LocalhostGuardMiddleware(BaseHTTPMiddleware):
     """
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        # Allow CORS preflight requests to pass through so CORSMiddleware can handle them
+        if request.method == "OPTIONS":
+            return await call_next(request)
+
         host_header = request.headers.get("host", "").lower().strip()
 
         if host_header:

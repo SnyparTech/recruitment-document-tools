@@ -76,11 +76,14 @@ app.add_middleware(
 )
 
 # Layer 5: Universal Web CORS (outermost — last added = runs first on request)
+# Uses ALLOWED_ORIGINS from settings (supports both localhost dev and Vercel prod)
+_cors_origins = settings.ALLOWED_ORIGINS or ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
+    allow_origins=_cors_origins,
+    allow_origin_regex=r"https://.*\.vercel\.app",
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
     expose_headers=[
         "X-RateLimit-Limit",
