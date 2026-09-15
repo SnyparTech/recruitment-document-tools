@@ -517,7 +517,7 @@ Rules:
             verified_email=None,
             attached_resume=None,
             active_in=None,
-            confidence=None,
+            confidence=1.0,
             uncertain_fields=[],
         )
 
