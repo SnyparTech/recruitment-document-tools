@@ -60,22 +60,7 @@ app = FastAPI(
 # ------------------------------------------------------------------------------
 # 3. Security Middlewares (Ordered Defense-in-Depth Pipeline)
 # ------------------------------------------------------------------------------
-# Layer 1: OWASP Security Headers (CSP, X-Frame-Options, X-Content-Type-Options)
-if settings.ENABLE_SECURITY_HEADERS:
-    app.add_middleware(SecurityHeadersMiddleware)
-
-# Layer 2: Strict Localhost-Only Guard (Blocks DNS Rebinding & Public IP exposure)
-app.add_middleware(LocalhostGuardMiddleware)
-
-# Layer 3: Payload Size Defense (Prevents large file DOS)
-app.add_middleware(PayloadLimitMiddleware, max_bytes=settings.MAX_PAYLOAD_SIZE_BYTES)
-
-# Layer 4: Token-Bucket Rate Limiter (Prevents rapid brute-force & API flooding)
-app.add_middleware(
-    RateLimitMiddleware, requests_per_minute=settings.RATE_LIMIT_PER_MINUTE
-)
-
-# Layer 5: Universal Web CORS (Vercel, Netlify, Render, ngrok, Localhost)
+# Layer 1: Universal Web CORS (outermost — must wrap all other middleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
@@ -88,6 +73,21 @@ app.add_middleware(
         "X-RateLimit-Remaining",
         "X-RateLimit-Reset",
     ],
+)
+
+# Layer 2: OWASP Security Headers (CSP, X-Frame-Options, X-Content-Type-Options)
+if settings.ENABLE_SECURITY_HEADERS:
+    app.add_middleware(SecurityHeadersMiddleware)
+
+# Layer 3: Strict Localhost-Only Guard (Blocks DNS Rebinding & Public IP exposure)
+app.add_middleware(LocalhostGuardMiddleware)
+
+# Layer 4: Payload Size Defense (Prevents large file DOS)
+app.add_middleware(PayloadLimitMiddleware, max_bytes=settings.MAX_PAYLOAD_SIZE_BYTES)
+
+# Layer 5: Token-Bucket Rate Limiter (Prevents rapid brute-force & API flooding)
+app.add_middleware(
+    RateLimitMiddleware, requests_per_minute=settings.RATE_LIMIT_PER_MINUTE
 )
 
 
