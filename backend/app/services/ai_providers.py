@@ -5,7 +5,6 @@ Provides:
 - ResumeAIProvider: Abstract Base Class for LLM structuring engines.
 - GroqResumeAIProvider: Default implementation using Groq API ('qwen/qwen3.6-27b' or fallback)
   with strict zero-information-loss deterministic transformation prompt.
-- NvidiaNimResumeAIProvider: Implementation for NVIDIA NIM OpenAI-compatible endpoints.
 - DeterministicFallbackParser: 100% offline parser that extracts and structures resume data
   if API keys are unconfigured or remote services are unavailable, ensuring zero downtime.
 """
@@ -230,52 +229,6 @@ class GroqResumeAIProvider(ResumeAIProvider):
                 except Exception:
                     pass
         return None
-
-
-class NvidiaNimResumeAIProvider(ResumeAIProvider):
-    """NVIDIA NIM OpenAI-compatible API implementation."""
-
-    def __init__(
-        self,
-        api_key: Optional[str] = None,
-        base_url: str = "https://integrate.api.nvidia.com/v1/chat/completions",
-        model: str = "meta/llama-3.1-70b-instruct",
-    ):
-        self.api_key = api_key
-        self.base_url = base_url
-        self.model = model
-
-    async def structure_resume(
-        self, canonical_content: Dict[str, Any], sanitized_text: str
-    ) -> Dict[str, Any]:
-        if not self.api_key:
-            return DeterministicFallbackParser.parse(canonical_content, sanitized_text)
-
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-        user_prompt = (
-            f"Here is the complete extracted resume content:\n\n{sanitized_text}\n\n{JSON_STRUCTURE_GUIDE}"
-        )
-        payload = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": STRICT_RESUME_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            "temperature": 0.0,
-            "response_format": {"type": "json_object"},
-        }
-        async with httpx.AsyncClient(timeout=90.0) as client:
-            res = await client.post(self.base_url, headers=headers, json=payload)
-            if res.status_code == 200:
-                content = res.json()["choices"][0]["message"]["content"]
-                parsed = GroqResumeAIProvider._clean_and_parse_json(content)
-                if parsed:
-                    return parsed
-
-        return DeterministicFallbackParser.parse(canonical_content, sanitized_text)
 
 
 class DeterministicFallbackParser:

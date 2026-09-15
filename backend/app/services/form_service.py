@@ -1,5 +1,4 @@
 import logging
-from app.core.exceptions import RequirementParsingError
 from app.portals.naukri_resdex import NaukriResdexPortal
 from app.schemas.requirement import (
     CandidateSearchRequest,
@@ -38,7 +37,7 @@ class FormService:
             request.requirement
         )
 
-        # Apply request overrides and ensure required defaults
+        # Apply request overrides
         if request.active_in:
             plan.active_in = request.active_in
         if request.verified_mobile is not None:
@@ -47,10 +46,6 @@ class FormService:
             plan.verified_email = request.verified_email
         if request.attached_resume is not None:
             plan.attached_resume = request.attached_resume
-
-        # Ensure mandatory skills setting is active
-        if plan.keywords and plan.keywords.required:
-            plan.keywords.mandatory = True
 
         execution_result = ExecutionResult(
             requested=request.execute,

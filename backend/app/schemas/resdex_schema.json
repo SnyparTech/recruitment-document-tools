@@ -270,34 +270,34 @@
           "label": "Show",
           "type": "select",
           "options": ["All candidates", "Modified candidates"],
-          "default": "All candidates"
+          "default": null
         },
         "verified_mobile": {
           "id": "verified_mobile",
           "label": "Verified mobile number",
           "type": "checkbox",
-          "default": true,
-          "description": "Show only candidates with verified mobile number (automatically checked)"
+          "default": null,
+          "description": "Show only candidates with verified mobile number"
         },
         "verified_email": {
           "id": "verified_email",
           "label": "Verified email ID",
           "type": "checkbox",
-          "default": true,
-          "description": "Show only candidates with verified email ID (automatically checked)"
+          "default": null,
+          "description": "Show only candidates with verified email ID"
         },
         "attached_resume": {
           "id": "attached_resume",
           "label": "Attached resume",
           "type": "checkbox",
-          "default": true,
-          "description": "Show only candidates with attached resume (automatically checked)"
+          "default": null,
+          "description": "Show only candidates with attached resume"
         }
       }
     },
     "search_active_period": {
       "title": "Search Active Period",
-      "description": "Active in status (dynamically cycles through: 15 days -> 30 days -> 2 months -> 3 months -> 6 months)",
+      "description": "Active in status",
       "fields": {
         "active_in": {
           "id": "active_in",
@@ -312,7 +312,7 @@
             "3 months",
             "6 months"
           ],
-          "default": "15 days",
+          "default": null,
           "active_in_tiers": [
             "15 days",
             "30 days",
@@ -320,7 +320,7 @@
             "3 months",
             "6 months"
           ],
-          "description": "Active in status dynamically changes on Next Top Candidates (default: 15 days)"
+          "description": "Active in status"
         }
       }
     }

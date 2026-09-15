@@ -7,7 +7,6 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 from app.core.config import settings
 from app.schemas.search_plan import (
-    AgeRangePlan,
     KeywordsPlan,
     SalaryPlan,
     SearchPlan,
@@ -228,22 +227,22 @@ Read the job description and return ONLY a JSON object with these exact fields:
 
 {
   "keywords": {"required": ["skill1", "skill2"], "preferred": ["skill3"], "excluded": [], "mandatory": true, "search_scope": "Entire resume"},
-  "min_experience": 5,
-  "max_experience": 10,
-  "current_location": ["City"],
-  "include_relocation": false,
+  "min_experience": null,
+  "max_experience": null,
+  "current_location": null,
+  "include_relocation": null,
   "salary": {"currency": "INR", "min": null, "max": null},
-  "department_role": ["Role Name"],
-  "designation": ["Job Title"],
-  "notice_period": ["0-15 days", "1 month"],
+  "department_role": null,
+  "designation": null,
+  "notice_period": null,
   "gender": null,
   "job_type": null,
   "employment_type": null,
-  "candidate_display": "All candidates",
-  "verified_mobile": true,
-  "verified_email": true,
-  "attached_resume": true,
-  "active_in": "15 days",
+  "candidate_display": null,
+  "verified_mobile": null,
+  "verified_email": null,
+  "attached_resume": null,
+  "active_in": null,
   "confidence": 0.95,
   "uncertain_fields": []
 }
@@ -252,8 +251,8 @@ Rules:
 - keywords.required = must-have technical skills and tools explicitly stated in the JD
 - keywords.preferred = nice-to-have or secondary skills mentioned in the JD
 - notice_period must be a flat list of strings like ["0-15 days"], never a dict
-- Experience: infer from role level if not stated (Lead=6-12, Senior=4-8, Mid=2-5, Junior=0-2)
-- Always set verified_mobile=true, verified_email=true, attached_resume=true, active_in="15 days"
+- Experience: ONLY extract if explicitly stated in the text (e.g. "5 to 10 years"). NEVER invent or guess experience numbers if not mentioned in the JD.
+- NEVER assume or inject hardcoded values for active_in, verified_mobile, verified_email, attached_resume, or location. If not explicitly requested in the requirement, set them to null.
 - Return ONLY raw JSON. No markdown, no explanation."""
 
         headers = {
@@ -513,12 +512,12 @@ Rules:
             defence_background=defence_bg,
             job_type=job_type,
             employment_type=emp_type,
-            candidate_display="All candidates",
-            verified_mobile=True,
-            verified_email=True,
-            attached_resume=True,
-            active_in="15 days",
-            confidence=0.95,
+            candidate_display=None,
+            verified_mobile=None,
+            verified_email=None,
+            attached_resume=None,
+            active_in=None,
+            confidence=None,
             uncertain_fields=[],
         )
 
@@ -645,16 +644,6 @@ Rules:
             val = float(single_match.group(1))
             return val, None
 
-        # HR Recruiter Seniority Inference (when explicit experience numbers are omitted)
-        if re.search(r"\b(?:lead|principal|architect|director|head|vp)\b", lower):
-            return 6.0, 12.0
-        if re.search(r"\b(?:senior|sr\.?|specialist|expert)\b", lower):
-            return 4.0, 8.0
-        if re.search(r"\b(?:mid[- ]level|associate|consultant)\b", lower):
-            return 2.0, 5.0
-        if re.search(r"\b(?:junior|jr\.?|trainee|entry[- ]level)\b", lower):
-            return 0.0, 2.0
-
         return None, None
 
     def _extract_locations_rule(
@@ -771,18 +760,8 @@ Rules:
                     normalized_np.append(NOTICE_PERIOD_MAP[np.lower()])
             plan.notice_period = list(dict.fromkeys(normalized_np)) or None
 
-        # Ensure default search periods and additional details
-        if not plan.active_in:
-            plan.active_in = "15 days"
-        if not plan.candidate_display:
-            plan.candidate_display = "All candidates"
-        if plan.verified_mobile is None:
-            plan.verified_mobile = True
-        if plan.verified_email is None:
-            plan.verified_email = True
-        if plan.attached_resume is None:
-            plan.attached_resume = True
-        if plan.keywords and plan.keywords.required:
+        # Only set mandatory flag if required keywords are present and not explicitly set
+        if plan.keywords and plan.keywords.required and plan.keywords.mandatory is None:
             plan.keywords.mandatory = True
 
         return plan

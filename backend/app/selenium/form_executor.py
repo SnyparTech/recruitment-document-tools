@@ -125,6 +125,12 @@ class ResdexFormExecutor:
             if el.tag_name.lower() == "select":
                 select_obj = Select(el)
                 select_obj.select_by_visible_text(value)
+                # Dispatch events for React state sync
+                self.driver.execute_script("""
+                    var sel = arguments[0];
+                    sel.dispatchEvent(new Event('change', { bubbles: true }));
+                    sel.dispatchEvent(new Event('input', { bubbles: true }));
+                """, el)
                 logger.info(f"Selected option '{value}' in dropdown '{selector}'")
             else:
                 el.click()
@@ -170,17 +176,18 @@ class ResdexFormExecutor:
                         if clicked:
                             break
 
-                    # If no suggestion clicked, try XPath text match
+                    # If no suggestion clicked, try token-based and case-insensitive text match
                     if not clicked:
                         try:
-                            xpath = f"//*[contains(@class, 'sug') or contains(@class, 'option')][contains(text(), '{val}')]"
-                            xuggs = self.driver.find_elements(By.XPATH, xpath)
-                            for s in xuggs:
+                            tokens = [t.lower() for t in val.replace('/', ' ').replace('-', ' ').split() if len(t) >= 2]
+                            for s in self.driver.find_elements(By.CSS_SELECTOR, "div.sug-item, li.sug-item, div[class*='sug'], li[class*='sug'], div[class*='tuple'], div[class*='option'], li[class*='option']"):
                                 if s.is_displayed():
-                                    s.click()
-                                    clicked = True
-                                    time.sleep(0.3)
-                                    break
+                                    stext = s.text.strip().lower()
+                                    if stext == val.strip().lower() or any(tok in stext for tok in tokens):
+                                        s.click()
+                                        clicked = True
+                                        time.sleep(0.3)
+                                        break
                         except Exception:
                             pass
 
@@ -207,25 +214,6 @@ class ResdexFormExecutor:
             else:
                 success = False
         return success
-
-    def select_search_option(
-        self, input_selector: str, option_selector: str, value: str
-    ) -> bool:
-        """Types value into a search-select input and clicks the resulting suggestion."""
-        if not value:
-            return False
-        try:
-            self.fill_text(input_selector, value)
-            time.sleep(0.5)
-            opt_el = self.wait.until(
-                EC.element_to_be_clickable((By.CSS_SELECTOR, option_selector))
-            )
-            opt_el.click()
-            logger.info(f"Selected search suggestion for '{value}'")
-            return True
-        except Exception as exc:
-            logger.warning(f"Failed to select search option for '{value}': {exc}")
-            return False
 
     def fill_range(
         self,
@@ -282,14 +270,6 @@ class ResdexFormExecutor:
                     logger.warning(f"JS fallback for max value failed: {e}")
         return res_min and res_max
 
-    def apply_boolean_filter(
-        self, selector: str, value: bool, by: By = By.CSS_SELECTOR
-    ) -> bool:
-        """Applies a boolean filter/toggle."""
-        if value is None:
-            return False
-        return self.fill_checkbox(selector, value, by=by)
-
     def submit_form(self, button_selector: str, by: By = By.CSS_SELECTOR) -> bool:
         """Clicks the search submission button."""
         try:
@@ -326,19 +306,6 @@ class ResdexFormExecutor:
                 if n.is_displayed():
                     n.click()
                     break
-        except Exception:
-            pass
-
-    def dispatch_input_events(self, selector: str, by: By = By.CSS_SELECTOR):
-        """Dispatches input and change events on an element to update React/Angular state."""
-        try:
-            el = self.driver.find_element(by, selector)
-            self.driver.execute_script("""
-                var el = arguments[0];
-                el.dispatchEvent(new Event('input', { bubbles: true }));
-                el.dispatchEvent(new Event('change', { bubbles: true }));
-                el.dispatchEvent(new Event('blur', { bubbles: true }));
-            """, el)
         except Exception:
             pass
 
@@ -458,11 +425,13 @@ class ResdexFormExecutor:
             if not kw_clean:
                 continue
             try:
-                # Clear input first using JS to ensure clean state
+                # Clear input first using native value setter for React state sync
                 self.driver.execute_script("""
                     var input = arguments[0];
-                    input.value = '';
+                    var nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                    nativeInputValueSetter.call(input, '');
                     input.dispatchEvent(new Event('input', { bubbles: true }));
+                    input.dispatchEvent(new Event('change', { bubbles: true }));
                 """, input_el)
                 time.sleep(0.1)
 
@@ -578,24 +547,33 @@ class ResdexFormExecutor:
             except Exception:
                 pass
 
-    def tick_show_only_candidates_options(self) -> List[str]:
+    def tick_show_only_candidates_options(
+        self,
+        verified_mobile: bool = False,
+        verified_email: bool = False,
+        attached_resume: bool = False,
+    ) -> List[str]:
         """
-        In the Additional Details section, ticks all three options under 'Show only candidates with':
-        1. Verified Mobile Number
-        2. Verified Email ID
-        3. Attached Resume
+        In the Additional Details section, ticks only requested options under 'Show only candidates with':
+        - Verified Mobile Number
+        - Verified Email ID
+        - Attached Resume
         Returns list of successfully ticked option names.
         """
+        options = []
+        if verified_mobile:
+            options.append(("verified_mobile", "Verified Mobile Number"))
+        if verified_email:
+            options.append(("verified_email", "Verified Email ID"))
+        if attached_resume:
+            options.append(("attached_resume", "Attached Resume"))
+
+        if not options:
+            return []
+
         ticked = []
         self._ensure_additional_section_expanded()
         time.sleep(0.3)
-
-        # Use JavaScript to find and click the pill elements directly
-        options = [
-            ("verified_mobile", "Verified Mobile Number"),
-            ("verified_email", "Verified Email ID"),
-            ("attached_resume", "Attached Resume"),
-        ]
 
         for key, name in options:
             success = False
@@ -783,6 +761,27 @@ class ResdexFormExecutor:
             pass
         return False
 
+    def _check_pill_active(self, search_text: str) -> bool:
+        """Check if a pill/chip with given text has active/selected/checked class."""
+        try:
+            return self.driver.execute_script("""
+                var searchText = arguments[0];
+                var allElements = document.querySelectorAll('span, div, button, label, a');
+                for (var i = 0; i < allElements.length; i++) {
+                    var el = allElements[i];
+                    var text = (el.textContent || '').toLowerCase().trim();
+                    if (text.indexOf(searchText) !== -1 && el.offsetParent !== null) {
+                        var cls = el.className || '';
+                        if (cls.indexOf('active') !== -1 || cls.indexOf('selected') !== -1 || cls.indexOf('checked') !== -1) {
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            """, search_text)
+        except Exception:
+            return False
+
     def verify_form_filled(self, fields_interacted: List[str], plan: dict) -> dict:
         """
         Verifies that all fields from the plan were actually filled in the form.
@@ -837,80 +836,14 @@ class ResdexFormExecutor:
             else:
                 missing.append("notice_period")
 
-        # Check verified_mobile
-        if plan.get("verified_mobile"):
-            try:
-                result = self.driver.execute_script("""
-                    var searchText = 'verified mobile';
-                    var allElements = document.querySelectorAll('span, div, button, label, a');
-                    for (var i = 0; i < allElements.length; i++) {
-                        var el = allElements[i];
-                        var text = (el.textContent || '').toLowerCase().trim();
-                        if (text.indexOf(searchText) !== -1 && el.offsetParent !== null) {
-                            var cls = el.className || '';
-                            if (cls.indexOf('active') !== -1 || cls.indexOf('selected') !== -1 || cls.indexOf('checked') !== -1) {
-                                return true;
-                            }
-                        }
-                    }
-                    return false;
-                """)
-                if result:
-                    filled.append("verified_mobile")
+        # Check pill-based fields (verified_mobile, verified_email, attached_resume)
+        pill_checks = [("verified_mobile", "verified mobile"), ("verified_email", "verified email"), ("attached_resume", "attached resume")]
+        for field, search_text in pill_checks:
+            if plan.get(field):
+                if self._check_pill_active(search_text):
+                    filled.append(field)
                 else:
-                    missing.append("verified_mobile")
-            except Exception:
-                missing.append("verified_mobile")
-
-        # Check verified_email
-        if plan.get("verified_email"):
-            try:
-                result = self.driver.execute_script("""
-                    var searchText = 'verified email';
-                    var allElements = document.querySelectorAll('span, div, button, label, a');
-                    for (var i = 0; i < allElements.length; i++) {
-                        var el = allElements[i];
-                        var text = (el.textContent || '').toLowerCase().trim();
-                        if (text.indexOf(searchText) !== -1 && el.offsetParent !== null) {
-                            var cls = el.className || '';
-                            if (cls.indexOf('active') !== -1 || cls.indexOf('selected') !== -1 || cls.indexOf('checked') !== -1) {
-                                return true;
-                            }
-                        }
-                    }
-                    return false;
-                """)
-                if result:
-                    filled.append("verified_email")
-                else:
-                    missing.append("verified_email")
-            except Exception:
-                missing.append("verified_email")
-
-        # Check attached_resume
-        if plan.get("attached_resume"):
-            try:
-                result = self.driver.execute_script("""
-                    var searchText = 'attached resume';
-                    var allElements = document.querySelectorAll('span, div, button, label, a');
-                    for (var i = 0; i < allElements.length; i++) {
-                        var el = allElements[i];
-                        var text = (el.textContent || '').toLowerCase().trim();
-                        if (text.indexOf(searchText) !== -1 && el.offsetParent !== null) {
-                            var cls = el.className || '';
-                            if (cls.indexOf('active') !== -1 || cls.indexOf('selected') !== -1 || cls.indexOf('checked') !== -1) {
-                                return true;
-                            }
-                        }
-                    }
-                    return false;
-                """)
-                if result:
-                    filled.append("attached_resume")
-                else:
-                    missing.append("attached_resume")
-            except Exception:
-                missing.append("attached_resume")
+                    missing.append(field)
 
         # Check active_in
         if plan.get("active_in"):

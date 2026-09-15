@@ -264,10 +264,6 @@ export default function SearchAgentView() {
       requirement: prompt.trim(),
       execute: executeMode !== 'dry_run',
       submit_search: executeMode === 'submit',
-      active_in: '15 days',
-      verified_mobile: true,
-      verified_email: true,
-      attached_resume: true,
     };
 
     try {

@@ -302,14 +302,19 @@ class NaukriResdexPortal:
                     fields_filled.append("candidate_display")
                     print(f"  [+] Display: {plan.candidate_display}", flush=True)
 
-            # "Show only candidates with" pills
-            ticked_opts = executor.tick_show_only_candidates_options()
-            if ticked_opts:
-                for opt in ticked_opts:
-                    fields_filled.append(f"show_only.{opt.lower().replace(' ', '_')}")
-                print(f"  [+] Show only with: {ticked_opts}", flush=True)
+            # "Show only candidates with" pills - ONLY if explicitly specified in search plan
+            if plan.verified_mobile or plan.verified_email or plan.attached_resume:
+                ticked_opts = executor.tick_show_only_candidates_options(
+                    verified_mobile=bool(plan.verified_mobile),
+                    verified_email=bool(plan.verified_email),
+                    attached_resume=bool(plan.attached_resume),
+                )
+                if ticked_opts:
+                    for opt in ticked_opts:
+                        fields_filled.append(f"show_only.{opt.lower().replace(' ', '_')}")
+                    print(f"  [+] Show only with: {ticked_opts}", flush=True)
 
-            # Active In
+            # Active In - ONLY if explicitly specified in search plan
             if plan.active_in:
                 active_ok = executor.select_active_in(plan.active_in)
                 if active_ok:

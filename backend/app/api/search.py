@@ -109,20 +109,6 @@ async def execute_search_plan(
 
     plan = request.plan
 
-    # Ensure defaults
-    if not plan.active_in:
-        plan.active_in = "15 days"
-    if not plan.candidate_display:
-        plan.candidate_display = "All candidates"
-    if plan.verified_mobile is None:
-        plan.verified_mobile = True
-    if plan.verified_email is None:
-        plan.verified_email = True
-    if plan.attached_resume is None:
-        plan.attached_resume = True
-    if plan.keywords and plan.keywords.required:
-        plan.keywords.mandatory = True
-
     execution_result = ExecutionResult(
         requested=request.execute,
         executed=False,

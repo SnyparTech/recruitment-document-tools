@@ -19,7 +19,6 @@ let isFilling = false;
 // Form page:    https://resdex.naukri.com/v3?activeTab=advSrch
 // Results page: https://resdex.naukri.com/v3/search?sid=...
 const RESDEX_FORM_URL = "https://resdex.naukri.com/v3?activeTab=advSrch";
-const RESDEX_BASE_URL = "https://resdex.naukri.com";
 
 function isOnResultsPage() {
   const href = window.location.href;
@@ -85,23 +84,35 @@ function setNativeValue(el, value) {
 // ─── Shared suggestion selectors (autocomplete + AI suggested keywords) ────────
 // Covers Naukri's regular autocomplete items AND the "✨ AI suggested keywords" chips.
 const SUGGESTION_SELECTORS = [
-  // Regular autocomplete items
-  "div.sug-item", "li.sug-item",
+  // Standard and React suggestor items
+  "div.sug-item", "li.sug-item", "span.sug-item",
+  "div.sug-text", "span.sug-text",
+  "div.tuple", "div.tuple-wrap", "span.tuple-wrap",
   "li.suggestion-item", "div.suggestion-item",
-  "div.keyword-sug", "ul.suggestor-list li",
+  "div.keyword-sug", "li.keyword-sug",
+  "ul.suggestor-list li", "div.suggestor-list div",
   "li[role='option']", "div[role='option']",
-  "div[class*='dropdown'] li",
-  // AI suggested keywords panel chips (various class-name patterns Naukri may use)
-  "div[class*='aiKeyword']", "span[class*='aiKeyword']",
-  "div[class*='ai-keyword']", "span[class*='ai-keyword']",
-  "div[class*='suggestedKeyword'] span", "div[class*='suggestedKeyword'] button",
-  "div[class*='suggested-keyword'] span", "div[class*='suggested-keyword'] button",
-  "div[class*='keywordSuggest'] span", "div[class*='keyword-suggest'] span",
-  "div[class*='aiSuggest'] span",  "div[class*='ai-suggest'] span",
+  "div[class*='dropdown'] div", "div[class*='dropdown'] li", "div[class*='dropdown'] span",
+  "div[class*='suggestor'] li", "div[class*='suggestor'] div", "div[class*='suggestor'] span",
+  "div[class*='sugItem']", "li[class*='sugItem']", "span[class*='sugItem']",
+  "div[class*='sug-container'] *",
+  "div[class*='option']", "li[class*='option']",
+  "div.location-item", "li.location-item",
+  "[role='listbox'] [role='option']", "[role='listbox'] li", "[role='listbox'] div",
+  "div[class*='dropdown-menu'] *",
+  "div[class*='menu'] li", "div[class*='menu'] div",
+  // AI suggested keywords panel chips
+  "div[class*='aiKeyword']", "span[class*='aiKeyword']", "button[class*='aiKeyword']",
+  "div[class*='ai-keyword']", "span[class*='ai-keyword']", "button[class*='ai-keyword']",
+  "div[class*='suggestedKeyword'] span", "div[class*='suggestedKeyword'] button", "div[class*='suggestedKeyword']",
+  "div[class*='suggested-keyword'] span", "div[class*='suggested-keyword'] button", "div[class*='suggested-keyword']",
+  "div[class*='keywordSuggest'] span", "div[class*='keywordSuggest'] button",
+  "div[class*='aiSuggest'] span", "div[class*='aiSuggest'] button",
+  "div[class*='recommend'] span", "div[class*='recommend'] button",
 ].join(", ");
 
 // Poll until any visible suggestion appears (up to maxMs)
-async function waitForDropdown(maxMs = 2000) {
+async function waitForDropdown(maxMs = 1500) {
   const step = 150;
   let elapsed = 0;
   while (elapsed < maxMs) {
@@ -114,147 +125,307 @@ async function waitForDropdown(maxMs = 2000) {
 }
 
 // Click the best-matching visible suggestion for targetText.
-// Priority: exact match → starts-with (5 chars) → any word match → first visible.
-// NEVER fires Enter — Enter submits the Naukri search form.
-function clickBestSuggestion(targetText) {
+// Scored matching: exact match (100) → normalized match (95) → prefix match (80) → word token overlap (40-70).
+// Never clicks arbitrary unrelated suggestions.
+function clickBestSuggestion(targetText, activeInput = null) {
+  if (!targetText) return false;
   const target = targetText.toLowerCase().trim();
-  const words  = target.split(' ').filter(w => w.length > 2);
-  const all    = Array.from(document.querySelectorAll(SUGGESTION_SELECTORS))
-                      .filter(s => s.offsetParent !== null && s.textContent.trim().length > 0);
+  const targetNorm = target.replace(/[^a-z0-9]/g, '');
+  const tokens = target.split(/[\s\/\-_,]+/).filter(w => w.length >= 2);
 
-  const match =
-    all.find(s => s.textContent.trim().toLowerCase() === target)                                          ||
-    all.find(s => s.textContent.trim().toLowerCase().startsWith(target.substring(0, Math.min(5, target.length)))) ||
-    all.find(s => words.some(w => s.textContent.toLowerCase().includes(w)))                               ||
-    all[0]; // fallback: first visible suggestion
+  const all = Array.from(document.querySelectorAll(SUGGESTION_SELECTORS))
+    .filter(s => s.offsetParent !== null && s.textContent.trim().length > 0);
 
-  if (match) { match.click(); return true; }
+  if (all.length === 0) return false;
+
+  let bestScore = -1;
+  let bestItem = null;
+
+  for (const item of all) {
+    const text = item.textContent.trim().toLowerCase();
+    const textNorm = text.replace(/[^a-z0-9]/g, '');
+    let score = 0;
+
+    if (text === target) {
+      score = 100;
+    } else if (textNorm === targetNorm && targetNorm.length > 0) {
+      score = 95;
+    } else if (text.startsWith(target) || (targetNorm.length >= 3 && textNorm.startsWith(targetNorm))) {
+      score = 80;
+    } else if (text.includes(target) || (targetNorm.length >= 3 && textNorm.includes(targetNorm))) {
+      score = 70;
+    } else if (tokens.length > 0) {
+      const matchTokens = tokens.filter(t => text.includes(t) || textNorm.includes(t));
+      if (matchTokens.length > 0) {
+        score = 40 + (matchTokens.length / tokens.length) * 30;
+      }
+    }
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestItem = item;
+    }
+  }
+
+  // Only click if it's a solid match (score >= 40)
+  if (bestItem && bestScore >= 40) {
+    console.log(`[Snypar Bot] Selected suggestion: "${bestItem.textContent.trim()}" (score: ${Math.round(bestScore)}) for "${targetText}"`);
+    bestItem.click();
+    return true;
+  }
   return false;
 }
 
 // Generic: type into any autocomplete field and select from dropdown (location, designation, role)
+// If no dropdown option matches, confirms custom input via Enter and blur so it is preserved.
 async function typeAndSelectFromDropdown(input, text, fieldLabel = '') {
+  if (!text || !text.trim()) return false;
+  const cleanText = text.trim();
   input.focus();
   await sleep(150);
 
-  // Clear via execCommand
+  // Clear via execCommand + nativeSetter
   input.select();
   document.execCommand('selectAll');
   document.execCommand('delete');
+  if (input.value) {
+    setNativeValue(input, '');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }
   await sleep(100);
 
-  // Insert via execCommand (trusted InputEvent → triggers autocomplete)
-  const inserted = document.execCommand('insertText', false, text);
-  if (!inserted) {
-    setNativeValue(input, '');
-    for (const char of text) {
-      const cc = char.charCodeAt(0);
-      input.dispatchEvent(new KeyboardEvent('keydown', { key: char, keyCode: cc, which: cc, bubbles: true, cancelable: true }));
-      setNativeValue(input, input.value + char);
-      input.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: char, bubbles: true, cancelable: true }));
-      input.dispatchEvent(new KeyboardEvent('keyup', { key: char, keyCode: cc, which: cc, bubbles: true }));
-      await sleep(50);
-    }
+  // Insert text
+  const inserted = document.execCommand('insertText', false, cleanText);
+  if (!inserted || input.value !== cleanText) {
+    setNativeValue(input, cleanText);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
   // Wait for dropdown
-  const appeared = await waitForDropdown(2000);
-  console.log(`[Snypar Bot] ${fieldLabel} dropdown ${appeared ? '✓' : '✗'} for "${text}"`);
+  const appeared = await waitForDropdown(1500);
+  console.log(`[Snypar Bot] ${fieldLabel} dropdown ${appeared ? '✓' : '✗'} for "${cleanText}"`);
 
   // Click the best matching suggestion
-  if (clickBestSuggestion(text, 0)) {
+  let selected = false;
+  if (clickBestSuggestion(cleanText, input)) {
     await sleep(400);
-    console.log(`[Snypar Bot] ✓ "${text}" selected (${fieldLabel})`);
-  } else {
-    console.warn(`[Snypar Bot] ✗ No suggestion clicked for "${text}" (${fieldLabel})`);
+    selected = true;
+    console.log(`[Snypar Bot] ✓ "${cleanText}" selected (${fieldLabel})`);
   }
 
+  // If no suggestion matched or was clicked, confirm custom value via Enter and blur
+  if (!selected) {
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+    input.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+    input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+    await sleep(200);
+
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    input.dispatchEvent(new Event('blur', { bubbles: true }));
+    console.log(`[Snypar Bot] ✓ Confirmed "${cleanText}" as custom ${fieldLabel}`);
+  }
+
+  // Dismiss dropdown if still open
+  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
   await sleep(200);
   return true;
 }
 
-// KEY FIX: Use document.execCommand('insertText') for isTrusted=true events.
-// NEVER use Enter in keyword field — it submits the form, not creates a chip.
+// Helper to locate the keyword section container for scoped chip counting
+function getKeywordContainer(kwInput) {
+  return kwInput.closest(
+    ".keyword-container, .chip-container, .input-container, .tags-input, .suggestor-wrapper, div[class*='keyword'], div[class*='chip'], div[class*='tag']"
+  ) || kwInput.parentElement?.parentElement || kwInput.parentElement || document;
+}
+
+function countKeywordChipsInContainer(container) {
+  const chips = container.querySelectorAll(
+    "div[class*='chip'], span[class*='chip'], div[class*='tag'], span[class*='tag'], li[class*='chip'], li[class*='tag'], div[class*='pill'], span[class*='pill']"
+  );
+  return chips.length;
+}
+
+function hasKeywordChip(keyword) {
+  if (!keyword) return false;
+  const norm = keyword.toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (!norm) return false;
+  const candidates = document.querySelectorAll(
+    "div[class*='chip'], span[class*='chip'], div[class*='tag'], span[class*='tag'], li[class*='chip'], li[class*='tag'], div[class*='pill'], span[class*='pill'], [class*='tuple']"
+  );
+  for (const c of candidates) {
+    const textNorm = c.textContent.toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (textNorm.includes(norm)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Type keyword and confirm it through suggestions, Enter, Tab, comma, or blur.
+// CRITICAL: NEVER delete or wipe unlisted keywords like "FastAPI"!
 async function typeAndConfirmKeyword(kwInput, keyword) {
+  if (!keyword || !keyword.trim()) return;
+  const cleanKw = keyword.trim();
   kwInput.focus();
   await sleep(150);
 
-  // Clear field via execCommand
+  // Clear field
   kwInput.select();
   document.execCommand('selectAll');
   document.execCommand('delete');
+  if (kwInput.value) {
+    setNativeValue(kwInput, '');
+    kwInput.dispatchEvent(new Event('input', { bubbles: true }));
+  }
   await sleep(100);
 
-  // Insert text (trusted InputEvent → triggers React autocomplete)
-  const inserted = document.execCommand('insertText', false, keyword);
-  if (!inserted) {
-    setNativeValue(kwInput, '');
-    for (const char of keyword) {
-      const cc = char.charCodeAt(0);
-      kwInput.dispatchEvent(new KeyboardEvent('keydown', { key: char, keyCode: cc, which: cc, bubbles: true, cancelable: true }));
-      setNativeValue(kwInput, kwInput.value + char);
-      kwInput.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: char, bubbles: true, cancelable: true }));
-      kwInput.dispatchEvent(new KeyboardEvent('keyup', { key: char, keyCode: cc, which: cc, bubbles: true }));
-      await sleep(60);
-    }
+  // Insert text
+  const inserted = document.execCommand('insertText', false, cleanKw);
+  if (!inserted || kwInput.value !== cleanKw) {
+    setNativeValue(kwInput, cleanKw);
+    kwInput.dispatchEvent(new Event('input', { bubbles: true }));
+    kwInput.dispatchEvent(new Event('change', { bubbles: true }));
   }
+  await sleep(300);
 
-  // Wait for suggestions (autocomplete or AI suggested keywords panel)
-  const appeared = await waitForDropdown(2000);
-  console.log(`[Snypar Bot] Suggestion panel ${appeared ? '✓' : '✗'} for "${keyword}"`);
+  // Wait for dropdown
+  await waitForDropdown(1000);
 
-  const chipsBefore = countKeywordChips();
+  const container = getKeywordContainer(kwInput);
+  const chipsBefore = countKeywordChipsInContainer(container);
   let confirmed = false;
 
-  // Strategy 1: Click best-matching suggestion (NO Enter — submits form!)
-  if (clickBestSuggestion(keyword, chipsBefore)) {
-    await sleep(500);
-    if (countKeywordChips() > chipsBefore) {
+  // Strategy 1: Click best matching suggestion if available
+  if (clickBestSuggestion(cleanKw, kwInput)) {
+    await sleep(400);
+    if (hasKeywordChip(cleanKw) || countKeywordChipsInContainer(container) > chipsBefore || kwInput.value === '') {
       confirmed = true;
-      console.log(`[Snypar Bot] ✓ "${keyword}" added via suggestion click`);
+      console.log(`[Snypar Bot] ✓ "${cleanKw}" added via suggestion click`);
     }
   }
 
-  // Strategy 2: Comma via execCommand (trusted, doesn't submit)
+  // Strategy 2: Press Enter to convert into chip (standard tag input)
+  if (!confirmed) {
+    kwInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+    kwInput.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+    kwInput.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+    await sleep(350);
+
+    if (hasKeywordChip(cleanKw) || countKeywordChipsInContainer(container) > chipsBefore || kwInput.value === '') {
+      confirmed = true;
+      console.log(`[Snypar Bot] ✓ "${cleanKw}" added via Enter key`);
+    }
+  }
+
+  // Strategy 3: Try Tab key
+  if (!confirmed) {
+    kwInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', code: 'Tab', keyCode: 9, which: 9, bubbles: true, cancelable: true }));
+    kwInput.dispatchEvent(new KeyboardEvent('keyup', { key: 'Tab', code: 'Tab', keyCode: 9, which: 9, bubbles: true, cancelable: true }));
+    await sleep(300);
+
+    if (hasKeywordChip(cleanKw) || countKeywordChipsInContainer(container) > chipsBefore || kwInput.value === '') {
+      confirmed = true;
+      console.log(`[Snypar Bot] ✓ "${cleanKw}" added via Tab key`);
+    }
+  }
+
+  // Strategy 4: Try Comma
   if (!confirmed) {
     document.execCommand('insertText', false, ',');
-    await sleep(500);
-    if (countKeywordChips() > chipsBefore) {
+    kwInput.dispatchEvent(new KeyboardEvent('keydown', { key: ',', code: 'Comma', keyCode: 188, which: 188, bubbles: true, cancelable: true }));
+    kwInput.dispatchEvent(new KeyboardEvent('keyup', { key: ',', code: 'Comma', keyCode: 188, which: 188, bubbles: true, cancelable: true }));
+    await sleep(300);
+
+    if (hasKeywordChip(cleanKw) || countKeywordChipsInContainer(container) > chipsBefore || kwInput.value === '') {
       confirmed = true;
-      console.log(`[Snypar Bot] ✓ "${keyword}" added via comma`);
+      console.log(`[Snypar Bot] ✓ "${cleanKw}" added via comma`);
     }
   }
 
-  if (!confirmed) {
-    console.warn(`[Snypar Bot] ✗ "${keyword}" not confirmed (chips: ${chipsBefore}→${countKeywordChips()})`);
-  }
+  // Verification & final blur commit
+  if (confirmed || hasKeywordChip(cleanKw) || kwInput.value === '') {
+    // Successfully converted into chip or accepted
+    console.log(`[Snypar Bot] ✓ Keyword "${cleanKw}" successfully confirmed`);
+  } else {
+    // If still in input field, trigger change & blur to commit
+    kwInput.dispatchEvent(new Event('change', { bubbles: true }));
+    kwInput.dispatchEvent(new Event('blur', { bubbles: true }));
+    await sleep(200);
 
-  // Clear for next keyword
-  kwInput.focus();
-  kwInput.select();
-  document.execCommand('selectAll');
-  document.execCommand('delete');
-  await sleep(200);
+    if (hasKeywordChip(cleanKw) || kwInput.value === '') {
+      console.log(`[Snypar Bot] ✓ Keyword "${cleanKw}" confirmed via blur`);
+    } else {
+      // Clear input only so the NEXT keyword has a fresh input
+      console.warn(`[Snypar Bot] ⚠ Keyword "${cleanKw}" could not be chipped; clearing input for next entry.`);
+      kwInput.focus();
+      kwInput.select();
+      document.execCommand('selectAll');
+      document.execCommand('delete');
+    }
+  }
+  await sleep(150);
 }
 
+// ─── AI Suggested Keywords Selection ─────────────────────────────────────────
+
+async function selectRelevantAISuggestedKeywords(requiredKws, preferredKws, mandatorySet) {
+  const allTargets = [...(requiredKws || []), ...(preferredKws || [])].map(k => k.toLowerCase().trim());
+  if (allTargets.length === 0) return;
+
+  const aiChipSelectors = [
+    "div[class*='aiKeyword']", "span[class*='aiKeyword']", "button[class*='aiKeyword']",
+    "div[class*='ai-keyword']", "span[class*='ai-keyword']", "button[class*='ai-keyword']",
+    "div[class*='suggestedKeyword'] span", "div[class*='suggestedKeyword'] button", "div[class*='suggestedKeyword']",
+    "div[class*='suggested-keyword'] span", "div[class*='suggested-keyword'] button", "div[class*='suggested-keyword']",
+    "div[class*='keywordSuggest'] span", "div[class*='keywordSuggest'] button",
+    "div[class*='aiSuggest'] span", "div[class*='aiSuggest'] button",
+    "div[class*='recommend'] span", "div[class*='recommend'] button",
+  ];
+
+  const chips = Array.from(document.querySelectorAll(aiChipSelectors.join(", ")))
+    .filter(el => el.offsetParent !== null && el.textContent.trim().length > 0);
+
+  for (const chip of chips) {
+    const raw = chip.textContent.replace(/^[+\s]+/, "").trim().toLowerCase();
+    const rawNorm = raw.replace(/[^a-z0-9]/g, "");
+    if (!rawNorm) continue;
+
+    const match = allTargets.find(t => {
+      const tNorm = t.replace(/[^a-z0-9]/g, "");
+      return tNorm === rawNorm || rawNorm.includes(tNorm) || tNorm.includes(rawNorm);
+    });
+
+    if (match && !hasKeywordChip(raw)) {
+      console.log(`[Snypar Bot] Clicking AI Suggested Keyword: "${chip.textContent.trim()}"`);
+      chip.click();
+      await sleep(350);
+      if (mandatorySet && mandatorySet.has(match)) {
+        await clickKeywordStar(raw);
+      }
+    }
+  }
+}
 
 // ─── Click Mandatory Star on a Keyword Chip ──────────────────────────────────
 
-
 async function clickKeywordStar(skillName) {
+  if (!skillName) return false;
   const clean = skillName.toLowerCase().trim();
+  const cleanNorm = clean.replace(/[^a-z0-9]/g, '');
   const chips = document.querySelectorAll(
-    "div[class*='chip'], span[class*='chip'], div[class*='tag'], span[class*='tag'], li[class*='chip'], li[class*='tag']"
+    "div[class*='chip'], span[class*='chip'], div[class*='tag'], span[class*='tag'], li[class*='chip'], li[class*='tag'], div[class*='pill'], span[class*='pill'], [class*='tuple']"
   );
   for (const chip of chips) {
-    if (chip.textContent.toLowerCase().includes(clean)) {
+    const chipNorm = chip.textContent.toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (chipNorm.includes(cleanNorm)) {
       const star = chip.querySelector(
-        "[class*='star'], [class*='Star'], [title*='Mandatory'], [title*='mandatory'], svg, button"
+        "[class*='star'], [class*='Star'], [title*='Mandatory'], [title*='mandatory'], [title*='Must have'], svg, button"
       );
       if (star) {
         const cls = (star.className && star.className.toString()) || "";
         const pressed = star.getAttribute("aria-pressed");
-        if (!cls.includes("active") && !cls.includes("selected") && pressed !== "true") {
+        if (!cls.includes("active") && !cls.includes("selected") && !cls.includes("starred") && pressed !== "true") {
           star.click();
           await sleep(200);
           return true;
@@ -269,7 +440,7 @@ async function clickKeywordStar(skillName) {
 
 function countKeywordChips() {
   return document.querySelectorAll(
-    "div[class*='chip'], span[class*='chip'], div[class*='tag'], span[class*='tag'], li[class*='chip'], li[class*='tag']"
+    "div[class*='chip'], span[class*='chip'], div[class*='tag'], span[class*='tag'], li[class*='chip'], li[class*='tag'], div[class*='pill'], span[class*='pill']"
   ).length;
 }
 
@@ -302,13 +473,6 @@ function fieldHasValue(selector) {
   if (!el) return false;
   if (el.tagName.toLowerCase() === "select") return el.selectedIndex > 0;
   return el.value && el.value.trim().length > 0;
-}
-
-// ─── Verify keyword chips were added ─────────────────────────────────────────
-
-function verifyKeywordsAdded(expectedCount) {
-  const chips = countKeywordChips();
-  return chips >= expectedCount;
 }
 
 // ─── Set Experience ───────────────────────────────────────────────────────────
@@ -387,13 +551,19 @@ async function setActiveIn(value) {
 
 // ─── Tick Show-Only Checkboxes ────────────────────────────────────────────────
 
-async function tickShowOnlyCheckboxes() {
-  const labels = Array.from(document.querySelectorAll("label, span, div"));
-  const targets = [
-    { key: "verified mobile", selector: "input#verifiedMobile, input[name='verifiedMobile']" },
-    { key: "verified email",  selector: "input#verifiedEmail,  input[name='verifiedEmail']"  },
-    { key: "attached resume", selector: "input#attachedResume, input[name='attachedResume']" },
-  ];
+async function tickShowOnlyCheckboxes(plan) {
+  const targets = [];
+  if (plan?.verified_mobile) {
+    targets.push({ key: "verified mobile", selector: "input#verifiedMobile, input[name='verifiedMobile']" });
+  }
+  if (plan?.verified_email) {
+    targets.push({ key: "verified email", selector: "input#verifiedEmail, input[name='verifiedEmail']" });
+  }
+  if (plan?.attached_resume) {
+    targets.push({ key: "attached resume", selector: "input#attachedResume, input[name='attachedResume']" });
+  }
+
+  if (targets.length === 0) return 0;
 
   let ticked = 0;
   for (const target of targets) {
@@ -433,9 +603,11 @@ async function waitForFieldsVerified(plan, timeoutMs = 12000) {
 
     // 1. Keywords chips (selectors.py: KEYWORD_CHIP)
     if (totalKws > 0) {
+      const allKws = [...new Set([...requiredKws, ...preferredKws])];
+      const matched = allKws.filter(kw => hasKeywordChip(kw)).length;
       checks.push({
         name: "keywords",
-        ok: countKeywordChips() >= Math.min(totalKws, 1),
+        ok: matched > 0 || countKeywordChips() > 0,
       });
     }
 
@@ -475,6 +647,14 @@ async function fillResdexForm(plan) {
   isFilling = true;
   console.log("[Snypar Bot] Starting auto-fill with SearchPlan:", plan);
 
+  // Temporary submit intercepter to guarantee form is not submitted prematurely
+  const blockSubmit = (e) => {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    console.log("[Snypar Bot] Intercepted and blocked premature form submit");
+  };
+  window.addEventListener("submit", blockSubmit, true);
+
   try {
     // ── STEP 1: Keywords ────────────────────────────────────────────────────
     const requiredKws  = (plan.keywords && plan.keywords.required)  || [];
@@ -507,6 +687,11 @@ async function fillResdexForm(plan) {
 
           await sleep(200);
         }
+
+        // Select any matching AI Suggested Keywords on the page
+        updateWidgetStatus("Checking AI Suggested Keywords...", "busy");
+        await selectRelevantAISuggestedKeywords(requiredKws, preferredKws, mandatorySet);
+        await sleep(200);
 
         // Tick global mandatory checkbox if present (selectors.py: MANDATORY_KEYWORDS_CHECKBOX)
         const mustHaveCheck = document.querySelector(
@@ -668,19 +853,22 @@ async function fillResdexForm(plan) {
 
     await sleep(400);
 
-    // ── STEP 8: Additional Details ──────────────────────────────────────────
-    updateWidgetStatus("Additional Details...", "busy");
-    await ensureSectionExpanded("Additional Details");
-    await sleep(500);
-    const ticked = await tickShowOnlyCheckboxes();
-    console.log(`[Snypar Bot] Ticked ${ticked} show-only checkboxes`);
+    // ── STEP 8: Additional Details (only if explicitly requested) ──────────
+    if (plan.verified_mobile || plan.verified_email || plan.attached_resume) {
+      updateWidgetStatus("Additional Details...", "busy");
+      await ensureSectionExpanded("Additional Details");
+      await sleep(500);
+      const ticked = await tickShowOnlyCheckboxes(plan);
+      console.log(`[Snypar Bot] Ticked ${ticked} show-only checkboxes`);
+      await sleep(300);
+    }
 
-    await sleep(300);
-
-    // ── STEP 9: Active In ───────────────────────────────────────────────────
-    updateWidgetStatus("Active In...", "busy");
-    await setActiveIn(plan.active_in || "15 days");
-    await sleep(300);
+    // ── STEP 9: Active In (only if explicitly requested) ───────────────────
+    if (plan.active_in) {
+      updateWidgetStatus("Active In...", "busy");
+      await setActiveIn(plan.active_in);
+      await sleep(300);
+    }
 
     // ── STEP 10: DOM-STATE VERIFICATION (not time-based) ───────────────────
     updateWidgetStatus("⚙ Verifying all fields...", "busy");
@@ -693,6 +881,8 @@ async function fillResdexForm(plan) {
 
     // ── STEP 11: Click Search Candidates ────────────────────────────────────
     updateWidgetStatus("Clicking Search Candidates...", "busy");
+    // Remove premature submit blocker before final submission
+    window.removeEventListener("submit", blockSubmit, true);
     await sleep(500);
 
     let searchClicked = false;
@@ -737,6 +927,7 @@ async function fillResdexForm(plan) {
     updateWidgetStatus("⚠ Error During Fill", "offline");
     showToast(`⚠ Error: ${err.message}`);
   } finally {
+    window.removeEventListener("submit", blockSubmit, true);
     isFilling = false;
   }
 }

@@ -24,19 +24,19 @@ class CandidateSearchRequest(BaseModel):
         description="Whether to submit the search after filling form fields (default: false for safe inspection)",
     )
     active_in: Optional[str] = Field(
-        default="15 days",
-        description="Dynamic Search active period ('15 days', '30 days', '2 months', '3 months', '6 months')",
+        default=None,
+        description="Search active period ('15 days', '30 days', '2 months', '3 months', '6 months') if explicitly requested",
     )
-    verified_mobile: bool = Field(
-        default=True,
+    verified_mobile: Optional[bool] = Field(
+        default=None,
         description="Whether to tick 'Verified mobile number' in Resdex",
     )
-    verified_email: bool = Field(
-        default=True,
+    verified_email: Optional[bool] = Field(
+        default=None,
         description="Whether to tick 'Verified email ID' in Resdex",
     )
-    attached_resume: bool = Field(
-        default=True,
+    attached_resume: Optional[bool] = Field(
+        default=None,
         description="Whether to tick 'Attached resume' in Resdex",
     )
 

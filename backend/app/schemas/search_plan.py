@@ -167,23 +167,23 @@ class SearchPlan(BaseModel):
 
     # Display Details & Search Period
     candidate_display: Optional[str] = Field(
-        default="All candidates",
+        default=None,
         description="Candidate display option ('All candidates', 'Modified candidates')",
     )
     verified_mobile: Optional[bool] = Field(
-        default=True,
+        default=None,
         description="Require verified mobile number",
     )
     verified_email: Optional[bool] = Field(
-        default=True,
+        default=None,
         description="Require verified email ID",
     )
     attached_resume: Optional[bool] = Field(
-        default=True,
+        default=None,
         description="Require attached resume",
     )
     active_in: Optional[str] = Field(
-        default="15 days",
+        default=None,
         description="Search active period (e.g. '15 days', '30 days', '2 months', '3 months', '6 months')",
     )
 
