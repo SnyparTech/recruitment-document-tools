@@ -37,6 +37,7 @@ class Settings(BaseSettings):
         "http://127.0.0.1:5173",
         "http://localhost:3000",
         "http://127.0.0.1:3000",
+        "https://snypar-internal-tools.vercel.app",
     ]
     ALLOWED_HOSTS: list[str] = [
         "127.0.0.1",
