@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 class ResdexDriver:
     """
     Manages Playwright browser lifecycle with persistent session storage.
-    Async — safe to call from FastAPI endpoints.
+    Fully async — safe to await directly from FastAPI endpoints.
     """
 
     def __init__(self):
@@ -21,6 +21,10 @@ class ResdexDriver:
         self._page: Optional[Page] = None
 
     async def start_driver(self) -> Page:
+        """
+        Initializes Playwright browser with persistent user data profile.
+        Returns an async Page object for form interactions.
+        """
         if self._page is not None:
             return self._page
 

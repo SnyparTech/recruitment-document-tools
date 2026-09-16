@@ -1,4 +1,3 @@
-import asyncio
 import io
 import logging
 import os
@@ -57,7 +56,9 @@ async def get_active_plan():
 async def search_candidates(
     request: CandidateSearchRequest,
 ) -> CandidateSearchResponse:
-    """Schema-driven Resdex candidate search endpoint."""
+    """
+    Schema-driven Resdex candidate search endpoint.
+    """
     global _latest_search_plan, _latest_plan_timestamp
     response = await form_service.process_search_request(request)
     if response and response.search_plan:
