@@ -21,10 +21,6 @@ class ResdexDriver:
         self._page: Optional[Page] = None
 
     async def start_driver(self) -> Page:
-        """
-        Initializes Playwright browser with persistent user data profile.
-        Returns an async Page object for form interactions.
-        """
         if self._page is not None:
             return self._page
 
@@ -34,8 +30,6 @@ class ResdexDriver:
             user_data_dir = settings.BROWSER_USER_DATA_DIR
             os.makedirs(user_data_dir, exist_ok=True)
 
-            logger.info(f"User data dir: {user_data_dir}, Headless: {settings.BROWSER_HEADLESS}")
-
             self._context = await self._playwright.chromium.launch_persistent_context(
                 user_data_dir=user_data_dir,
                 headless=settings.BROWSER_HEADLESS,
@@ -43,6 +37,7 @@ class ResdexDriver:
                     "--no-first-run",
                     "--no-default-browser-check",
                     "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
                 ],
                 ignore_default_args=["--enable-automation"],
                 viewport={"width": 1920, "height": 1080},

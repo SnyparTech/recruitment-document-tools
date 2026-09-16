@@ -11,3 +11,5 @@ services:
         value: "true"
       - key: BROWSER_USER_DATA_DIR
         value: "/tmp/playwright-profile"
+      - key: PLAYWRIGHT_BROWSERS_PATH
+        value: "/opt/render/project/src/pw-browsers"
