@@ -35,7 +35,7 @@ async def login_screenshot():
     try:
         await driver.start_driver()
         await driver.page.goto(
-            "https://www.naukri.com/nlogin/login", wait_until="domcontentloaded"
+            "https://www.naukri.com/recruit/login/", wait_until="domcontentloaded"
         )
         await driver.page.wait_for_timeout(2000)
         screenshot_bytes = await driver.page.screenshot()
