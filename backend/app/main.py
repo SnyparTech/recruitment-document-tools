@@ -22,7 +22,6 @@ from app.api.dossier import router as dossier_router
 from app.api.profiles import router as profiles_router
 from app.api.resume_converter import router as resume_converter_router
 from app.api.search import router as search_router
-from app.api.login import router as login_router
 from app.core.config import settings
 from app.core.exceptions import ProfileBotException
 from app.core.security import (
@@ -183,7 +182,6 @@ async def generic_exception_handler(request: Request, exc: Exception):
 # 5. Include API Routers
 # ------------------------------------------------------------------------------
 app.include_router(search_router)
-app.include_router(login_router)
 app.include_router(profiles_router)
 app.include_router(dossier_router)
 app.include_router(resume_converter_router)

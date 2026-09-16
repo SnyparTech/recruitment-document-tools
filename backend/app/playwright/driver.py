@@ -1,9 +1,9 @@
 import asyncio
 import logging
 import os
+import tempfile
 from typing import Optional
 from playwright.async_api import async_playwright, BrowserContext, Page, Playwright
-from app.core.config import settings
 from app.core.exceptions import BrowserDriverError
 
 logger = logging.getLogger(__name__)
@@ -15,10 +15,12 @@ class ResdexDriver:
     Fully async — safe to await directly from FastAPI endpoints.
     """
 
-    def __init__(self):
+    def __init__(self, user_data_dir: str | None = None, headless: bool = True):
         self._playwright: Optional[Playwright] = None
         self._context: Optional[BrowserContext] = None
         self._page: Optional[Page] = None
+        self._user_data_dir = user_data_dir or tempfile.mkdtemp(prefix="playwright-")
+        self._headless = headless
 
     async def start_driver(self) -> Page:
         if self._page is not None:
@@ -26,13 +28,11 @@ class ResdexDriver:
 
         try:
             self._playwright = await async_playwright().start()
-
-            user_data_dir = settings.BROWSER_USER_DATA_DIR
-            os.makedirs(user_data_dir, exist_ok=True)
+            os.makedirs(self._user_data_dir, exist_ok=True)
 
             self._context = await self._playwright.chromium.launch_persistent_context(
-                user_data_dir=user_data_dir,
-                headless=settings.BROWSER_HEADLESS,
+                user_data_dir=self._user_data_dir,
+                headless=self._headless,
                 args=[
                     "--no-first-run",
                     "--no-default-browser-check",

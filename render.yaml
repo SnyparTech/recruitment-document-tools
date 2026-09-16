@@ -2,14 +2,8 @@ services:
   - type: web
     name: profile-bot
     env: python
-    buildCommand: pip install -r backend/requirements.txt && playwright install chromium chromium-headless-shell
+    buildCommand: pip install -r backend/requirements.txt
     startCommand: cd backend && uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: PYTHON_VERSION
         value: "3.13"
-      - key: BROWSER_HEADLESS
-        value: "true"
-      - key: BROWSER_USER_DATA_DIR
-        value: "/tmp/playwright-profile"
-      - key: PLAYWRIGHT_BROWSERS_PATH
-        value: "/opt/render/project/src/pw-browsers"
