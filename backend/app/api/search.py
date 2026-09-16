@@ -1,3 +1,4 @@
+import asyncio
 import io
 import logging
 import os
@@ -66,9 +67,12 @@ async def search_candidates(
 ) -> CandidateSearchResponse:
     """
     Schema-driven Resdex candidate search endpoint.
+    Runs the blocking sync Playwright executor in a thread pool so it doesn't
+    block FastAPI's asyncio event loop.
     """
     global _latest_search_plan, _latest_plan_timestamp
-    response = form_service.process_search_request(request)
+    loop = asyncio.get_event_loop()
+    response = await loop.run_in_executor(None, form_service.process_search_request, request)
     if response and response.search_plan:
         _latest_search_plan = response.search_plan.model_dump()
         _latest_plan_timestamp = time.time()
@@ -120,9 +124,13 @@ async def execute_search_plan(
 
     if request.execute:
         portal = NaukriResdexPortal()
-        execution_result = portal.execute_plan(
-            plan=plan,
-            submit_search=request.submit_search,
+        loop = asyncio.get_event_loop()
+        execution_result = await loop.run_in_executor(
+            None,
+            lambda: portal.execute_plan(
+                plan=plan,
+                submit_search=request.submit_search,
+            ),
         )
 
     _latest_search_plan = plan.model_dump()
