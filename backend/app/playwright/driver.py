@@ -34,10 +34,11 @@ class ResdexDriver:
             user_data_dir = settings.BROWSER_USER_DATA_DIR
             os.makedirs(user_data_dir, exist_ok=True)
 
+            logger.info(f"User data dir: {user_data_dir}, Headless: {settings.BROWSER_HEADLESS}")
+
             self._context = await self._playwright.chromium.launch_persistent_context(
                 user_data_dir=user_data_dir,
                 headless=settings.BROWSER_HEADLESS,
-                channel="chromium",
                 args=[
                     "--no-first-run",
                     "--no-default-browser-check",
