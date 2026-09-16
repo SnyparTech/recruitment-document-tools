@@ -33,6 +33,7 @@ class NaukriResdexPortal:
     ) -> ExecutionResult:
         fields_filled: List[str] = []
 
+        await self.driver_manager.start_driver()
         page = self.driver_manager.page
 
         # Check if we're connected to a live page (extension sync) or starting fresh

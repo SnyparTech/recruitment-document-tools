@@ -77,6 +77,8 @@ class NaukriClient:
 
     async def navigate_to(self, url: str) -> None:
         try:
+            if self._page is None:
+                await self.start_driver()
             await self.page.goto(url, wait_until="domcontentloaded")
         except Exception as exc:
             raise BrowserDriverError(f"Navigation to '{url}' failed: {str(exc)}")
