@@ -7,8 +7,6 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.13"
-      - key: PLAYWRIGHT_BROWSERS_PATH
-        value: "0"
       - key: BROWSER_HEADLESS
         value: "true"
       - key: BROWSER_USER_DATA_DIR
