@@ -12,7 +12,6 @@ class Settings(BaseSettings):
     SELENIUM_TIMEOUT: int = 25
     LOGIN_WAIT_TIMEOUT: int = 300
     SELENIUM_USER_DATA_DIR: str = r"C:\Users\sriha\AppData\Local\Google\Chrome\User Data"
-    CHROME_BINARY_PATH: Optional[str] = None
     BROWSER_USER_DATA_DIR: str = ".playwright-profile"
 
     # Candidate Portal URLs (Naukri Resdex Candidate Search)

@@ -31,21 +31,17 @@ class ResdexDriver:
         try:
             self._playwright = await async_playwright().start()
 
-            chrome_bin = settings.CHROME_BINARY_PATH or None
             user_data_dir = settings.BROWSER_USER_DATA_DIR
             os.makedirs(user_data_dir, exist_ok=True)
 
-            launch_args = [
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--disable-blink-features=AutomationControlled",
-            ]
-
             self._context = await self._playwright.chromium.launch_persistent_context(
                 user_data_dir=user_data_dir,
-                executable_path=chrome_bin,
                 headless=settings.BROWSER_HEADLESS,
-                args=launch_args,
+                args=[
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                    "--disable-blink-features=AutomationControlled",
+                ],
                 ignore_default_args=["--enable-automation"],
                 viewport={"width": 1920, "height": 1080},
                 user_agent=(
