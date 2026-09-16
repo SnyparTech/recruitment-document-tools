@@ -27,12 +27,8 @@ class ResdexDriver:
         try:
             self._playwright = await async_playwright().start()
 
-            chrome_bin = getattr(settings, "CHROME_BINARY_PATH", None)
-            user_data_dir = getattr(
-                settings,
-                "BROWSER_USER_DATA_DIR",
-                os.path.expanduser("~/.playwright-naukri-profile"),
-            )
+            chrome_bin = settings.CHROME_BINARY_PATH
+            user_data_dir = settings.BROWSER_USER_DATA_DIR
             os.makedirs(user_data_dir, exist_ok=True)
 
             launch_args = [
