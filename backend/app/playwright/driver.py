@@ -37,6 +37,7 @@ class ResdexDriver:
             self._context = await self._playwright.chromium.launch_persistent_context(
                 user_data_dir=user_data_dir,
                 headless=settings.BROWSER_HEADLESS,
+                channel="chromium",
                 args=[
                     "--no-first-run",
                     "--no-default-browser-check",
