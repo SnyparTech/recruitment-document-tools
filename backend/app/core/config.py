@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     LOGIN_WAIT_TIMEOUT: int = 300
     SELENIUM_USER_DATA_DIR: str = r"C:\Users\sriha\AppData\Local\Google\Chrome\User Data"
     CHROME_BINARY_PATH: Optional[str] = None
-    BROWSER_USER_DATA_DIR: str = r"C:\Users\sriha\AppData\Local\profile-bot\chromium-profile"
+    BROWSER_USER_DATA_DIR: str = ".playwright-profile"
 
     # Candidate Portal URLs (Naukri Resdex Candidate Search)
     NAUKRI_RESDEX_URL: str = "https://resdex.naukri.com"
