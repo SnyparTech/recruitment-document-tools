@@ -1,7 +1,7 @@
 import logging
 import time
 from typing import Any, List, Optional, Union
-from playwright.sync_api import Page, Locator, TimeoutError as PlaywrightTimeout
+from playwright.sync_api import Page, Locator
 from app.core.config import settings
 from app.playwright.selectors import ResdexSelectors
 
@@ -57,7 +57,9 @@ class ResdexFormExecutor:
                 loc.fill("")
                 time.sleep(0.1)
 
-            # Native value setter for React state sync
+            # Native value setter syncs React state; dispatched events trigger validation.
+            # loc.type() is intentionally omitted: it would double-write into the input
+            # after React has already processed the value, potentially causing duplicate text.
             self._js("""
                 (el, val) => {
                     var nativeInputValueSetter = Object.getOwnPropertyDescriptor(
@@ -72,13 +74,7 @@ class ResdexFormExecutor:
             """, loc.element_handle(), value)
             time.sleep(0.4)
 
-            # Also use Playwright fill as backup for React's synthetic event system
-            if clear_first:
-                loc.fill("")
-            loc.type(value, delay=30)
-            time.sleep(0.3)
-
-            # Dispatch events again
+            # Dispatch events one more time to ensure any deferred React handlers fire
             self._js("""
                 (el) => {
                     el.dispatchEvent(new Event('input', { bubbles: true }));
@@ -1001,6 +997,22 @@ class ResdexFormExecutor:
         for field, search_text in pill_checks:
             if plan.get(field):
                 if self._check_pill_active(search_text):
+                    filled.append(field)
+                else:
+                    missing.append(field)
+
+        # Check education fields — verify the pill has an active/selected class
+        for field, label_text, option_value in [
+            ("ug_qualification", "ug qualification", plan.get("ug_qualification")),
+            ("pg_qualification", "pg qualification", plan.get("pg_qualification")),
+        ]:
+            if option_value:
+                pill = self.page.locator(
+                    f"xpath=//div[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{label_text}')]"
+                    f"/following::*[normalize-space()='{option_value}' and "
+                    "(contains(@class,'active') or contains(@class,'selected') or contains(@class,'checked'))][1]"
+                )
+                if pill.count() > 0:
                     filled.append(field)
                 else:
                     missing.append(field)
