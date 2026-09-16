@@ -1,7 +1,7 @@
 import logging
 import os
 from typing import Optional
-from playwright.sync_api import sync_playwright, BrowserContext, Page, Playwright
+from playwright.async_api import async_playwright, BrowserContext, Page, Playwright
 from app.core.config import settings
 from app.core.exceptions import BrowserDriverError
 
@@ -10,8 +10,8 @@ logger = logging.getLogger(__name__)
 
 class NaukriClient:
     """
-    Manages Playwright browser lifecycle with persistent session storage,
-    page navigation, and anti-detection measures.
+    Manages Playwright browser lifecycle with persistent session storage.
+    Async — safe to call from FastAPI endpoints.
     """
 
     def __init__(self):
@@ -19,16 +19,12 @@ class NaukriClient:
         self._context: Optional[BrowserContext] = None
         self._page: Optional[Page] = None
 
-    def start_driver(self) -> Page:
-        """
-        Initializes Playwright browser with persistent user data profile and
-        disables automation flags so Google OAuth / standard login functions smoothly.
-        """
+    async def start_driver(self) -> Page:
         if self._page is not None:
             return self._page
 
         try:
-            self._playwright = sync_playwright().start()
+            self._playwright = await async_playwright().start()
 
             chrome_bin = getattr(settings, "CHROME_BINARY_PATH", None)
             raw_path = getattr(settings, "BROWSER_USER_DATA_DIR", None) or "./playwright_profile"
@@ -44,7 +40,7 @@ class NaukriClient:
                 "--disable-blink-features=AutomationControlled",
             ]
 
-            self._context = self._playwright.chromium.launch_persistent_context(
+            self._context = await self._playwright.chromium.launch_persistent_context(
                 user_data_dir=profile_dir,
                 executable_path=chrome_bin,
                 headless=getattr(settings, "BROWSER_HEADLESS", False),
@@ -57,17 +53,16 @@ class NaukriClient:
                 ),
             )
 
-            # Mask navigator.webdriver
-            self._context.add_init_script(
+            await self._context.add_init_script(
                 "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
             )
 
             if self._context.pages:
                 self._page = self._context.pages[0]
             else:
-                self._page = self._context.new_page()
+                self._page = await self._context.new_page()
 
-            logger.info("Playwright browser started successfully with persistent session.")
+            logger.info("Playwright browser started successfully.")
             return self._page
 
         except Exception as exc:
@@ -76,38 +71,35 @@ class NaukriClient:
 
     @property
     def page(self) -> Page:
-        """Returns the active page or starts a new instance."""
         if self._page is None:
-            return self.start_driver()
+            raise BrowserDriverError("Browser not started. Call start_driver() first.")
         return self._page
 
-    def navigate_to(self, url: str) -> None:
-        """Navigates to the specified URL safely."""
+    async def navigate_to(self, url: str) -> None:
         try:
-            self.page.goto(url, wait_until="domcontentloaded")
+            await self.page.goto(url, wait_until="domcontentloaded")
         except Exception as exc:
             raise BrowserDriverError(f"Navigation to '{url}' failed: {str(exc)}")
 
-    def close(self) -> None:
-        """Closes the browser context safely without deleting the persistent session."""
+    async def close(self) -> None:
         if self._context is not None:
             try:
-                self._context.close()
+                await self._context.close()
                 logger.info("Playwright browser context closed (session saved).")
             except Exception as exc:
                 logger.warning(f"Error while closing browser context: {exc}")
         if self._playwright is not None:
             try:
-                self._playwright.stop()
+                await self._playwright.stop()
             except Exception:
                 pass
         self._page = None
         self._context = None
         self._playwright = None
 
-    def __enter__(self):
-        self.start_driver()
+    async def __aenter__(self):
+        await self.start_driver()
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.close()

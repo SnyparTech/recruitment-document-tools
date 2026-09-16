@@ -15,7 +15,7 @@ class FormService:
     Orchestrates the complete candidate search workflow:
     1. Requirement parsing via RequirementAgent
     2. Schema validation via ValidationService
-    3. Dry-run or live Selenium form execution via NaukriResdexPortal
+    3. Dry-run or live Playwright form execution via NaukriResdexPortal
     """
 
     def __init__(
@@ -26,18 +26,13 @@ class FormService:
         self.requirement_service = requirement_service or RequirementService()
         self.portal = portal or NaukriResdexPortal()
 
-    def process_search_request(
+    async def process_search_request(
         self, request: CandidateSearchRequest
     ) -> CandidateSearchResponse:
-        """
-        Processes candidate search request according to execute and submit_search flags.
-        """
-        # Step 1 & 2: Parse and Validate
         plan, validation = self.requirement_service.process_requirement(
             request.requirement
         )
 
-        # Apply request overrides
         if request.active_in:
             plan.active_in = request.active_in
         if request.verified_mobile is not None:
@@ -56,7 +51,6 @@ class FormService:
             message="Dry-run mode: SearchPlan generated and validated without Selenium execution.",
         )
 
-        # If execution is requested and plan is valid, execute via Selenium
         if request.execute:
             if not validation.valid:
                 execution_result.message = (
@@ -67,7 +61,7 @@ class FormService:
                 logger.info(
                     f"Executing SearchPlan with submit_search={request.submit_search}"
                 )
-                execution_result = self.portal.execute_plan(
+                execution_result = await self.portal.execute_plan(
                     plan=plan,
                     submit_search=request.submit_search,
                 )

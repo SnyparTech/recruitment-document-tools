@@ -52,27 +52,14 @@ async def get_active_plan():
     "/candidates",
     response_model=CandidateSearchResponse,
     status_code=status.HTTP_200_OK,
-    summary="Generate SearchPlan, Validate against Resdex Schema, and Optionally Execute Selenium",
-    description=(
-        "Schema-driven AI candidate search endpoint for Naukri Resdex:\n"
-        "1. Requirement Agent converts natural language prompt into a structured SearchPlan.\n"
-        "2. Validation Service validates the SearchPlan against resdex_schema.json.\n"
-        "3. If execute=false (default), returns the SearchPlan and validation report (dry-run).\n"
-        "4. If execute=true & submit_search=false, Selenium opens Resdex and fills the form for inspection without submitting.\n"
-        "5. If execute=true & submit_search=true, Selenium fills the form and executes the search."
-    ),
+    summary="Generate SearchPlan, Validate against Resdex Schema, and Optionally Execute",
 )
 async def search_candidates(
     request: CandidateSearchRequest,
 ) -> CandidateSearchResponse:
-    """
-    Schema-driven Resdex candidate search endpoint.
-    Runs the blocking sync Playwright executor in a thread pool so it doesn't
-    block FastAPI's asyncio event loop.
-    """
+    """Schema-driven Resdex candidate search endpoint."""
     global _latest_search_plan, _latest_plan_timestamp
-    loop = asyncio.get_event_loop()
-    response = await loop.run_in_executor(None, form_service.process_search_request, request)
+    response = await form_service.process_search_request(request)
     if response and response.search_plan:
         _latest_search_plan = response.search_plan.model_dump()
         _latest_plan_timestamp = time.time()
@@ -80,35 +67,21 @@ async def search_candidates(
 
 
 class DirectSearchPlanRequest(BaseModel):
-    """Request schema for direct SearchPlan execution (bypasses LLM parsing)."""
-
     plan: SearchPlan = Field(..., description="Pre-built SearchPlan to execute directly")
-    execute: bool = Field(
-        default=False,
-        description="Whether to execute Selenium form filling",
-    )
-    submit_search: bool = Field(
-        default=False,
-        description="Whether to submit the search after filling form fields",
-    )
+    execute: bool = Field(default=False, description="Whether to execute form filling")
+    submit_search: bool = Field(default=False, description="Whether to submit the search after filling")
 
 
 @router.post(
     "/plan",
     response_model=CandidateSearchResponse,
     status_code=status.HTTP_200_OK,
-    summary="Execute a pre-built SearchPlan directly (bypasses LLM requirement parsing)",
-    description=(
-        "Accepts a complete SearchPlan JSON and executes it directly on Resdex.\n"
-        "Use this endpoint when you already have a validated SearchPlan and want to skip LLM parsing."
-    ),
+    summary="Execute a pre-built SearchPlan directly",
 )
 async def execute_search_plan(
     request: DirectSearchPlanRequest,
 ) -> CandidateSearchResponse:
-    """
-    Executes a pre-built SearchPlan directly, bypassing the LLM requirement parser.
-    """
+    """Executes a pre-built SearchPlan directly, bypassing the LLM requirement parser."""
     global _latest_search_plan, _latest_plan_timestamp
 
     plan = request.plan
@@ -124,13 +97,9 @@ async def execute_search_plan(
 
     if request.execute:
         portal = NaukriResdexPortal()
-        loop = asyncio.get_event_loop()
-        execution_result = await loop.run_in_executor(
-            None,
-            lambda: portal.execute_plan(
-                plan=plan,
-                submit_search=request.submit_search,
-            ),
+        execution_result = await portal.execute_plan(
+            plan=plan,
+            submit_search=request.submit_search,
         )
 
     _latest_search_plan = plan.model_dump()
@@ -148,12 +117,11 @@ async def execute_search_plan(
     "/upload-requirement",
     status_code=status.HTTP_200_OK,
     summary="Extract text from Requirement Document / PDF",
-    description="Extracts raw, structured requirement text from uploaded PDF, DOCX, DOC, or TXT document preserving all formatting.",
 )
 async def upload_requirement_document(
     file: UploadFile = File(..., description="Requirement or Job Description document (PDF, DOCX, DOC, TXT)"),
 ):
-    """Extracts text from an uploaded requirement document."""
+    """Extracts raw, structured requirement text from uploaded document."""
     ext = os.path.splitext(file.filename or "")[1].lower()
     if ext not in ALLOWED_DOC_EXTENSIONS:
         raise HTTPException(
@@ -182,15 +150,12 @@ async def upload_requirement_document(
             doc_stream = io.BytesIO(file_bytes)
             docx_doc = docx.Document(doc_stream)
             paragraphs = [p.text for p in docx_doc.paragraphs if p.text.strip()]
-            
-            # Also extract table text if present
             table_lines = []
             for table in docx_doc.tables:
                 for row in table.rows:
                     cells = [c.text.strip() for c in row.cells if c.text.strip()]
                     if cells:
                         table_lines.append(" | ".join(cells))
-            
             extracted_text = "\n".join(paragraphs)
             if table_lines:
                 extracted_text += "\n\n" + "\n".join(table_lines)
@@ -202,7 +167,6 @@ async def upload_requirement_document(
                 extracted_text = file_bytes.decode("latin-1", errors="replace")
 
         elif ext == ".doc":
-            # Extract plain text characters from legacy .doc binary
             text_chars = re.findall(rb"[\x20-\x7E\r\n\t]{4,}", file_bytes)
             extracted_text = "\n".join(tc.decode("latin-1", errors="ignore") for tc in text_chars)
 

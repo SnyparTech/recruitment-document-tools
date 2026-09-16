@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import time
 from typing import List, Optional
@@ -25,15 +26,11 @@ class NaukriResdexPortal:
     def __init__(self, driver_manager: ResdexDriver = None):
         self.driver_manager = driver_manager or ResdexDriver()
 
-    def execute_plan(
+    async def execute_plan(
         self,
         plan: SearchPlan,
         submit_search: bool = False,
     ) -> ExecutionResult:
-        """
-        Executes the validated SearchPlan on the Resdex search form.
-        If submit_search is False, fills all fields and stops before clicking search.
-        """
         fields_filled: List[str] = []
 
         page = self.driver_manager.page
@@ -42,7 +39,6 @@ class NaukriResdexPortal:
         try:
             current_url = page.url
             if "resdex.naukri.com" not in current_url and "naukri.com" in current_url:
-                # Naukri is open but not on Resdex - let the extension handle sync
                 logger.info("SearchPlan synchronized for live auto-fill in authenticated Naukri tab.")
                 return ExecutionResult(
                     requested=True,
@@ -58,26 +54,25 @@ class NaukriResdexPortal:
         executor = ResdexFormExecutor(page)
 
         try:
-            # ── Step 1: Navigate to Resdex Search page ──────────────────────
+            # ── Step 1: Navigate ────────────────────────────────────────────
             print(f"\n[1/7] Navigating to Naukri Resdex: {ResdexSelectors.SEARCH_PAGE_URL}", flush=True)
-            self.driver_manager.navigate_to(ResdexSelectors.SEARCH_PAGE_URL)
-            time.sleep(2)
+            await self.driver_manager.navigate_to(ResdexSelectors.SEARCH_PAGE_URL)
+            await asyncio.sleep(2)
 
-            # ── Step 2: Handle login gateway if not already authenticated ────
-            self._handle_auth_if_needed(page)
+            # ── Step 2: Auth ────────────────────────────────────────────────
+            await self._handle_auth_if_needed(page)
 
-            # ── Step 3: Check for security challenges ────────────────────────
-            self._check_challenges(page)
+            # ── Step 3: Challenges ──────────────────────────────────────────
+            await self._check_challenges(page)
 
             # ══════════════════════════════════════════════════════════════════
-            # BASIC SEARCH SECTION
+            # BASIC SEARCH
             # ══════════════════════════════════════════════════════════════════
             print("\n[2/7] Filling Basic Search - Keywords...", flush=True)
 
-            # ── Step 4: Keywords ─────────────────────────────────────────────
             if plan.keywords:
                 if plan.keywords.required or plan.keywords.preferred:
-                    kw_ok = executor.fill_keywords_with_stars(
+                    kw_ok = await executor.fill_keywords_with_stars(
                         required_keywords=plan.keywords.required or [],
                         preferred_keywords=plan.keywords.preferred or [],
                     )
@@ -86,29 +81,28 @@ class NaukriResdexPortal:
                         print(f"  [+] Keywords entered & stars selected: {plan.keywords.required}", flush=True)
 
                 if plan.keywords.mandatory is not None:
-                    if executor.fill_checkbox(
+                    if await executor.fill_checkbox(
                         ResdexSelectors.MANDATORY_KEYWORDS_CHECKBOX, plan.keywords.mandatory
                     ):
                         fields_filled.append("keywords.mandatory")
                         print(f"  [+] Mandatory checkbox: {plan.keywords.mandatory}", flush=True)
 
-                # Set keyword search scope (React custom dropdown, not <select>)
                 scope = (plan.keywords.search_scope or "Entire resume").strip()
                 if scope and scope != "Entire resume":
-                    if executor.fill_keyword_scope(scope):
+                    if await executor.fill_keyword_scope(scope):
                         fields_filled.append("keywords.search_scope")
                         print(f"  [+] Keyword scope: {scope}", flush=True)
 
                 if plan.keywords.excluded:
                     ex_str = " ".join(plan.keywords.excluded)
-                    if executor.fill_text(ResdexSelectors.EXCLUDE_KEYWORDS_INPUT, ex_str):
+                    if await executor.fill_text(ResdexSelectors.EXCLUDE_KEYWORDS_INPUT, ex_str):
                         fields_filled.append("keywords.excluded")
                         print(f"  [+] Excluded keywords: '{ex_str}'", flush=True)
 
-            # ── Step 5: Experience Range ──────────────────────────────────────
+            # ── Experience ──────────────────────────────────────────────────
             print("\n[3/7] Filling Basic Search - Experience & Location...", flush=True)
             if plan.min_experience is not None or plan.max_experience is not None:
-                if executor.fill_range(
+                if await executor.fill_range(
                     min_selector=ResdexSelectors.MIN_EXP_INPUT,
                     max_selector=ResdexSelectors.MAX_EXP_INPUT,
                     min_val=plan.min_experience,
@@ -117,43 +111,35 @@ class NaukriResdexPortal:
                     fields_filled.append("experience_range")
                     print(f"  [+] Experience: {plan.min_experience} to {plan.max_experience} years", flush=True)
 
-            # ── Step 6: Location ─────────────────────────────────────────────
+            # ── Location ────────────────────────────────────────────────────
             if plan.current_location:
                 print("\n[3.5/7] Filling Location...", flush=True)
                 for loc in plan.current_location:
-                    loc_filled = executor.fill_location(loc)
+                    loc_filled = await executor.fill_location(loc)
                     if loc_filled:
                         fields_filled.append(f"current_location.{loc}")
                         print(f"  [+] Location: {loc}", flush=True)
                     else:
-                        if executor.select_multiple(
-                            ResdexSelectors.LOCATION_INPUT, [loc]
-                        ):
+                        if await executor.select_multiple(ResdexSelectors.LOCATION_INPUT, [loc]):
                             fields_filled.append(f"current_location.{loc}")
                             print(f"  [+] Location (fallback): {loc}", flush=True)
 
             if plan.include_relocation is not None:
-                if executor.fill_checkbox(
-                    ResdexSelectors.INCLUDE_RELOCATION_CHECKBOX, plan.include_relocation
-                ):
+                if await executor.fill_checkbox(ResdexSelectors.INCLUDE_RELOCATION_CHECKBOX, plan.include_relocation):
                     fields_filled.append("include_relocation")
                     print(f"  [+] Include relocation: {plan.include_relocation}", flush=True)
 
             if plan.exclude_anywhere_location is not None:
-                if executor.fill_checkbox(
-                    ResdexSelectors.EXCLUDE_ANYWHERE_CHECKBOX, plan.exclude_anywhere_location
-                ):
+                if await executor.fill_checkbox(ResdexSelectors.EXCLUDE_ANYWHERE_CHECKBOX, plan.exclude_anywhere_location):
                     fields_filled.append("exclude_anywhere_location")
                     print(f"  [+] Exclude anywhere: {plan.exclude_anywhere_location}", flush=True)
 
-            # ── Step 7: Salary ───────────────────────────────────────────────
+            # ── Salary ──────────────────────────────────────────────────────
             if plan.salary:
                 if plan.salary.currency:
-                    executor.select_option(
-                        ResdexSelectors.SALARY_CURRENCY_SELECT, plan.salary.currency
-                    )
+                    await executor.select_option(ResdexSelectors.SALARY_CURRENCY_SELECT, plan.salary.currency)
                 if plan.salary.min is not None or plan.salary.max is not None:
-                    if executor.fill_range(
+                    if await executor.fill_range(
                         min_selector=ResdexSelectors.MIN_SALARY_INPUT,
                         max_selector=ResdexSelectors.MAX_SALARY_INPUT,
                         min_val=plan.salary.min,
@@ -161,72 +147,54 @@ class NaukriResdexPortal:
                     ):
                         fields_filled.append("salary_range")
                         print(f"  [+] Salary: {plan.salary.min} to {plan.salary.max} Lakhs ({plan.salary.currency})", flush=True)
-
                 if plan.salary.include_unspecified is not None:
-                    executor.fill_checkbox(
-                        ResdexSelectors.INCLUDE_UNSPECIFIED_SALARY_CHECKBOX,
-                        plan.salary.include_unspecified,
-                    )
+                    await executor.fill_checkbox(ResdexSelectors.INCLUDE_UNSPECIFIED_SALARY_CHECKBOX, plan.salary.include_unspecified)
 
             # ══════════════════════════════════════════════════════════════════
-            # EMPLOYMENT DETAILS SECTION (Collapsible)
+            # EMPLOYMENT DETAILS
             # ══════════════════════════════════════════════════════════════════
             print("\n[4/7] Filling Employment Details...", flush=True)
 
             has_emp = plan.department_role or plan.industry or plan.company or plan.designation
             if has_emp:
-                executor.expand_section(ResdexSelectors.EMPLOYMENT_SECTION_TOGGLE)
-                time.sleep(0.3)
+                await executor.expand_section(ResdexSelectors.EMPLOYMENT_SECTION_TOGGLE)
+                await asyncio.sleep(0.3)
 
                 if plan.department_role:
-                    if executor.select_multiple(
-                        ResdexSelectors.DEPARTMENT_ROLE_INPUT, plan.department_role
-                    ):
+                    if await executor.select_multiple(ResdexSelectors.DEPARTMENT_ROLE_INPUT, plan.department_role):
                         fields_filled.append("department_role")
                         print(f"  [+] Department/Role: {plan.department_role}", flush=True)
-
                 if plan.industry:
-                    if executor.select_multiple(
-                        ResdexSelectors.INDUSTRY_INPUT, plan.industry
-                    ):
+                    if await executor.select_multiple(ResdexSelectors.INDUSTRY_INPUT, plan.industry):
                         fields_filled.append("industry")
                         print(f"  [+] Industry: {plan.industry}", flush=True)
-
                 if plan.company:
-                    if executor.select_multiple(
-                        ResdexSelectors.COMPANY_INPUT, plan.company
-                    ):
+                    if await executor.select_multiple(ResdexSelectors.COMPANY_INPUT, plan.company):
                         fields_filled.append("company")
                         print(f"  [+] Company: {plan.company}", flush=True)
-
                 if plan.designation:
-                    if executor.select_multiple(
-                        ResdexSelectors.DESIGNATION_INPUT, plan.designation
-                    ):
+                    if await executor.select_multiple(ResdexSelectors.DESIGNATION_INPUT, plan.designation):
                         fields_filled.append("designation")
                         print(f"  [+] Designation: {plan.designation}", flush=True)
 
-            # ── Step 8: Notice Period (Pill Buttons) ─────────────────────────
+            # ── Notice Period ───────────────────────────────────────────────
             if plan.notice_period:
                 print("\n[5/7] Filling Notice Period & Diversity...", flush=True)
                 for np in plan.notice_period:
-                    # Normalise schema value -> UI pill display text
-                    np_display = ResdexSelectors.NOTICE_PERIOD_DISPLAY_MAP.get(
-                        np.lower().strip(), np
-                    )
-                    if executor.click_pill(ResdexSelectors.NOTICE_PERIOD_OPTION_TEMPLATE, np_display):
+                    np_display = ResdexSelectors.NOTICE_PERIOD_DISPLAY_MAP.get(np.lower().strip(), np)
+                    if await executor.click_pill(ResdexSelectors.NOTICE_PERIOD_OPTION_TEMPLATE, np_display):
                         fields_filled.append(f"notice_period.{np}")
                         print(f"  [+] Notice period: '{np_display}'", flush=True)
-                    elif executor.click_pill(ResdexSelectors.NOTICE_PERIOD_OPTION_TEMPLATE, np):
+                    elif await executor.click_pill(ResdexSelectors.NOTICE_PERIOD_OPTION_TEMPLATE, np):
                         fields_filled.append(f"notice_period.{np}")
                         print(f"  [+] Notice period (raw): '{np}'", flush=True)
 
             # ══════════════════════════════════════════════════════════════════
-            # EDUCATION DETAILS SECTION (Collapsible -- Pill Buttons)
+            # EDUCATION DETAILS
             # ══════════════════════════════════════════════════════════════════
             if plan.ug_qualification or plan.pg_qualification:
                 print("\n[5.5/7] Filling Education Details...", flush=True)
-                edu_filled = executor.fill_education_qualifications(
+                edu_filled = await executor.fill_education_qualifications(
                     ug_qualification=plan.ug_qualification,
                     pg_qualification=plan.pg_qualification,
                 )
@@ -235,75 +203,59 @@ class NaukriResdexPortal:
                     print(f"  [+] Education: {edu_filled}", flush=True)
 
             # ══════════════════════════════════════════════════════════════════
-            # DIVERSITY HIRING SECTION (Collapsible - Pill Buttons)
+            # DIVERSITY HIRING
             # ══════════════════════════════════════════════════════════════════
             has_diversity = plan.gender or plan.career_break or plan.differently_abled or plan.defence_background
             if has_diversity:
-                executor.expand_section(ResdexSelectors.DIVERSITY_SECTION_TOGGLE)
-                time.sleep(0.3)
-
+                await executor.expand_section(ResdexSelectors.DIVERSITY_SECTION_TOGGLE)
+                await asyncio.sleep(0.3)
                 if plan.gender:
-                    if executor.click_pill(ResdexSelectors.GENDER_PILL_TEMPLATE, plan.gender):
+                    if await executor.click_pill(ResdexSelectors.GENDER_PILL_TEMPLATE, plan.gender):
                         fields_filled.append("gender")
                         print(f"  [+] Gender: {plan.gender}", flush=True)
-
                 if plan.career_break:
-                    if executor.click_pill(ResdexSelectors.CAREER_BREAK_PILL, plan.career_break):
+                    if await executor.click_pill(ResdexSelectors.CAREER_BREAK_PILL, plan.career_break):
                         fields_filled.append("career_break")
                         print(f"  [+] Career break: {plan.career_break}", flush=True)
-
                 if plan.differently_abled:
-                    if executor.click_pill(ResdexSelectors.DIFFERENTLY_ABLED_PILL_TEMPLATE, plan.differently_abled):
+                    if await executor.click_pill(ResdexSelectors.DIFFERENTLY_ABLED_PILL_TEMPLATE, plan.differently_abled):
                         fields_filled.append("differently_abled")
                         print(f"  [+] Differently-abled: {plan.differently_abled}", flush=True)
-
                 if plan.defence_background:
-                    if executor.click_pill(ResdexSelectors.DEFENCE_PILL_TEMPLATE, plan.defence_background):
+                    if await executor.click_pill(ResdexSelectors.DEFENCE_PILL_TEMPLATE, plan.defence_background):
                         fields_filled.append("defence_background")
                         print(f"  [+] Defence background: {plan.defence_background}", flush=True)
 
             # ══════════════════════════════════════════════════════════════════
-            # ADDITIONAL DETAILS SECTION (Collapsible)
+            # ADDITIONAL DETAILS
             # ══════════════════════════════════════════════════════════════════
             print("\n[6/7] Filling Additional Details...", flush=True)
-
-            has_additional = (
-                plan.candidate_category
-                or plan.candidate_age
-                or plan.job_type
-                or plan.employment_type
-                or plan.work_permit
-            )
+            has_additional = plan.candidate_category or plan.candidate_age or plan.job_type or plan.employment_type or plan.work_permit
             if has_additional:
-                executor.expand_section(ResdexSelectors.ADDITIONAL_SECTION_TOGGLE)
-                time.sleep(0.3)
-
+                await executor.expand_section(ResdexSelectors.ADDITIONAL_SECTION_TOGGLE)
+                await asyncio.sleep(0.3)
                 if plan.candidate_category:
-                    if executor.fill_text(ResdexSelectors.CANDIDATE_CATEGORY_INPUT, plan.candidate_category):
+                    if await executor.fill_text(ResdexSelectors.CANDIDATE_CATEGORY_INPUT, plan.candidate_category):
                         fields_filled.append("candidate_category")
                         print(f"  [+] Candidate category: {plan.candidate_category}", flush=True)
-
                 if plan.candidate_age:
                     if plan.candidate_age.min is not None:
-                        executor.fill_number(ResdexSelectors.MIN_AGE_INPUT, plan.candidate_age.min)
+                        await executor.fill_number(ResdexSelectors.MIN_AGE_INPUT, plan.candidate_age.min)
                     if plan.candidate_age.max is not None:
-                        executor.fill_number(ResdexSelectors.MAX_AGE_INPUT, plan.candidate_age.max)
+                        await executor.fill_number(ResdexSelectors.MAX_AGE_INPUT, plan.candidate_age.max)
                     fields_filled.append("candidate_age")
                     print(f"  [+] Candidate age: {plan.candidate_age.min} to {plan.candidate_age.max}", flush=True)
-
                 if plan.job_type:
-                    if executor.select_option(ResdexSelectors.JOB_TYPE_SELECT, plan.job_type):
+                    if await executor.select_option(ResdexSelectors.JOB_TYPE_SELECT, plan.job_type):
                         fields_filled.append("job_type")
                         print(f"  [+] Job type: {plan.job_type}", flush=True)
-
                 if plan.employment_type:
-                    if executor.select_option(ResdexSelectors.EMPLOYMENT_TYPE_SELECT, plan.employment_type):
+                    if await executor.select_option(ResdexSelectors.EMPLOYMENT_TYPE_SELECT, plan.employment_type):
                         fields_filled.append("employment_type")
                         print(f"  [+] Employment type: {plan.employment_type}", flush=True)
-
                 if plan.work_permit:
                     for wp in plan.work_permit:
-                        if executor.fill_text(ResdexSelectors.WORK_PERMIT_INPUT, wp):
+                        if await executor.fill_text(ResdexSelectors.WORK_PERMIT_INPUT, wp):
                             fields_filled.append(f"work_permit.{wp}")
                             print(f"  [+] Work permit: {wp}", flush=True)
 
@@ -313,12 +265,12 @@ class NaukriResdexPortal:
             print("\n[6.5/7] Filling Display Details & Active In...", flush=True)
 
             if plan.candidate_display:
-                if executor.click_pill(ResdexSelectors.CANDIDATE_DISPLAY_PILL_TEMPLATE, plan.candidate_display):
+                if await executor.click_pill(ResdexSelectors.CANDIDATE_DISPLAY_PILL_TEMPLATE, plan.candidate_display):
                     fields_filled.append("candidate_display")
                     print(f"  [+] Display: {plan.candidate_display}", flush=True)
 
             if plan.verified_mobile or plan.verified_email or plan.attached_resume:
-                ticked_opts = executor.tick_show_only_candidates_options(
+                ticked_opts = await executor.tick_show_only_candidates_options(
                     verified_mobile=bool(plan.verified_mobile),
                     verified_email=bool(plan.verified_email),
                     attached_resume=bool(plan.attached_resume),
@@ -329,21 +281,20 @@ class NaukriResdexPortal:
                     print(f"  [+] Show only with: {ticked_opts}", flush=True)
 
             if plan.active_in:
-                active_ok = executor.select_active_in(plan.active_in)
+                active_ok = await executor.select_active_in(plan.active_in)
                 if active_ok:
                     fields_filled.append(f"active_in.{plan.active_in}")
                     print(f"  [+] Active in: '{plan.active_in}'", flush=True)
 
             # ══════════════════════════════════════════════════════════════════
-            # VERIFICATION STEP
+            # VERIFICATION
             # ══════════════════════════════════════════════════════════════════
             print("\n[7/7] Verifying form fill...", flush=True)
-
-            executor.dismiss_all_dropdowns()
-            time.sleep(0.5)
+            await executor.dismiss_all_dropdowns()
+            await asyncio.sleep(0.5)
 
             plan_dict = plan.model_dump()
-            verification = executor.verify_form_filled(fields_filled, plan_dict)
+            verification = await executor.verify_form_filled(fields_filled, plan_dict)
 
             if verification["missing"]:
                 print(f"  [!] Missing fields: {verification['missing']}", flush=True)
@@ -351,11 +302,10 @@ class NaukriResdexPortal:
             else:
                 print(f"  [+] All {len(verification['filled'])} field groups verified!", flush=True)
 
-            # ── Search Submission (Only if explicitly enabled) ────────────────
             submitted = False
             if submit_search:
                 print("\n[8/7] Submitting Candidate Search...", flush=True)
-                submitted = executor.submit_form(ResdexSelectors.SEARCH_SUBMIT_BUTTON)
+                submitted = await executor.submit_form(ResdexSelectors.SEARCH_SUBMIT_BUTTON)
                 print("  [+] Search button clicked.", flush=True)
             else:
                 print("\n[8/7] Inspection Mode (submit_search = False):", flush=True)
@@ -367,7 +317,7 @@ class NaukriResdexPortal:
                     print(f"[!] Missing: {verification['missing']}", flush=True)
                 print("[+] Pausing for 15 seconds so you can inspect the filled form...", flush=True)
                 print("=" * 80 + "\n", flush=True)
-                time.sleep(15)
+                await asyncio.sleep(15)
 
             return ExecutionResult(
                 requested=True,
@@ -389,34 +339,31 @@ class NaukriResdexPortal:
             logger.error(f"Form execution encountered error: {exc}")
             raise NaukriSearchFailed(f"Playwright Resdex execution error: {str(exc)}")
         finally:
-            self.driver_manager.close()
+            await self.driver_manager.close()
 
-    def _handle_auth_if_needed(self, page) -> None:
-        """Checks if redirected to a login page or ChangeLogin prompt and handles it."""
+    async def _handle_auth_if_needed(self, page) -> None:
         current_url = page.url.lower()
 
-        # Case 1: Resdex ChangeLogin session switch prompt
         if "changelogin" in current_url:
             print("  [+] Detected Resdex 'Change Login' session prompt. Auto-confirming session switch...", flush=True)
             try:
                 buttons = page.locator(
                     "input#changeLoginDDBtn, input[value='Login'], input[value*='Main Menu'], button.btn-primary"
                 )
-                for i in range(buttons.count()):
+                btn_count = await buttons.count()
+                for i in range(btn_count):
                     btn = buttons.nth(i)
-                    if btn.is_visible():
-                        btn.evaluate("el => el.click()")
+                    if await btn.is_visible():
+                        await btn.evaluate("el => el.click()")
                         break
-                time.sleep(2)
+                await asyncio.sleep(2)
                 if "advsrch" not in page.url.lower():
-                    self.driver_manager.navigate_to(ResdexSelectors.SEARCH_PAGE_URL)
-                    time.sleep(2)
+                    await self.driver_manager.navigate_to(ResdexSelectors.SEARCH_PAGE_URL)
+                    await asyncio.sleep(2)
             except Exception as exc:
                 logger.warning(f"Error handling ChangeLogin prompt: {exc}")
-
             current_url = page.url.lower()
 
-        # Case 2: Full recruiter authentication required
         if ("recruit/login" in current_url or "nlogin" in current_url) and "changelogin" not in current_url:
             print("\n" + "=" * 80, flush=True)
             print("[!] NAUKRI LOGIN REQUIRED: Please complete login in the opened Chrome window.", flush=True)
@@ -426,7 +373,7 @@ class NaukriResdexPortal:
             start_time = time.time()
             logged_in = False
             while time.time() - start_time < settings.LOGIN_WAIT_TIMEOUT:
-                time.sleep(2)
+                await asyncio.sleep(2)
                 try:
                     curr = page.url.lower()
                     if "recruit/login" not in curr and "nlogin" not in curr:
@@ -440,11 +387,10 @@ class NaukriResdexPortal:
                     "Timed out waiting for login session. Please log in to your recruiter account."
                 )
 
-    def _check_challenges(self, page) -> None:
-        """Detects if blocked or challenged."""
+    async def _check_challenges(self, page) -> None:
         try:
             captcha = page.locator(ResdexSelectors.CAPTCHA_CONTAINER)
-            if captcha.count() > 0 and captcha.first.is_visible():
+            if (await captcha.count()) > 0 and await captcha.first.is_visible():
                 raise NaukriSecurityChallenge()
         except NaukriSecurityChallenge:
             raise
