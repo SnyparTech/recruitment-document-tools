@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import time
 from typing import List, Optional
 from app.core.config import settings
 from app.core.exceptions import (
@@ -13,6 +12,7 @@ from app.schemas.search_plan import SearchPlan
 from app.playwright.driver import ResdexDriver
 from app.playwright.form_executor import ResdexFormExecutor
 from app.playwright.selectors import ResdexSelectors
+from app.playwright.playwright_thread import run_on_playwright_loop
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +27,21 @@ class NaukriResdexPortal:
         self.driver_manager = driver_manager or ResdexDriver()
 
     async def execute_plan(
+        self,
+        plan: SearchPlan,
+        submit_search: bool = False,
+    ) -> ExecutionResult:
+        """
+        Public entry point called from FastAPI routes.
+        Delegates all Playwright work to the dedicated ProactorEventLoop thread
+        so that async_playwright can spawn Chrome subprocesses on Windows
+        (uvicorn forces _WindowsSelectorEventLoop which cannot spawn subprocesses).
+        """
+        return await run_on_playwright_loop(
+            self._execute_plan_async(plan=plan, submit_search=submit_search)
+        )
+
+    async def _execute_plan_async(
         self,
         plan: SearchPlan,
         submit_search: bool = False,
