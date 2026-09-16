@@ -78,6 +78,23 @@
   transform: none;
 }
 
+/* Pause button — amber */
+.snypar-badge-btn.pause {
+  background: linear-gradient(135deg, #d97706, #b45309);
+}
+.snypar-badge-btn.pause:hover {
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+}
+
+/* Resume button — emerald */
+.snypar-badge-btn.resume {
+  background: linear-gradient(135deg, #059669, #047857);
+}
+.snypar-badge-btn.resume:hover {
+  background: linear-gradient(135deg, #10b981, #059669);
+}
+
+
 .snypar-toast {
   position: fixed;
   bottom: 24px;

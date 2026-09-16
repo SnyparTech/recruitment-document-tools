@@ -5,7 +5,7 @@
   <title>Snypar Resdex Bot</title>
   <style>
     body {
-      width: 260px;
+      width: 268px;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       margin: 0;
       padding: 16px;
@@ -41,8 +41,10 @@
       height: 8px;
       border-radius: 50%;
       background: #10b981;
+      flex-shrink: 0;
     }
     .dot.offline { background: #ef4444; }
+
     button {
       width: 100%;
       padding: 8px;
@@ -52,8 +54,10 @@
       border-radius: 6px;
       font-weight: 600;
       cursor: pointer;
+      font-size: 13px;
     }
     button:hover { background: #3b82f6; }
+
     .btn-secondary {
       background: #334155;
       margin-top: 6px;
@@ -61,6 +65,23 @@
       font-size: 12px;
     }
     .btn-secondary:hover { background: #475569; }
+
+    /* Pause button — amber, only shown while filling */
+    #pause-btn {
+      background: linear-gradient(135deg, #d97706, #b45309);
+      margin-top: 6px;
+      display: none;   /* hidden by default — shown by popup.js when isFilling */
+    }
+    #pause-btn:hover { background: linear-gradient(135deg, #f59e0b, #d97706); }
+
+    /* Resume button — emerald, only shown while paused */
+    #resume-btn {
+      background: linear-gradient(135deg, #059669, #047857);
+      margin-top: 6px;
+      display: none;   /* hidden by default — shown by popup.js when isPaused */
+    }
+    #resume-btn:hover { background: linear-gradient(135deg, #10b981, #059669); }
+
     .note { margin-top: 8px; font-size: 11px; color: #64748b; text-align: center; }
   </style>
 </head>
@@ -70,9 +91,13 @@
     <span id="dot" class="dot"></span>
     <span id="status-text">Checking server...</span>
   </div>
-  <p>Connected directly to your Naukri Launcher session. Auto-fills mandatory skills with stars ⭐, checkboxes, and active period.</p>
-  <button id="fill-btn">⚡ Auto-Fill Resdex Form Now</button>
+  <p>Connected to your Naukri Launcher session. Auto-fills skills, experience, location, and more.</p>
+
+  <button id="fill-btn">⚡ Auto-Fill Resdex Form</button>
+  <button id="pause-btn">⏸ Pause Auto-Fill</button>
+  <button id="resume-btn">▶ Resume Auto-Fill</button>
   <button id="force-btn" class="btn-secondary">🔄 Force Re-fill (Clear Cache)</button>
+
   <div class="note">Auto-fill has a 90s cooldown. Use Force Re-fill to bypass.</div>
   <script src="popup.js"></script>
 </body>

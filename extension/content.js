@@ -15,6 +15,7 @@ const BACKEND_URLS = [
 ];
 let lastProcessedTimestamp = 0;
 let isFilling = false;
+let isPaused = false;          // True while user has paused mid-fill
 let lastFillCompletedAt = 0;
 const FILL_COOLDOWN_MS = 90_000; // 90s minimum between auto-triggered fills
 const FILL_CACHE_KEY = "snypar_last_fill_ts"; // sessionStorage key
@@ -43,18 +44,47 @@ function createFloatingWidget() {
   badge.innerHTML = `
     <span class="snypar-badge-dot" id="snypar-dot"></span>
     <span id="snypar-status-text" style="font-weight:500;">⚡ Snypar Bot Active</span>
+    <button class="snypar-badge-btn pause" id="snypar-pause-btn" style="display:none;" title="Pause auto-fill">⏸ Pause</button>
+    <button class="snypar-badge-btn resume" id="snypar-resume-btn" style="display:none;" title="Resume auto-fill">▶ Resume</button>
   `;
   document.body.appendChild(badge);
+
+  document.getElementById("snypar-pause-btn").addEventListener("click", () => {
+    isPaused = true;
+    updateWidgetStatus("⏸ Paused — click Resume to continue", "busy");
+    showToast("⏸ Auto-fill paused. Click Resume to continue.");
+  });
+
+  document.getElementById("snypar-resume-btn").addEventListener("click", () => {
+    isPaused = false;
+    updateWidgetStatus("▶ Resuming...", "busy");
+    showToast("▶ Auto-fill resumed.");
+  });
 }
 
-function updateWidgetStatus(text, state = "online") {
+/**
+ * updateWidgetStatus — updates dot state + text + shows/hides Pause/Resume buttons.
+ * state: "online" | "offline" | "busy" | "paused"
+ * showPause: true  → show Pause button (bot is filling, not paused)
+ * showPause: false → hide both buttons (idle/done/error)
+ * showPause: "paused" → hide Pause, show Resume
+ */
+function updateWidgetStatus(text, state = "online", buttonMode = "none") {
   const dot = document.getElementById("snypar-dot");
   const label = document.getElementById("snypar-status-text");
+  const pauseBtn = document.getElementById("snypar-pause-btn");
+  const resumeBtn = document.getElementById("snypar-resume-btn");
   if (!dot || !label) return;
+
   label.innerText = text;
   dot.className =
     "snypar-badge-dot " +
     (state === "offline" ? "offline" : state === "busy" ? "busy" : "");
+
+  // Pause button: show only while actively filling and not paused
+  if (pauseBtn) pauseBtn.style.display  = buttonMode === "filling" ? "flex" : "none";
+  // Resume button: show only while paused mid-fill
+  if (resumeBtn) resumeBtn.style.display = buttonMode === "paused"  ? "flex" : "none";
 }
 
 function showToast(message) {
@@ -73,6 +103,22 @@ function showToast(message) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Pausable sleep — sleeps for `ms`, but also polls isPaused every 300ms.
+ * If paused, it suspends until resumed. Call this between major steps.
+ */
+async function pausableSleep(ms) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    await sleep(Math.min(300, end - Date.now()));
+  }
+  // After base sleep, wait indefinitely while paused
+  while (isPaused) {
+    updateWidgetStatus("⏸ Paused — click Resume to continue", "busy", "paused");
+    await sleep(300);
+  }
 }
 
 // ─── React-Compatible Value Setter ──────────────────────────────────────────
@@ -667,7 +713,7 @@ async function fillResdexForm(plan) {
     const mandatorySet = new Set(requiredKws.map((k) => k.toLowerCase().trim()));
 
     if (allKws.length > 0) {
-      updateWidgetStatus(`Keywords (0/${allKws.length})...`, "busy");
+      updateWidgetStatus(`Keywords (0/${allKws.length})...`, "busy", "filling");
 
       // Ground-truth selector from selectors.py: KEYWORD_INPUT
       const kwInput = document.querySelector(
@@ -681,7 +727,7 @@ async function fillResdexForm(plan) {
 
         for (let i = 0; i < allKws.length; i++) {
           const kw = allKws[i];
-          updateWidgetStatus(`Keyword ${i + 1}/${allKws.length}: "${kw}"`, "busy");
+          updateWidgetStatus(`Keyword ${i + 1}/${allKws.length}: "${kw}"`, "busy", "filling");
           await typeAndConfirmKeyword(kwInput, kw);
 
           if (mandatorySet.has(kw.toLowerCase().trim())) {
@@ -689,11 +735,12 @@ async function fillResdexForm(plan) {
             await clickKeywordStar(kw);
           }
 
-          await sleep(200);
+          // Check pause after each keyword
+          await pausableSleep(200);
         }
 
         // Select any matching AI Suggested Keywords on the page
-        updateWidgetStatus("Checking AI Suggested Keywords...", "busy");
+        updateWidgetStatus("Checking AI Suggested Keywords...", "busy", "filling");
         await selectRelevantAISuggestedKeywords(requiredKws, preferredKws, mandatorySet);
         await sleep(200);
 
@@ -713,12 +760,12 @@ async function fillResdexForm(plan) {
       }
     }
 
-    await sleep(500);
+    await pausableSleep(500);
 
     // ── STEP 2: Experience ──────────────────────────────────────────────────
     // selectors.py: MIN_EXP_INPUT = "input[name='minExp']...", MAX_EXP_INPUT = "input[name='maxExp']..."
     if (plan.min_experience !== null && plan.min_experience !== undefined) {
-      updateWidgetStatus("Experience (Min)...", "busy");
+      updateWidgetStatus("Experience (Min)...", "busy", "filling");
       await setExperience(
         "input[name='minExp'], input[placeholder*='Min experience'], input#minExp, select#minExp, select[name='minExp']",
         plan.min_experience
@@ -726,7 +773,7 @@ async function fillResdexForm(plan) {
       await sleep(300);
     }
     if (plan.max_experience !== null && plan.max_experience !== undefined) {
-      updateWidgetStatus("Experience (Max)...", "busy");
+      updateWidgetStatus("Experience (Max)...", "busy", "filling");
       await setExperience(
         "input[name='maxExp'], input[placeholder*='Max experience'], input#maxExp, select#maxExp, select[name='maxExp']",
         plan.max_experience
@@ -734,7 +781,7 @@ async function fillResdexForm(plan) {
       await sleep(300);
     }
 
-    await sleep(400);
+    await pausableSleep(400);
 
     // ── STEP 3: Location ────────────────────────────────────────────────────
     if (plan.current_location && plan.current_location.length > 0) {
@@ -744,8 +791,9 @@ async function fillResdexForm(plan) {
       if (locInput) {
         for (let i = 0; i < plan.current_location.length; i++) {
           const loc = plan.current_location[i];
-          updateWidgetStatus(`Location ${i + 1}/${plan.current_location.length}: "${loc}"`, "busy");
+          updateWidgetStatus(`Location ${i + 1}/${plan.current_location.length}: "${loc}"`, "busy", "filling");
           await typeAndSelectFromDropdown(locInput, loc, 'Location');
+          await pausableSleep(100);
         }
       }
     }
@@ -759,7 +807,7 @@ async function fillResdexForm(plan) {
       if (reloCb && !reloCb.checked) reloCb.click();
     }
 
-    await sleep(400);
+    await pausableSleep(400);
 
     // ── STEP 4: Salary ──────────────────────────────────────────────────────
     if (plan.salary) {
@@ -795,7 +843,7 @@ async function fillResdexForm(plan) {
 
     // ── STEP 5: Employment Details — Designation ────────────────────────────
     if (plan.designation && plan.designation.length > 0) {
-      updateWidgetStatus("Expanding Employment Details...", "busy");
+      updateWidgetStatus("Expanding Employment Details...", "busy", "filling");
       await ensureSectionExpanded("Employment Details");
       await sleep(500);
 
@@ -805,15 +853,16 @@ async function fillResdexForm(plan) {
       if (desigInput) {
         for (let i = 0; i < plan.designation.length; i++) {
           const desig = plan.designation[i];
-          updateWidgetStatus(`Designation ${i + 1}/${plan.designation.length}: "${desig}"`, "busy");
+          updateWidgetStatus(`Designation ${i + 1}/${plan.designation.length}: "${desig}"`, "busy", "filling");
           await typeAndSelectFromDropdown(desigInput, desig, 'Designation');
+          await pausableSleep(100);
         }
       }
     }
 
     // ── STEP 6: Department Role ─────────────────────────────────────────────
     if (plan.department_role && plan.department_role.length > 0) {
-      updateWidgetStatus("Expanding Employment Details...", "busy");
+      updateWidgetStatus("Expanding Employment Details...", "busy", "filling");
       await ensureSectionExpanded("Employment Details");
       await sleep(400);
 
@@ -823,17 +872,18 @@ async function fillResdexForm(plan) {
       if (roleInput) {
         for (let i = 0; i < plan.department_role.length; i++) {
           const role = plan.department_role[i];
-          updateWidgetStatus(`Dept/Role ${i + 1}/${plan.department_role.length}: "${role}"`, "busy");
+          updateWidgetStatus(`Dept/Role ${i + 1}/${plan.department_role.length}: "${role}"`, "busy", "filling");
           await typeAndSelectFromDropdown(roleInput, role, 'Dept/Role');
+          await pausableSleep(100);
         }
       }
     }
 
-    await sleep(400);
+    await pausableSleep(400);
 
     // ── STEP 7: Notice Period ───────────────────────────────────────────────
     if (plan.notice_period && plan.notice_period.length > 0) {
-      updateWidgetStatus("Notice Period...", "busy");
+      updateWidgetStatus("Notice Period...", "busy", "filling");
       await ensureSectionExpanded("Notice Period");
       await sleep(500);
 
@@ -855,11 +905,11 @@ async function fillResdexForm(plan) {
       }
     }
 
-    await sleep(400);
+    await pausableSleep(400);
 
     // ── STEP 8: Additional Details (only if explicitly requested) ──────────
     if (plan.verified_mobile || plan.verified_email || plan.attached_resume) {
-      updateWidgetStatus("Additional Details...", "busy");
+      updateWidgetStatus("Additional Details...", "busy", "filling");
       await ensureSectionExpanded("Additional Details");
       await sleep(500);
       const ticked = await tickShowOnlyCheckboxes(plan);
@@ -869,18 +919,24 @@ async function fillResdexForm(plan) {
 
     // ── STEP 9: Active In (only if explicitly requested) ───────────────────
     if (plan.active_in) {
-      updateWidgetStatus("Active In...", "busy");
+      updateWidgetStatus("Active In...", "busy", "filling");
       await setActiveIn(plan.active_in);
       await sleep(300);
     }
 
     // ── STEP 10: DOM-STATE VERIFICATION (not time-based) ───────────────────
-    updateWidgetStatus("⚙ Verifying all fields...", "busy");
+    updateWidgetStatus("⚙ Verifying all fields...", "busy", "filling");
     showToast("⚡ Verifying all fields are complete before searching...");
     const verified = await waitForFieldsVerified(plan, 12000);
 
     if (!verified) {
       showToast("⚠ Some fields may not have registered — check the form.");
+    }
+
+    // ── Wait if user paused right before search ───────────────────────────────
+    if (isPaused) {
+      updateWidgetStatus("⏸ Paused before search — resume to submit", "busy", "paused");
+      while (isPaused) { await sleep(300); }
     }
 
     // ── STEP 11: Click Search Candidates ────────────────────────────────────
@@ -935,10 +991,10 @@ async function fillResdexForm(plan) {
     }
 
     if (searchClicked) {
-      updateWidgetStatus("✓ Search Submitted!", "online");
+      updateWidgetStatus("✓ Search Submitted!", "online", "none");
       showToast("✓ 'Search Candidates' executed successfully on Naukri Resdex!");
     } else {
-      updateWidgetStatus("✓ All Fields Filled!", "online");
+      updateWidgetStatus("✓ All Fields Filled!", "online", "none");
       showToast("✓ All criteria completed — manually click 'Search Candidates' if needed.");
       console.warn("[Snypar Bot] Search button not found. Buttons on page:",
         Array.from(document.querySelectorAll("button")).map(b => `[${b.className}] "${b.textContent.trim().substring(0,40)}"`).join(", ")
@@ -946,10 +1002,11 @@ async function fillResdexForm(plan) {
     }
   } catch (err) {
     console.error("[Snypar Bot] Auto-fill error:", err);
-    updateWidgetStatus("⚠ Error During Fill", "offline");
+    updateWidgetStatus("⚠ Error During Fill", "offline", "none");
     showToast(`⚠ Error: ${err.message}`);
   } finally {
     window.removeEventListener("submit", blockSubmit, true);
+    isPaused = false;         // Always clear pause on completion/error
     isFilling = false;
     lastFillCompletedAt = Date.now();
   }
@@ -1101,17 +1158,35 @@ if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage)
     if (req.action === "TRIGGER_FILL") {
       fetchAndFill(true);
       sendResponse({ status: "filling" });
+
     } else if (req.action === "FORCE_FILL") {
-      // Clear cache and cooldown, then force a fresh fill
       sessionStorage.removeItem(FILL_CACHE_KEY);
       lastFillCompletedAt = 0;
       lastProcessedTimestamp = 0;
+      isPaused = false;
       console.log("[Snypar Bot] Force Re-fill triggered — cache cleared.");
       fetchAndFill(true);
       sendResponse({ status: "force-filling" });
+
+    } else if (req.action === "PAUSE") {
+      isPaused = true;
+      updateWidgetStatus("\u23f8 Paused \u2014 click Resume to continue", "busy", "paused");
+      showToast("\u23f8 Auto-fill paused.");
+      sendResponse({ status: "paused" });
+
+    } else if (req.action === "RESUME") {
+      isPaused = false;
+      updateWidgetStatus("\u25b6 Resuming...", "busy", "filling");
+      showToast("\u25b6 Auto-fill resumed.");
+      sendResponse({ status: "resumed" });
+
+    } else if (req.action === "GET_STATUS") {
+      sendResponse({ isFilling, isPaused, onResultsPage: isOnResultsPage() });
     }
+    return true;
   });
 }
+
 
 // ─── Initialize on Page Load ──────────────────────────────────────────────────
 
