@@ -38,6 +38,7 @@ class ResdexDriver:
                     "--no-default-browser-check",
                     "--disable-blink-features=AutomationControlled",
                     "--no-sandbox",
+                    "--disable-http2",
                 ],
                 ignore_default_args=["--enable-automation"],
                 viewport={"width": 1920, "height": 1080},
