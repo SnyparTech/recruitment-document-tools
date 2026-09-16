@@ -1,7 +1,7 @@
 import logging
 import re
 from typing import List, Optional
-from playwright.sync_api import Locator
+from playwright.async_api import Locator
 from app.models.candidate import CandidateProfile
 from app.portals.naukri.selectors import NaukriSelectors
 
@@ -14,7 +14,7 @@ class NaukriExtractor:
     Designed with high fault tolerance so missing optional fields do not fail the search.
     """
 
-    def extract_from_card(
+    async def extract_from_card(
         self, card: Locator, index: int = 1
     ) -> Optional[CandidateProfile]:
         """
@@ -22,15 +22,15 @@ class NaukriExtractor:
         """
         try:
             cand_id = f"nk_live_{index}"
-            name = self._safe_extract_text(card, NaukriSelectors.CANDIDATE_NAME) or f"Candidate {index}"
-            current_title = self._safe_extract_text(card, NaukriSelectors.TITLE) or "Software Professional"
-            exp_text = self._safe_extract_text(card, NaukriSelectors.EXPERIENCE) or "0"
+            name = await self._safe_extract_text(card, NaukriSelectors.CANDIDATE_NAME) or f"Candidate {index}"
+            current_title = await self._safe_extract_text(card, NaukriSelectors.TITLE) or "Software Professional"
+            exp_text = await self._safe_extract_text(card, NaukriSelectors.EXPERIENCE) or "0"
             experience_years = self._parse_experience_years(exp_text)
-            location = self._safe_extract_text(card, NaukriSelectors.LOCATION) or "Not Specified"
-            current_company = self._safe_extract_text(card, NaukriSelectors.CURRENT_COMPANY)
-            education = self._safe_extract_text(card, NaukriSelectors.EDUCATION)
-            skills = self._extract_skills(card)
-            profile_url = self._extract_link(card, NaukriSelectors.PROFILE_LINK) or f"https://www.naukri.com/candidate/{cand_id}"
+            location = await self._safe_extract_text(card, NaukriSelectors.LOCATION) or "Not Specified"
+            current_company = await self._safe_extract_text(card, NaukriSelectors.CURRENT_COMPANY)
+            education = await self._safe_extract_text(card, NaukriSelectors.EDUCATION)
+            skills = await self._extract_skills(card)
+            profile_url = await self._extract_link(card, NaukriSelectors.PROFILE_LINK) or f"https://www.naukri.com/candidate/{cand_id}"
 
             return CandidateProfile(
                 id=cand_id,
@@ -51,7 +51,7 @@ class NaukriExtractor:
             logger.warning(f"Failed to extract candidate card {index}: {exc}")
             return None
 
-    def _safe_extract_text(
+    async def _safe_extract_text(
         self, element: Locator, selector: Optional[str]
     ) -> Optional[str]:
         """Safely extract trimmed text from sub-element if selector is provided."""
@@ -59,13 +59,13 @@ class NaukriExtractor:
             return None
         try:
             sub_el = self._resolve_locator(element, selector)
-            text = sub_el.text_content() or ""
+            text = await sub_el.text_content() or ""
             text = text.strip()
             return text if text else None
         except Exception:
             return None
 
-    def _extract_link(
+    async def _extract_link(
         self, element: Locator, selector: Optional[str]
     ) -> Optional[str]:
         """Safely extract href attribute from link element."""
@@ -73,26 +73,27 @@ class NaukriExtractor:
             return None
         try:
             sub_el = self._resolve_locator(element, selector)
-            return sub_el.get_attribute("href")
+            return await sub_el.get_attribute("href")
         except Exception:
             return None
 
-    def _extract_skills(self, element: Locator) -> List[str]:
+    async def _extract_skills(self, element: Locator) -> List[str]:
         """Extracts list of skill tags from container or pill elements."""
         skills: List[str] = []
         if NaukriSelectors.SKILL_ITEM:
             try:
                 skill_els = self._resolve_locator_all(element, NaukriSelectors.SKILL_ITEM)
-                for i in range(skill_els.count()):
+                count = await skill_els.count()
+                for i in range(count):
                     s = skill_els.nth(i)
-                    txt = (s.text_content() or "").strip()
+                    txt = (await s.text_content() or "").strip()
                     if txt and txt not in skills:
                         skills.append(txt)
             except Exception:
                 pass
 
         if not skills and NaukriSelectors.SKILLS_CONTAINER:
-            text = self._safe_extract_text(element, NaukriSelectors.SKILLS_CONTAINER)
+            text = await self._safe_extract_text(element, NaukriSelectors.SKILLS_CONTAINER)
             if text:
                 skills = [s.strip() for s in re.split(r"[,|•\n]+", text) if s.strip()]
 

@@ -49,7 +49,7 @@ class NaukriScraper:
             card_count = await card_locators.count()
             for idx in range(card_count):
                 card = card_locators.nth(idx)
-                extracted = self.extractor.extract_from_card(card, index=idx + 1)
+                extracted = await self.extractor.extract_from_card(card, index=idx + 1)
                 if extracted:
                     candidates.append(extracted)
 
