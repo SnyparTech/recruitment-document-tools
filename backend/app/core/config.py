@@ -7,11 +7,13 @@ class Settings(BaseSettings):
 
     APP_VERSION: str = "1.0.0"
 
-    # Selenium Persistent Session & Visual Configuration
-    SELENIUM_HEADLESS: bool = False  # Set to False so the browser screen is visible
+    # Browser Persistent Session & Visual Configuration
+    BROWSER_HEADLESS: bool = False
     SELENIUM_TIMEOUT: int = 25
-    LOGIN_WAIT_TIMEOUT: int = 300  # Time allowed on first run if login is needed (5 minutes)
+    LOGIN_WAIT_TIMEOUT: int = 300
     SELENIUM_USER_DATA_DIR: str = r"C:\Users\sriha\AppData\Local\Google\Chrome\User Data"
+    CHROME_BINARY_PATH: Optional[str] = None
+    BROWSER_USER_DATA_DIR: Optional[str] = None
 
     # Candidate Portal URLs (Naukri Resdex Candidate Search)
     NAUKRI_RESDEX_URL: str = "https://resdex.naukri.com"
@@ -53,7 +55,7 @@ class Settings(BaseSettings):
         "*",
     ]
     RATE_LIMIT_PER_MINUTE: int = 120
-    MAX_PAYLOAD_SIZE_BYTES: int = 31457280  # 30 MB for multi-file uploads (Photo + ID Proof + Resume)
+    MAX_PAYLOAD_SIZE_BYTES: int = 31457280
     ENABLE_SECURITY_HEADERS: bool = True
     ENABLE_DLP_LOG_MASKING: bool = True
 

@@ -172,7 +172,28 @@
         }
       }
     },
+    "education_details": {
+      "title": "Education Details",
+      "description": "Collapsible section. UG and PG qualification pills — only populate if education requirements are explicitly stated in the JD.",
+      "fields": {
+        "ug_qualification": {
+          "id": "ug_qualification",
+          "label": "UG Qualification",
+          "type": "pill_select",
+          "options": ["Any UG qualification", "Specific UG qualification", "No UG qualification"],
+          "default": null
+        },
+        "pg_qualification": {
+          "id": "pg_qualification",
+          "label": "PG Qualification",
+          "type": "pill_select",
+          "options": ["Any PG qualification", "Specific PG qualification", "No PG qualification"],
+          "default": null
+        }
+      }
+    },
     "diversity_hiring": {
+
       "title": "Diversity Hiring",
       "fields": {
         "gender": {

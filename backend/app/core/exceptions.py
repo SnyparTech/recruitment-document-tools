@@ -82,18 +82,22 @@ class NaukriSearchFailed(ProfileBotException):
         )
 
 
-class SeleniumDriverError(ProfileBotException):
-    """Raised when Selenium WebDriver encounters initialization or runtime errors."""
+class BrowserDriverError(ProfileBotException):
+    """Raised when browser driver encounters initialization or runtime errors."""
 
     def __init__(
         self,
-        message: str = "Failed to initialize or operate Selenium WebDriver. Ensure Chrome/Chromedriver is installed.",
+        message: str = "Failed to initialize or operate browser driver. Ensure Playwright and Chromium are installed.",
     ):
         super().__init__(
-            error_code="SELENIUM_DRIVER_ERROR",
+            error_code="BROWSER_DRIVER_ERROR",
             message=message,
             status_code=500,
         )
+
+
+# Backwards compatibility alias
+SeleniumDriverError = BrowserDriverError
 
 
 class PortalNotSupportedException(ProfileBotException):

@@ -125,6 +125,16 @@ class SearchPlan(BaseModel):
         description="Target notice period options (e.g. '0-15 days', '1 month')",
     )
 
+    # Education Details
+    ug_qualification: Optional[str] = Field(
+        default=None,
+        description="UG qualification filter. Allowed: 'Any UG qualification', 'Specific UG qualification', 'No UG qualification'",
+    )
+    pg_qualification: Optional[str] = Field(
+        default=None,
+        description="PG qualification filter. Allowed: 'Any PG qualification', 'Specific PG qualification', 'No PG qualification'",
+    )
+
     # Diversity Hiring
     gender: Optional[str] = Field(
         default=None,

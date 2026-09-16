@@ -39,10 +39,26 @@ class ResdexSelectors:
         "input#must-have-checkbox, input[name='must-have-checkbox'], "
         "input#mandatoryKeywords, input[id*='mustHave'], input[id*='mandatory']"
     )
+
+    # Keyword search scope — this is a React custom <span> link, NOT a <select>.
+    # Click it to open the dropdown, then click the desired option.
+    KEYWORD_SCOPE_TRIGGER = (
+        "//span[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'search keyword in')] | "
+        "//a[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'search keyword in')] | "
+        "//div[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'search keyword in')]"
+    )
+    # Fallback: <select> element for keyword scope (some versions)
     KEYWORD_SEARCH_SCOPE_SELECT = (
         "//span[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'search keyword in')]/following::select[1] | "
         "select#keywordScope, select[name='keywordScope']"
     )
+    # Template for clicking a scope option after dropdown opens
+    KEYWORD_SCOPE_OPTION_TEMPLATE = (
+        "//*[normalize-space()='{option}'] | "
+        "//li[contains(text(), '{option}')] | "
+        "//div[contains(text(), '{option}')]"
+    )
+
     EXCLUDE_KEYWORDS_INPUT = (
         "//span[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'add exclude keywords')]/following::input[1] | "
         "input[name='ezKeywordsExclude'], input#excludeKeywords, input[name='excludeKeyword']"
@@ -140,18 +156,32 @@ class ResdexSelectors:
 
     # ──────────────────────────────────────────────────────────────────────
     # Notice Period (Pill Buttons)
+    # Resdex displays pill text with spaces around the dash: "0 - 15 days"
+    # The schema stores "0-15 days" — normalise before matching.
     # ──────────────────────────────────────────────────────────────────────
     NOTICE_PERIOD_ANY = "//*[normalize-space()='Any']"
+    # Template: fill {option} with the EXACT text as shown on the pill
     NOTICE_PERIOD_OPTION_TEMPLATE = (
         "//*[normalize-space()='{option}']"
     )
+    # Normalised display values (schema value → UI pill text)
+    NOTICE_PERIOD_DISPLAY_MAP = {
+        "0-15 days": "0 - 15 days",
+        "1 month": "1 Month",
+        "2 months": "2 Months",
+        "3 months": "3 Months",
+        "more than 3 months": "More than 3 Months",
+        "currently serving notice period": "Currently Serving Notice Period",
+        "any": "Any",
+    }
 
     # ──────────────────────────────────────────────────────────────────────
-    # Education Details (Collapsible Section)
+    # Education Details (Collapsible Section — Pill Buttons)
     # ──────────────────────────────────────────────────────────────────────
     EDUCATION_SECTION_TOGGLE = (
         "//h2[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'education details')]"
     )
+    # UG/PG pills sit inside their respective sub-sections
     UG_QUALIFICATION_PILL_TEMPLATE = (
         "//div[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'ug qualification')]/following::*[normalize-space()='{option}'][1]"
     )
@@ -214,28 +244,49 @@ class ResdexSelectors:
     )
 
     # ──────────────────────────────────────────────────────────────────────
-    # Display Details (Pill Buttons + Checkboxes)
+    # Display Details (Pill Buttons)
     # ──────────────────────────────────────────────────────────────────────
     CANDIDATE_DISPLAY_PILL_TEMPLATE = (
         "//div[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'show')]/following::*[normalize-space()='{option}'][1]"
     )
-    VERIFIED_MOBILE_PILL = (
-        "//*[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'verified mobile')]"
+
+    # "Show only candidates with" — these are PILL buttons with a '+' icon, not checkboxes.
+    # Click the pill element containing the text. Template matches the pill wrapper.
+    SHOW_ONLY_PILL_TEMPLATE = (
+        "//*[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{text}') and "
+        "(contains(@class, 'chip') or contains(@class, 'tag') or contains(@class, 'pill') or contains(@class, 'btn') or contains(@class, 'option') or @role='button' or @role='checkbox')]"
     )
-    VERIFIED_EMAIL_PILL = (
-        "//*[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'verified email')]"
-    )
-    ATTACHED_RESUME_PILL = (
-        "//*[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'attached resume')]"
-    )
+    # Individual text fragments to search for each pill
+    VERIFIED_MOBILE_TEXT = "verified mobile"
+    VERIFIED_EMAIL_TEXT = "verified email"
+    ATTACHED_RESUME_TEXT = "attached resume"
 
     # ──────────────────────────────────────────────────────────────────────
-    # Active In & Search Button (Footer)
+    # Active In (Custom React Dropdown — NOT a <select>)
+    # Strategy: click the trigger span → a dropdown menu appears →
+    # click the option text.
     # ──────────────────────────────────────────────────────────────────────
     ACTIVE_IN_SELECT = (
         "//span[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'active in')]/following::select[1] | "
         "select#activeIn, select[name='activeIn'], select#searchActivePeriod, select[name='searchActivePeriod']"
     )
+    # The clickable trigger that opens the active-in dropdown
+    ACTIVE_IN_DROPDOWN_TRIGGER = (
+        "//span[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'active in')] | "
+        "//div[contains(@class, 'activeIn') or contains(@class, 'active-in')] | "
+        "//div[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'active in') and (@role='combobox' or contains(@class, 'dropdown') or contains(@class, 'select'))]"
+    )
+    # After the dropdown opens, click this option template
+    ACTIVE_IN_OPTION_TEMPLATE = (
+        "//li[normalize-space()='{option}'] | "
+        "//div[normalize-space()='{option}'] | "
+        "//span[normalize-space()='{option}'] | "
+        "//option[normalize-space()='{option}']"
+    )
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Search Submit Button (Footer)
+    # ──────────────────────────────────────────────────────────────────────
     SEARCH_SUBMIT_BUTTON = (
         "//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'search candidates')] | "
         "button#searchButton, button[type='submit'], "

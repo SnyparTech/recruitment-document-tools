@@ -1,8 +1,7 @@
 import logging
 import re
 from typing import List, Optional
-from selenium.webdriver.common.by import By
-from selenium.webdriver.remote.webelement import WebElement
+from playwright.sync_api import Locator
 from app.models.candidate import CandidateProfile
 from app.portals.naukri.selectors import NaukriSelectors
 
@@ -16,38 +15,21 @@ class NaukriExtractor:
     """
 
     def extract_from_card(
-        self, card: WebElement, index: int = 1
+        self, card: Locator, index: int = 1
     ) -> Optional[CandidateProfile]:
         """
         Extracts a single CandidateProfile from a candidate result card element.
         """
         try:
-            # Candidate ID
             cand_id = f"nk_live_{index}"
-
-            # Name
             name = self._safe_extract_text(card, NaukriSelectors.CANDIDATE_NAME) or f"Candidate {index}"
-
-            # Current Title
             current_title = self._safe_extract_text(card, NaukriSelectors.TITLE) or "Software Professional"
-
-            # Experience
             exp_text = self._safe_extract_text(card, NaukriSelectors.EXPERIENCE) or "0"
             experience_years = self._parse_experience_years(exp_text)
-
-            # Location
             location = self._safe_extract_text(card, NaukriSelectors.LOCATION) or "Not Specified"
-
-            # Current Company
             current_company = self._safe_extract_text(card, NaukriSelectors.CURRENT_COMPANY)
-
-            # Education
             education = self._safe_extract_text(card, NaukriSelectors.EDUCATION)
-
-            # Skills
             skills = self._extract_skills(card)
-
-            # Profile URL
             profile_url = self._extract_link(card, NaukriSelectors.PROFILE_LINK) or f"https://www.naukri.com/candidate/{cand_id}"
 
             return CandidateProfile(
@@ -70,45 +52,40 @@ class NaukriExtractor:
             return None
 
     def _safe_extract_text(
-        self, element: WebElement, selector: Optional[str]
+        self, element: Locator, selector: Optional[str]
     ) -> Optional[str]:
         """Safely extract trimmed text from sub-element if selector is provided."""
         if not selector:
             return None
         try:
-            by = By.XPATH if selector.startswith("//") or selector.startswith("(") else By.CSS_SELECTOR
-            sub_el = element.find_element(by, selector)
-            text = sub_el.text.strip()
+            sub_el = self._resolve_locator(element, selector)
+            text = sub_el.text_content() or ""
+            text = text.strip()
             return text if text else None
         except Exception:
             return None
 
     def _extract_link(
-        self, element: WebElement, selector: Optional[str]
+        self, element: Locator, selector: Optional[str]
     ) -> Optional[str]:
         """Safely extract href attribute from link element."""
         if not selector:
             return None
         try:
-            by = By.XPATH if selector.startswith("//") or selector.startswith("(") else By.CSS_SELECTOR
-            sub_el = element.find_element(by, selector)
+            sub_el = self._resolve_locator(element, selector)
             return sub_el.get_attribute("href")
         except Exception:
             return None
 
-    def _extract_skills(self, element: WebElement) -> List[str]:
+    def _extract_skills(self, element: Locator) -> List[str]:
         """Extracts list of skill tags from container or pill elements."""
         skills: List[str] = []
         if NaukriSelectors.SKILL_ITEM:
             try:
-                by = (
-                    By.XPATH
-                    if NaukriSelectors.SKILL_ITEM.startswith("//")
-                    else By.CSS_SELECTOR
-                )
-                skill_els = element.find_elements(by, NaukriSelectors.SKILL_ITEM)
-                for s in skill_els:
-                    txt = s.text.strip()
+                skill_els = self._resolve_locator_all(element, NaukriSelectors.SKILL_ITEM)
+                for i in range(skill_els.count()):
+                    s = skill_els.nth(i)
+                    txt = (s.text_content() or "").strip()
                     if txt and txt not in skills:
                         skills.append(txt)
             except Exception:
@@ -127,3 +104,17 @@ class NaukriExtractor:
         if match:
             return float(match.group(1))
         return 0.0
+
+    @staticmethod
+    def _resolve_locator(parent: Locator, selector: str) -> Locator:
+        """Resolves a CSS or XPath selector relative to a parent locator."""
+        if selector.startswith("//") or selector.startswith("("):
+            return parent.locator(f"xpath={selector}")
+        return parent.locator(selector).first
+
+    @staticmethod
+    def _resolve_locator_all(parent: Locator, selector: str) -> Locator:
+        """Resolves a CSS or XPath selector returning all matches relative to a parent locator."""
+        if selector.startswith("//") or selector.startswith("("):
+            return parent.locator(f"xpath={selector}")
+        return parent.locator(selector)

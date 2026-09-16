@@ -2,7 +2,6 @@ import json
 import logging
 import time
 from typing import List, Optional
-from selenium.webdriver.common.by import By
 from app.core.config import settings
 from app.core.exceptions import (
     NaukriAuthenticationRequired,
@@ -11,9 +10,9 @@ from app.core.exceptions import (
 )
 from app.schemas.requirement import ExecutionResult
 from app.schemas.search_plan import SearchPlan
-from app.selenium.driver import ResdexDriver
-from app.selenium.form_executor import ResdexFormExecutor
-from app.selenium.selectors import ResdexSelectors
+from app.playwright.driver import ResdexDriver
+from app.playwright.form_executor import ResdexFormExecutor
+from app.playwright.selectors import ResdexSelectors
 
 logger = logging.getLogger(__name__)
 
@@ -38,26 +37,26 @@ class NaukriResdexPortal:
         """
         fields_filled: List[str] = []
 
-        # Check if remote debugging is active
-        debug_port = getattr(settings, "SELENIUM_REMOTE_DEBUGGING_PORT", 9222)
-        has_debugging = ResdexDriver._is_remote_debugging_open(debug_port)
+        page = self.driver_manager.page
 
-        driver = self.driver_manager.driver if has_debugging else None
-        if driver is None:
-            # Do not spawn a secondary blank Chrome window.
-            # The SearchPlan is synchronized to /search/active-plan for the extension
-            # in the user's logged-in Naukri Launcher Chrome tab.
-            logger.info("SearchPlan synchronized for live auto-fill in authenticated Naukri tab.")
-            return ExecutionResult(
-                requested=True,
-                executed=True,
-                form_filled=True,
-                search_submitted=submit_search,
-                fields_interacted=["keywords.mandatory_stars", "show_only.3_checkboxes", "active_in.15_days", "live_tab_sync"],
-                message="Search criteria synchronized! Form auto-filling directly in your logged-in Naukri Resdex tab.",
-            )
+        # Check if we're connected to a live page (extension sync) or starting fresh
+        try:
+            current_url = page.url
+            if "resdex.naukri.com" not in current_url and "naukri.com" in current_url:
+                # Naukri is open but not on Resdex - let the extension handle sync
+                logger.info("SearchPlan synchronized for live auto-fill in authenticated Naukri tab.")
+                return ExecutionResult(
+                    requested=True,
+                    executed=True,
+                    form_filled=True,
+                    search_submitted=submit_search,
+                    fields_interacted=["keywords.mandatory_stars", "show_only.3_checkboxes", "active_in.15_days", "live_tab_sync"],
+                    message="Search criteria synchronized! Form auto-filling directly in your logged-in Naukri Resdex tab.",
+                )
+        except Exception:
+            pass
 
-        executor = ResdexFormExecutor(driver=driver, wait=self.driver_manager.wait)
+        executor = ResdexFormExecutor(page)
 
         try:
             # ── Step 1: Navigate to Resdex Search page ──────────────────────
@@ -66,10 +65,10 @@ class NaukriResdexPortal:
             time.sleep(2)
 
             # ── Step 2: Handle login gateway if not already authenticated ────
-            self._handle_auth_if_needed(driver)
+            self._handle_auth_if_needed(page)
 
             # ── Step 3: Check for security challenges ────────────────────────
-            self._check_challenges(driver)
+            self._check_challenges(page)
 
             # ══════════════════════════════════════════════════════════════════
             # BASIC SEARCH SECTION
@@ -94,12 +93,12 @@ class NaukriResdexPortal:
                         fields_filled.append("keywords.mandatory")
                         print(f"  [+] Mandatory checkbox: {plan.keywords.mandatory}", flush=True)
 
-                if plan.keywords.search_scope and plan.keywords.search_scope != "Entire resume":
-                    if executor.select_option(
-                        ResdexSelectors.KEYWORD_SEARCH_SCOPE_SELECT, plan.keywords.search_scope
-                    ):
+                # Set keyword search scope (React custom dropdown, not <select>)
+                scope = (plan.keywords.search_scope or "Entire resume").strip()
+                if scope and scope != "Entire resume":
+                    if executor.fill_keyword_scope(scope):
                         fields_filled.append("keywords.search_scope")
-                        print(f"  [+] Keyword scope: {plan.keywords.search_scope}", flush=True)
+                        print(f"  [+] Keyword scope: {scope}", flush=True)
 
                 if plan.keywords.excluded:
                     ex_str = " ".join(plan.keywords.excluded)
@@ -123,13 +122,11 @@ class NaukriResdexPortal:
             if plan.current_location:
                 print("\n[3.5/7] Filling Location...", flush=True)
                 for loc in plan.current_location:
-                    # Use JS-based location filling for reliability
                     loc_filled = executor.fill_location(loc)
                     if loc_filled:
                         fields_filled.append(f"current_location.{loc}")
                         print(f"  [+] Location: {loc}", flush=True)
                     else:
-                        # Fallback to select_multiple
                         if executor.select_multiple(
                             ResdexSelectors.LOCATION_INPUT, [loc]
                         ):
@@ -214,9 +211,29 @@ class NaukriResdexPortal:
             if plan.notice_period:
                 print("\n[5/7] Filling Notice Period & Diversity...", flush=True)
                 for np in plan.notice_period:
-                    if executor.click_pill(ResdexSelectors.NOTICE_PERIOD_OPTION_TEMPLATE, np):
+                    # Normalise schema value -> UI pill display text
+                    np_display = ResdexSelectors.NOTICE_PERIOD_DISPLAY_MAP.get(
+                        np.lower().strip(), np
+                    )
+                    if executor.click_pill(ResdexSelectors.NOTICE_PERIOD_OPTION_TEMPLATE, np_display):
                         fields_filled.append(f"notice_period.{np}")
-                        print(f"  [+] Notice period: '{np}'", flush=True)
+                        print(f"  [+] Notice period: '{np_display}'", flush=True)
+                    elif executor.click_pill(ResdexSelectors.NOTICE_PERIOD_OPTION_TEMPLATE, np):
+                        fields_filled.append(f"notice_period.{np}")
+                        print(f"  [+] Notice period (raw): '{np}'", flush=True)
+
+            # ══════════════════════════════════════════════════════════════════
+            # EDUCATION DETAILS SECTION (Collapsible -- Pill Buttons)
+            # ══════════════════════════════════════════════════════════════════
+            if plan.ug_qualification or plan.pg_qualification:
+                print("\n[5.5/7] Filling Education Details...", flush=True)
+                edu_filled = executor.fill_education_qualifications(
+                    ug_qualification=plan.ug_qualification,
+                    pg_qualification=plan.pg_qualification,
+                )
+                fields_filled.extend(edu_filled)
+                if edu_filled:
+                    print(f"  [+] Education: {edu_filled}", flush=True)
 
             # ══════════════════════════════════════════════════════════════════
             # DIVERSITY HIRING SECTION (Collapsible - Pill Buttons)
@@ -296,13 +313,11 @@ class NaukriResdexPortal:
             # ══════════════════════════════════════════════════════════════════
             print("\n[6.5/7] Filling Display Details & Active In...", flush=True)
 
-            # Candidate Display (All candidates / Modified candidates)
             if plan.candidate_display:
                 if executor.click_pill(ResdexSelectors.CANDIDATE_DISPLAY_PILL_TEMPLATE, plan.candidate_display):
                     fields_filled.append("candidate_display")
                     print(f"  [+] Display: {plan.candidate_display}", flush=True)
 
-            # "Show only candidates with" pills - ONLY if explicitly specified in search plan
             if plan.verified_mobile or plan.verified_email or plan.attached_resume:
                 ticked_opts = executor.tick_show_only_candidates_options(
                     verified_mobile=bool(plan.verified_mobile),
@@ -314,7 +329,6 @@ class NaukriResdexPortal:
                         fields_filled.append(f"show_only.{opt.lower().replace(' ', '_')}")
                     print(f"  [+] Show only with: {ticked_opts}", flush=True)
 
-            # Active In - ONLY if explicitly specified in search plan
             if plan.active_in:
                 active_ok = executor.select_active_in(plan.active_in)
                 if active_ok:
@@ -326,7 +340,6 @@ class NaukriResdexPortal:
             # ══════════════════════════════════════════════════════════════════
             print("\n[7/7] Verifying form fill...", flush=True)
 
-            # Dismiss any open dropdowns and wait for form state to stabilize
             executor.dismiss_all_dropdowns()
             time.sleep(0.5)
 
@@ -375,39 +388,34 @@ class NaukriResdexPortal:
             raise
         except Exception as exc:
             logger.error(f"Form execution encountered error: {exc}")
-            raise NaukriSearchFailed(f"Selenium Resdex execution error: {str(exc)}")
+            raise NaukriSearchFailed(f"Playwright Resdex execution error: {str(exc)}")
         finally:
             self.driver_manager.close()
 
-    def _handle_auth_if_needed(self, driver) -> None:
+    def _handle_auth_if_needed(self, page) -> None:
         """Checks if redirected to a login page or ChangeLogin prompt and handles it."""
-        current_url = driver.current_url.lower()
+        current_url = page.url.lower()
 
         # Case 1: Resdex ChangeLogin session switch prompt
         if "changelogin" in current_url:
             print("  [+] Detected Resdex 'Change Login' session prompt. Auto-confirming session switch...", flush=True)
             try:
-                # Click the Login / Confirm button on DisplayChangeLogin page
-                buttons = driver.find_elements(
-                    By.CSS_SELECTOR, "input#changeLoginDDBtn, input[value='Login'], input[value*='Main Menu'], button.btn-primary"
+                buttons = page.locator(
+                    "input#changeLoginDDBtn, input[value='Login'], input[value*='Main Menu'], button.btn-primary"
                 )
-                clicked = False
-                for btn in buttons:
-                    try:
-                        driver.execute_script("arguments[0].click();", btn)
-                        clicked = True
+                for i in range(buttons.count()):
+                    btn = buttons.nth(i)
+                    if btn.is_visible():
+                        btn.evaluate("el => el.click()")
                         break
-                    except Exception:
-                        pass
                 time.sleep(2)
-                # Ensure we are back on the advSrch page
-                if "advsrch" not in driver.current_url.lower():
+                if "advsrch" not in page.url.lower():
                     self.driver_manager.navigate_to(ResdexSelectors.SEARCH_PAGE_URL)
                     time.sleep(2)
             except Exception as exc:
                 logger.warning(f"Error handling ChangeLogin prompt: {exc}")
 
-            current_url = driver.current_url.lower()
+            current_url = page.url.lower()
 
         # Case 2: Full recruiter authentication required
         if ("recruit/login" in current_url or "nlogin" in current_url) and "changelogin" not in current_url:
@@ -421,7 +429,7 @@ class NaukriResdexPortal:
             while time.time() - start_time < settings.LOGIN_WAIT_TIMEOUT:
                 time.sleep(2)
                 try:
-                    curr = driver.current_url.lower()
+                    curr = page.url.lower()
                     if "recruit/login" not in curr and "nlogin" not in curr:
                         logged_in = True
                         break
@@ -433,11 +441,11 @@ class NaukriResdexPortal:
                     "Timed out waiting for login session. Please log in to your recruiter account."
                 )
 
-    def _check_challenges(self, driver) -> None:
+    def _check_challenges(self, page) -> None:
         """Detects if blocked or challenged."""
         try:
-            el = driver.find_elements(By.CSS_SELECTOR, ResdexSelectors.CAPTCHA_CONTAINER)
-            if el:
+            captcha = page.locator(ResdexSelectors.CAPTCHA_CONTAINER)
+            if captcha.count() > 0 and captcha.first.is_visible():
                 raise NaukriSecurityChallenge()
         except NaukriSecurityChallenge:
             raise

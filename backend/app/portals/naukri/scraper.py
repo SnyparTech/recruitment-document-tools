@@ -1,11 +1,6 @@
 import logging
-import re
 import time
-import urllib.parse
 from typing import List
-from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.support import expected_conditions as EC
 from app.core.config import settings
 from app.core.exceptions import (
     NaukriAuthenticationRequired,
@@ -36,33 +31,26 @@ class NaukriScraper:
         self, requirement: ParsedRequirement, query: GeneratedQuery
     ) -> List[CandidateProfile]:
         """
-        Executes candidate profile search on live Naukri using Selenium.
+        Executes candidate profile search on live Naukri using Playwright.
         """
         try:
-            # Step 1: Open Naukri Resdex Portal Page
             candidate_search_url = settings.NAUKRI_RESDEX_URL
             logger.info(f"Navigating to live Naukri Resdex portal: {candidate_search_url}")
             self.client.navigate_to(candidate_search_url)
 
-            # Step 2: Give user time to log in if on login gateway
             self._wait_for_login_if_needed()
-
-            # Step 3: Check for CAPTCHA / Security Challenges
             self._check_for_challenges()
 
-            driver = self.client.driver
-            wait = self.client.wait
+            page = self.client.page
 
-            # Step 4: Fill candidate search parameters and submit
-            card_elements = self._fill_and_submit_search(query)
+            card_locators = self._fill_and_submit_search(query)
 
-            # Step 5: Check challenges again post-search
             self._check_for_challenges()
 
-            # Step 6: Extract candidate profiles from result tuples
             candidates: List[CandidateProfile] = []
-            for idx, card in enumerate(card_elements, start=1):
-                extracted = self.extractor.extract_from_card(card, index=idx)
+            for idx in range(card_locators.count()):
+                card = card_locators.nth(idx)
+                extracted = self.extractor.extract_from_card(card, index=idx + 1)
                 if extracted:
                     candidates.append(extracted)
 
@@ -80,14 +68,10 @@ class NaukriScraper:
             self.client.close()
 
     def _wait_for_login_if_needed(self) -> None:
-        """
-        Detects if Naukri redirected to a login page and gives the user time
-        to manually log in to their recruiter account in the opened Chrome window.
-        """
-        driver = self.client.driver
-        current_url = driver.current_url.lower()
+        """Detects if Naukri redirected to a login page and gives user time to log in."""
+        page = self.client.page
+        current_url = page.url.lower()
 
-        # Check if currently gated by login
         if "login" in current_url or "auth" in current_url:
             print("\n" + "=" * 80)
             print("[!] NAUKRI LOGIN REQUIRED: Please complete login in the opened Chrome window.")
@@ -100,7 +84,7 @@ class NaukriScraper:
             while time.time() - start_time < settings.LOGIN_WAIT_TIMEOUT:
                 time.sleep(2)
                 try:
-                    curr = driver.current_url.lower()
+                    curr = page.url.lower()
                     if "login" not in curr and "auth" not in curr:
                         print("[+] Login detected! Resuming automated candidate search...\n")
                         logged_in = True
@@ -113,86 +97,61 @@ class NaukriScraper:
                     f"Timed out waiting for manual login ({settings.LOGIN_WAIT_TIMEOUT}s). Please log in to your recruiter account and retry."
                 )
 
-    def _fill_and_submit_search(self, query: GeneratedQuery) -> List[any]:
-        """
-        Enters candidate keywords, location, and experience filters, and submits candidate search.
-        """
-        driver = self.client.driver
-        wait = self.client.wait
+    def _fill_and_submit_search(self, query: GeneratedQuery):
+        """Enters candidate search parameters and submits."""
+        page = self.client.page
 
         try:
-            # Keyword / Designation search input
-            search_input = wait.until(
-                EC.presence_of_element_located(
-                    (By.CSS_SELECTOR, NaukriSelectors.SEARCH_INPUT)
-                )
-            )
-            search_input.clear()
-            search_input.send_keys(query.primary_query)
+            search_input = page.locator(NaukriSelectors.SEARCH_INPUT).first
+            search_input.wait_for(state="visible")
+            search_input.fill("")
+            search_input.fill(query.primary_query)
 
-            # Location input
             if query.location:
                 try:
-                    loc_input = driver.find_element(
-                        By.CSS_SELECTOR, NaukriSelectors.LOCATION_INPUT
-                    )
-                    loc_input.clear()
-                    loc_input.send_keys(query.location)
+                    loc_input = page.locator(NaukriSelectors.LOCATION_INPUT).first
+                    loc_input.fill("")
+                    loc_input.fill(query.location)
                 except Exception:
                     pass
 
-            # Experience inputs
             if query.min_experience is not None:
                 try:
-                    min_exp_el = driver.find_element(
-                        By.CSS_SELECTOR, NaukriSelectors.EXPERIENCE_MIN_INPUT
-                    )
-                    min_exp_el.send_keys(str(int(query.min_experience)))
+                    min_exp_el = page.locator(NaukriSelectors.EXPERIENCE_MIN_INPUT).first
+                    min_exp_el.fill(str(int(query.min_experience)))
                 except Exception:
                     pass
 
-            # Submit search
             try:
-                btn = driver.find_element(
-                    By.CSS_SELECTOR, NaukriSelectors.SEARCH_BUTTON
-                )
+                btn = page.locator(NaukriSelectors.SEARCH_BUTTON).first
                 btn.click()
             except Exception:
-                search_input.send_keys(Keys.RETURN)
+                search_input.press("Enter")
 
-            # Wait for candidate profile result tuples to load
-            return wait.until(
-                EC.presence_of_all_elements_located(
-                    (By.CSS_SELECTOR, NaukriSelectors.RESULT_CARD)
-                )
-            )
+            result_cards = page.locator(NaukriSelectors.RESULT_CARD)
+            result_cards.first.wait_for(state="visible", timeout=15000)
+            return result_cards
+
         except Exception as exc:
             logger.warning(f"Candidate search interaction encountered: {exc}")
-            # Try finding any existing candidate result cards on the page
-            return driver.find_elements(By.CSS_SELECTOR, NaukriSelectors.RESULT_CARD)
+            return page.locator(NaukriSelectors.RESULT_CARD)
 
     def _check_for_challenges(self) -> None:
-        """
-        Detects if Naukri presented a CAPTCHA or blocked page.
-        """
-        driver = self.client.driver
+        """Detects if Naukri presented a CAPTCHA or blocked page."""
+        page = self.client.page
 
-        # Check for CAPTCHA container
         try:
-            captcha_el = driver.find_elements(
-                By.CSS_SELECTOR, NaukriSelectors.CAPTCHA_CONTAINER
-            )
-            if captcha_el:
+            captcha = page.locator(NaukriSelectors.CAPTCHA_CONTAINER)
+            if captcha.count() > 0 and captcha.first.is_visible():
                 raise NaukriSecurityChallenge()
         except NaukriSecurityChallenge:
             raise
         except Exception:
             pass
 
-        # Check for Access Denied
         try:
-            page_src = driver.page_source.lower()
-            if "access denied" in page_src or "cloudflare" in page_src and "verify you are human" in page_src:
+            page_text = (page.content() or "").lower()
+            if "access denied" in page_text or ("cloudflare" in page_text and "verify you are human" in page_text):
                 raise NaukriSecurityChallenge()
         except NaukriSecurityChallenge:
             raise

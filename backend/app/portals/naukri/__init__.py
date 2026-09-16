@@ -9,7 +9,7 @@ from app.portals.naukri.scraper import NaukriScraper
 class NaukriPortal(BaseCandidatePortal):
     """
     Naukri Candidate Portal Adapter.
-    Supports both safe mock mode for local testing and Selenium browser mode for authorized live search.
+    Supports both safe mock mode for local testing and Playwright browser mode for authorized live search.
     """
 
     def __init__(self, scraper: NaukriScraper = None):
