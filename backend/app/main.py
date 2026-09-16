@@ -1,5 +1,15 @@
+import asyncio
 import logging
 import os
+import sys
+
+# MUST be at module level, before asyncio.run() creates the event loop.
+# uvicorn worker process imports app.main first, THEN calls asyncio.run().
+# On Windows, SelectorEventLoop (default in some uvicorn versions) cannot spawn
+# subprocesses. async_playwright needs to spawn Chrome → requires ProactorEventLoop.
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
 # Auto-reload trigger: groq and gemini updated
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
