@@ -202,6 +202,22 @@ const SUGGESTION_SELECTORS = [
   "div[class*='recommend'] span", "div[class*='recommend'] button",
 ].join(", ");
 
+// Real Resdex suggestion/dropdown items (skills, designations, locations) are
+// always short single values — never multi-hundred-character text. Without this
+// cap, the broad class-substring selectors above (e.g. div[class*='option'])
+// can accidentally match an unrelated on-page element like a "similar
+// candidates" preview card (which can run to 1000+ characters of bio text)
+// and, if clicked as a false-positive "suggestion", trigger a real navigation
+// away from the form mid-fill. Confirmed live: a candidate bio card containing
+// the substring "AI Engineer" was matched and clicked instead of the actual
+// Designation dropdown option, navigating the page to /v3/search prematurely.
+const MAX_SUGGESTION_TEXT_LENGTH = 150;
+
+function isPlausibleSuggestionElement(el) {
+  const text = el.textContent.trim();
+  return text.length > 0 && text.length <= MAX_SUGGESTION_TEXT_LENGTH;
+}
+
 async function waitForDropdown(maxMs = 1500) {
   const step = 150;
   let elapsed = 0;
@@ -209,7 +225,7 @@ async function waitForDropdown(maxMs = 1500) {
     await sleep(step);
     elapsed += step;
     const sugs = document.querySelectorAll(SUGGESTION_SELECTORS);
-    if (Array.from(sugs).some(s => s.offsetParent !== null)) return true;
+    if (Array.from(sugs).some(s => s.offsetParent !== null && isPlausibleSuggestionElement(s))) return true;
   }
   return false;
 }
@@ -221,7 +237,7 @@ function clickBestSuggestion(targetText) {
   const tokens = target.split(/[\s\/\-_,]+/).filter(w => w.length >= 2);
 
   const all = Array.from(document.querySelectorAll(SUGGESTION_SELECTORS))
-    .filter(s => s.offsetParent !== null && s.textContent.trim().length > 0);
+    .filter(s => s.offsetParent !== null && isPlausibleSuggestionElement(s));
 
   if (all.length === 0) return false;
 
@@ -450,7 +466,7 @@ async function selectRelevantAISuggestedKeywords(requiredKws, preferredKws, mand
   ];
 
   const chips = Array.from(document.querySelectorAll(aiChipSelectors.join(", ")))
-    .filter(el => el.offsetParent !== null && el.textContent.trim().length > 0);
+    .filter(el => el.offsetParent !== null && isPlausibleSuggestionElement(el));
 
   for (const chip of chips) {
     const raw = chip.textContent.replace(/^[+\s]+/, "").trim().toLowerCase();
@@ -590,9 +606,15 @@ async function clickPill(sectionName, pillText) {
   await ensureSectionExpanded(sectionName);
   await sleep(300);
 
+  // Same guard as isPlausibleSuggestionElement (see clickBestSuggestion) — a real
+  // pill label is always a short value ("Female candidates", "Any UG
+  // qualification"), never paragraph-length text. Without this, the broad
+  // "span, div, button, label, a, li" query below can match an unrelated
+  // candidate-card element elsewhere on the page and click it instead of the
+  // intended pill, exactly like the clickBestSuggestion bug found in a live run.
   const allElements = Array.from(document.querySelectorAll(
     "span, div, button, label, a, li"
-  )).filter(el => el.offsetParent !== null);
+  )).filter(el => el.offsetParent !== null && isPlausibleSuggestionElement(el));
 
   // Try exact match first
   for (const el of allElements) {
