@@ -72,16 +72,22 @@ async def search_candidates(
     if request.attached_resume is not None:
         plan.attached_resume = request.attached_resume
 
-    _latest_search_plan = plan.model_dump()
+    plan_dict = plan.model_dump()
+    plan_dict["_submit_search"] = request.submit_search
+    _latest_search_plan = plan_dict
     _latest_plan_timestamp = time.time()
 
+    msg = "SearchPlan generated. Extension will auto-fill the form."
+    if request.submit_search:
+        msg = "SearchPlan generated. Extension will auto-fill AND submit search."
+
     execution_result = ExecutionResult(
-        requested=False,
+        requested=request.submit_search,
         executed=False,
         form_filled=False,
         search_submitted=False,
         fields_interacted=[],
-        message="SearchPlan generated. Extension will auto-fill the form.",
+        message=msg,
     )
 
     return CandidateSearchResponse(
@@ -94,6 +100,7 @@ async def search_candidates(
 
 class DirectSearchPlanRequest(BaseModel):
     plan: SearchPlan = Field(..., description="Pre-built SearchPlan to store for extension")
+    submit_search: bool = Field(default=False, description="Whether extension should auto-click Search Candidates")
 
 
 @router.post(
@@ -110,16 +117,22 @@ async def store_search_plan(
 
     plan = request.plan
 
-    _latest_search_plan = plan.model_dump()
+    plan_dict = plan.model_dump()
+    plan_dict["_submit_search"] = request.submit_search
+    _latest_search_plan = plan_dict
     _latest_plan_timestamp = time.time()
 
+    msg = "SearchPlan stored. Extension will auto-fill the form."
+    if request.submit_search:
+        msg = "SearchPlan stored. Extension will auto-fill AND submit search."
+
     execution_result = ExecutionResult(
-        requested=False,
+        requested=request.submit_search,
         executed=False,
         form_filled=False,
         search_submitted=False,
         fields_interacted=[],
-        message="SearchPlan stored. Extension will auto-fill the form.",
+        message=msg,
     )
 
     return CandidateSearchResponse(

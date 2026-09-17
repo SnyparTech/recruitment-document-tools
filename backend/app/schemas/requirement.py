@@ -17,11 +17,11 @@ class CandidateSearchRequest(BaseModel):
     )
     execute: bool = Field(
         default=False,
-        description="Whether to execute Selenium form filling (default: false for dry-run plan generation)",
+        description="Whether to execute form filling via the browser extension (default: false for dry-run plan generation)",
     )
     submit_search: bool = Field(
         default=False,
-        description="Whether to submit the search after filling form fields (default: false for safe inspection)",
+        description="Whether to auto-click Search Candidates after filling form fields (default: false for safe inspection)",
     )
     active_in: Optional[str] = Field(
         default=None,
@@ -63,10 +63,10 @@ class ValidationResult(BaseModel):
 
 
 class ExecutionResult(BaseModel):
-    """Selenium execution status report."""
+    """Extension execution status report."""
 
-    requested: bool = Field(default=False, description="Whether execution was requested")
-    executed: bool = Field(default=False, description="Whether Selenium executed actions")
+    requested: bool = Field(default=False, description="Whether auto-submit was requested")
+    executed: bool = Field(default=False, description="Whether execution was triggered")
     form_filled: bool = Field(default=False, description="Whether Resdex form fields were filled")
     search_submitted: bool = Field(default=False, description="Whether Search button was clicked")
     fields_interacted: List[str] = Field(default_factory=list, description="Fields filled in the Resdex form")

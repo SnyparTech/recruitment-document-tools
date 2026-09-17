@@ -566,7 +566,7 @@ export default function SearchAgentView() {
               marginBottom: '16px'
             }}>
               <div style={{ fontWeight: 700, color: 'var(--primary)', marginBottom: '4px' }}>
-                Selenium Execution Report
+                Execution Report
               </div>
               <div style={{ fontSize: '0.88rem', color: 'var(--text-secondary)' }}>
                 {searchResponse.execution.message}

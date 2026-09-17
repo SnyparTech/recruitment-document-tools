@@ -812,7 +812,7 @@ async function waitForFieldsVerified(plan, timeoutMs = 12000) {
 
 // ─── Main Form Fill ───────────────────────────────────────────────────────────
 
-async function fillResdexForm(plan) {
+async function fillResdexForm(plan, autoSubmit = false) {
   if (isFilling) return;
   isFilling = true;
   console.log("[Snypar Bot] Starting auto-fill with SearchPlan:", plan);
@@ -1296,9 +1296,7 @@ async function fillResdexForm(plan) {
     }
 
     // ── STEP 13: Click Search Candidates ────────────────────────────────────
-    updateWidgetStatus("Clicking Search Candidates...", "busy");
     window.removeEventListener("submit", blockSubmit, true);
-    await sleep(600);
 
     // Blur all inputs to commit React state and clear any text selection
     document.querySelectorAll("input, select, textarea").forEach(el => {
@@ -1307,57 +1305,87 @@ async function fillResdexForm(plan) {
     });
     window.getSelection().removeAllRanges();
     document.activeElement?.blur();
-    await sleep(300);
+    await sleep(500);
 
     let searchClicked = false;
 
-    const preciseSelectors = [
-      "button#searchButton",
-      "button[data-testid='search-btn']",
-      "button[data-testid='searchButton']",
-      "a.searchProfiles",
-      "button.searchProfiles",
-      "button.search-btn",
-      "button[class*='searchBtn']",
-      "button[class*='search-btn']",
-      "button[class*='SearchBtn']",
-      "button[class*='srchBtn']",
-      "a[class*='searchProfiles']",
-    ];
-    for (const sel of preciseSelectors) {
-      const btn = document.querySelector(sel);
-      if (btn && btn.offsetParent !== null) {
-        btn.scrollIntoView({ behavior: "smooth", block: "center" });
-        await sleep(400);
-        btn.click();
-        searchClicked = true;
-        console.log(`[Snypar Bot] ✓ Search clicked via precise selector: ${sel}`);
-        break;
-      }
-    }
+    if (autoSubmit) {
+      updateWidgetStatus("Clicking Search Candidates...", "busy");
+      await sleep(400);
 
-    if (!searchClicked) {
-      const allBtns = Array.from(document.querySelectorAll("button, a[role='button']"));
-      const searchBtn = allBtns.find((b) => {
-        const txt = b.textContent.trim().toLowerCase();
-        return (txt === "search candidates" || txt === "search" && b.type === "submit") &&
-               b.offsetParent !== null;
-      });
-      if (searchBtn) {
-        searchBtn.scrollIntoView({ behavior: "smooth", block: "center" });
-        await sleep(400);
-        searchBtn.click();
-        searchClicked = true;
-        console.log(`[Snypar Bot] ✓ Search clicked via text match: "${searchBtn.textContent.trim()}"`);
+      // Strategy 1: precise CSS selectors
+      const preciseSelectors = [
+        "button#searchButton",
+        "button[data-testid='search-btn']",
+        "button[data-testid='searchButton']",
+        "a.searchProfiles",
+        "button.searchProfiles",
+        "button.search-btn",
+        "button[class*='searchBtn']",
+        "button[class*='search-btn']",
+        "button[class*='SearchBtn']",
+        "button[class*='srchBtn']",
+        "a[class*='searchProfiles']",
+        "input[type='submit'][value*='Search']",
+        "input[type='submit'][value*='search']",
+      ];
+      for (const sel of preciseSelectors) {
+        const btn = document.querySelector(sel);
+        if (btn && btn.offsetParent !== null) {
+          btn.scrollIntoView({ behavior: "smooth", block: "center" });
+          await sleep(400);
+          btn.click();
+          searchClicked = true;
+          console.log(`[Snypar Bot] ✓ Search clicked via precise selector: ${sel}`);
+          break;
+        }
+      }
+
+      // Strategy 2: text match on all clickable elements including input[type=submit]
+      if (!searchClicked) {
+        const allBtns = Array.from(document.querySelectorAll(
+          "button, a[role='button'], input[type='submit'], input[type='button']"
+        ));
+        const searchBtn = allBtns.find((b) => {
+          const txt = (b.value || b.textContent || "").trim().toLowerCase();
+          return (txt.includes("search candidate") || txt === "search" || txt === "search candidates") &&
+                 b.offsetParent !== null;
+        });
+        if (searchBtn) {
+          searchBtn.scrollIntoView({ behavior: "smooth", block: "center" });
+          await sleep(400);
+          searchBtn.click();
+          searchClicked = true;
+          console.log(`[Snypar Bot] ✓ Search clicked via text match: "${(searchBtn.value || searchBtn.textContent).trim()}"`);
+        }
+      }
+
+      // Strategy 3: find submit button inside the form
+      if (!searchClicked) {
+        const forms = document.querySelectorAll("form");
+        for (const form of forms) {
+          const submitBtn = form.querySelector("button[type='submit'], input[type='submit']");
+          if (submitBtn && submitBtn.offsetParent !== null) {
+            submitBtn.scrollIntoView({ behavior: "smooth", block: "center" });
+            await sleep(400);
+            submitBtn.click();
+            searchClicked = true;
+            console.log(`[Snypar Bot] ✓ Search clicked via form submit button`);
+            break;
+          }
+        }
       }
     }
 
     if (searchClicked) {
       updateWidgetStatus("✓ Search Submitted!", "online", "none");
       showToast("✓ 'Search Candidates' executed successfully on Naukri Resdex!");
+    } else if (autoSubmit) {
+      updateWidgetStatus("⚠ Search button not found", "online", "none");
+      showToast("⚠ Could not find 'Search Candidates' button — please click it manually.");
     } else {
       updateWidgetStatus("✓ All Fields Filled!", "online", "none");
-      showToast("✓ All criteria completed — manually click 'Search Candidates' if needed.");
+      showToast("✓ All criteria filled — click 'Search Candidates' to execute search.");
     }
   } catch (err) {
     console.error("[Snypar Bot] Auto-fill error:", err);
@@ -1483,8 +1511,9 @@ async function fetchAndFill(forced = false) {
       }
 
       lastProcessedTimestamp = fetchedData.timestamp;
+      const shouldSubmit = fetchedData.plan?._submit_search === true;
       showToast("⚡ Snypar Bot: Auto-filling candidate search criteria...");
-      await fillResdexForm(fetchedData.plan);
+      await fillResdexForm(fetchedData.plan, shouldSubmit);
 
       sessionStorage.setItem(FILL_CACHE_KEY, planTs);
 
