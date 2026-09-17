@@ -179,6 +179,14 @@ class RequirementAgent:
         self.model = model or settings.GROQ_MODEL
         self.schema = schema or load_resdex_schema()
 
+        edu_fields = self.schema.get("sections", {}).get("education_details", {}).get("fields", {})
+        self._ug_options = edu_fields.get("ug_qualification", {}).get(
+            "options", ["Any UG qualification", "Specific UG qualification", "No UG qualification"]
+        )
+        self._pg_options = edu_fields.get("pg_qualification", {}).get(
+            "options", ["Any PG qualification", "Specific PG qualification", "No PG qualification"]
+        )
+
     def generate_search_plan(self, requirement: str) -> SearchPlan:
         """
         Main entrypoint: parses requirement into validated SearchPlan.
@@ -221,7 +229,7 @@ class RequirementAgent:
             logger.info("No LLM API key detected (Groq/Gemini). Using HR Rule-Based Engine.")
             return None
 
-        # Compact system prompt — avoids exceeding model context/output limits
+        # Compact system prompt — avoids exceeding model context/output limits.
         system_prompt = """You are a Senior HR Recruiter filling a candidate search form.
 Read the job description and return ONLY a JSON object with these exact fields:
 
@@ -253,12 +261,18 @@ Rules:
 - keywords.required = must-have technical skills and tools explicitly stated in the JD
 - keywords.preferred = nice-to-have or secondary skills mentioned in the JD
 - notice_period must be a flat list of strings like ["0-15 days"], never a dict
-- ug_qualification: ONLY set if the JD explicitly states a degree requirement. Allowed values: "Any UG qualification", "Specific UG qualification", "No UG qualification". Otherwise null.
-- pg_qualification: ONLY set if the JD explicitly states a postgraduate requirement. Allowed values: "Any PG qualification", "Specific PG qualification", "No PG qualification". Otherwise null.
+- ug_qualification: ONLY set if the JD explicitly states a degree requirement. Allowed values: __UG_OPTIONS__. Otherwise null.
+- pg_qualification: ONLY set if the JD explicitly states a postgraduate requirement. Allowed values: __PG_OPTIONS__. Otherwise null.
 - Experience: ONLY extract if explicitly stated in the text (e.g. "5 to 10 years"). NEVER invent or guess experience numbers if not mentioned in the JD.
 - verified_mobile, verified_email, attached_resume: ALWAYS set to true by default (show only candidates with verified contact info and resume). Only set to false if explicitly excluded.
 - NEVER assume or inject hardcoded values for active_in, gender, career_break, differently_abled, defence_background, or location. If not explicitly requested in the requirement, set them to null.
 - Return ONLY raw JSON. No markdown, no explanation."""
+
+        # Substitute education option lists from resdex_schema.json (not hardcoded) so the
+        # LLM's guidance stays in sync if the schema's allowed values ever change.
+        system_prompt = system_prompt.replace(
+            "__UG_OPTIONS__", ", ".join(f'"{o}"' for o in self._ug_options)
+        ).replace("__PG_OPTIONS__", ", ".join(f'"{o}"' for o in self._pg_options))
 
         headers = {
             "Authorization": f"Bearer {api_key}",

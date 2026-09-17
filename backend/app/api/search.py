@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import time
+from typing import List
 from fastapi import APIRouter, File, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
 import fitz  # PyMuPDF
@@ -15,7 +16,10 @@ from app.schemas.requirement import (
     ValidationResult,
 )
 from app.schemas.search_plan import SearchPlan
+from app.schemas.candidate_result import CandidateResult, SubmitCandidateResultsRequest
 from app.services.requirement_service import RequirementService
+from app.services.candidate_store_service import merge_candidates
+from app.services.candidate_ranking_service import rank_candidates
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +33,12 @@ MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
 
 _latest_search_plan = None
 _latest_plan_timestamp = 0.0
+
+# NOTE: same single-tenant, process-global storage pattern as _latest_search_plan
+# above — documented, known limitation (see audit P0/P1 follow-up on session
+# isolation), not addressed in this change.
+_latest_candidates: List[CandidateResult] = []
+_latest_candidates_timestamp = 0.0
 
 
 @router.get(
@@ -72,6 +82,19 @@ async def search_candidates(
     if request.attached_resume is not None:
         plan.attached_resume = request.attached_resume
 
+    # Re-validate after the request-level overrides above, since active_in
+    # can be supplied directly by the caller and bypass the agent's own checks.
+    validation = requirement_service.validator.validate(plan)
+    if not validation.valid:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "message": "Generated SearchPlan failed Resdex schema validation and was not stored.",
+                "errors": validation.errors,
+                "warnings": validation.warnings,
+            },
+        )
+
     plan_dict = plan.model_dump()
     plan_dict["_submit_search"] = request.submit_search
     _latest_search_plan = plan_dict
@@ -112,10 +135,21 @@ class DirectSearchPlanRequest(BaseModel):
 async def store_search_plan(
     request: DirectSearchPlanRequest,
 ) -> CandidateSearchResponse:
-    """Stores a pre-built SearchPlan for the extension to pick up."""
+    """Stores a pre-built SearchPlan for the extension to pick up, after Resdex schema validation."""
     global _latest_search_plan, _latest_plan_timestamp
 
     plan = request.plan
+
+    validation = requirement_service.validator.validate(plan)
+    if not validation.valid:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "message": "Submitted SearchPlan failed Resdex schema validation and was not stored.",
+                "errors": validation.errors,
+                "warnings": validation.warnings,
+            },
+        )
 
     plan_dict = plan.model_dump()
     plan_dict["_submit_search"] = request.submit_search
@@ -138,9 +172,87 @@ async def store_search_plan(
     return CandidateSearchResponse(
         requirement="(direct SearchPlan)",
         search_plan=plan,
-        validation=ValidationResult(valid=True, errors=[], warnings=[]),
+        validation=validation,
         execution=execution_result,
     )
+
+
+@router.post(
+    "/results",
+    status_code=status.HTTP_200_OK,
+    summary="Submit candidates scraped from the Resdex results page",
+)
+async def submit_candidate_results(request: SubmitCandidateResultsRequest):
+    """
+    Receives a batch of candidates scraped by the extension from the current
+    Resdex results page, deduplicates against previously stored candidates,
+    and stores the merged list. Extraction diagnostics (container/field hit
+    counts, no candidate content) are logged for selector calibration but not
+    persisted.
+    """
+    global _latest_candidates, _latest_candidates_timestamp
+
+    if request.diagnostics:
+        logger.info(
+            "Candidate extraction diagnostics (page %s): containers=%s extracted=%s "
+            "strategy=%s field_hits=%s warnings=%s",
+            request.page,
+            request.diagnostics.containers_detected,
+            request.diagnostics.candidates_extracted,
+            request.diagnostics.selector_strategy,
+            request.diagnostics.field_hit_counts,
+            request.diagnostics.warnings,
+        )
+
+    if not request.candidates:
+        return {
+            "status": "success",
+            "message": "No candidates in this batch (nothing to merge).",
+            "total_stored": len(_latest_candidates),
+        }
+
+    _latest_candidates = merge_candidates(_latest_candidates, request.candidates)
+    _latest_candidates_timestamp = time.time()
+
+    return {
+        "status": "success",
+        "message": f"Merged {len(request.candidates)} candidate(s) from page {request.page}.",
+        "total_stored": len(_latest_candidates),
+    }
+
+
+@router.get(
+    "/results",
+    summary="Get all candidates extracted so far for the active search, ranked against the active SearchPlan",
+)
+async def get_candidate_results():
+    """
+    Returns all deduplicated candidates scraped so far. If a SearchPlan is
+    currently active, each candidate is ranked against it (explainable score +
+    data completeness, see candidate_ranking_service.py); otherwise candidates
+    are returned unscored rather than ranked against nothing.
+    """
+    active_plan = SearchPlan(**_latest_search_plan) if _latest_search_plan else None
+    ranked = rank_candidates(_latest_candidates, active_plan)
+    return {
+        "status": "success",
+        "has_results": len(_latest_candidates) > 0,
+        "timestamp": _latest_candidates_timestamp,
+        "count": len(_latest_candidates),
+        "ranked_against_active_plan": active_plan is not None,
+        "candidates": [c.model_dump() for c in ranked],
+    }
+
+
+@router.delete(
+    "/results",
+    summary="Clear stored candidate results (e.g. when starting a new search)",
+)
+async def clear_candidate_results():
+    global _latest_candidates, _latest_candidates_timestamp
+    _latest_candidates = []
+    _latest_candidates_timestamp = 0.0
+    return {"status": "success", "message": "Candidate results cleared."}
 
 
 @router.post(

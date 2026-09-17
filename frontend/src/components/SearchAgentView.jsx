@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { getApiBase } from '../config';
 import {
   IconSearch,
@@ -11,19 +11,35 @@ import {
   IconDocument,
 } from './Icons';
 
+const RESULTS_POLL_INTERVAL_MS = 4000;
+
 const PRESET_REQUIREMENTS = [
   "Find AI/ML engineers in Hyderabad with 2 to 5 years of experience. Python, FastAPI, Machine Learning and NLP are mandatory. Salary should be 8 to 15 LPA. Prefer candidates who can join within 15 days.",
   "Senior Full Stack React and Node.js developer in Bengaluru with 4 to 8 years experience. AWS and Docker required. Budget 18 to 30 LPA.",
   "DevOps Cloud Engineer in Pune or Mumbai with Kubernetes, Terraform, and CI/CD pipelines. 3 to 6 years experience.",
 ];
 
-export default function SearchAgentView() {
+export default function SearchAgentView({ onCompileCandidate }) {
   const API_BASE = getApiBase();
   const [prompt, setPrompt] = useState(PRESET_REQUIREMENTS[0]);
   const [executeMode, setExecuteMode] = useState('dry_run'); // 'dry_run', 'inspection', 'submit'
   const [isLoading, setIsLoading] = useState(false);
   const [searchResponse, setSearchResponse] = useState(null);
   const [error, setError] = useState(null);
+
+  // Candidate results extracted from Resdex by the extension, polled after an
+  // inspection/submit request. Ranking (match_score/data_completeness) is
+  // computed server-side against the active SearchPlan — see
+  // candidate_ranking_service.py. `null` while we haven't polled yet.
+  const [candidateResults, setCandidateResults] = useState(null);
+  // NOTE: search_response.execution.executed is ALWAYS false from this API —
+  // actual execution happens asynchronously via the extension polling
+  // /search/active-plan, not synchronously in this request. So "did we ask
+  // the extension to act" is derived from the execution mode the recruiter
+  // chose (inspection/submit both hand off to the extension), not from
+  // `executed`. Derived, not separate state — avoids a redundant
+  // setState-in-effect render just to mirror a value we already have.
+  const isPollingResults = Boolean(searchResponse) && executeMode !== 'dry_run';
 
   // Document Upload & Format Preservation State
   const [uploadedDoc, setUploadedDoc] = useState(null);
@@ -295,6 +311,42 @@ export default function SearchAgentView() {
     executeSearch();
   };
 
+  const pollCandidateResults = useCallback(async () => {
+    try {
+      const resp = await fetch(`${API_BASE}/search/results`);
+      if (!resp.ok) return;
+      const data = await resp.json();
+      setCandidateResults(data);
+    } catch (err) {
+      console.warn('Failed to poll candidate results:', err);
+    }
+  }, [API_BASE]);
+
+  // Only poll once the recruiter has actually asked the extension to act on
+  // Resdex (inspection/submit) — a dry-run plan has no candidates to fetch,
+  // and polling unconditionally would be wasted network traffic.
+  useEffect(() => {
+    if (!isPollingResults) return;
+
+    pollCandidateResults();
+    const intervalId = setInterval(pollCandidateResults, RESULTS_POLL_INTERVAL_MS);
+    return () => clearInterval(intervalId);
+  }, [isPollingResults, pollCandidateResults]);
+
+  const handleCompile = (candidate) => {
+    if (!onCompileCandidate) return;
+    onCompileCandidate({
+      name: candidate.name,
+      notes: [
+        candidate.title && `Title: ${candidate.title}`,
+        candidate.company && `Company: ${candidate.company}`,
+        candidate.location && `Location: ${candidate.location}`,
+        candidate.experience && `Experience: ${candidate.experience}`,
+        candidate.scored && `Match score: ${candidate.match_score}% (data completeness: ${candidate.data_completeness}%)`,
+      ].filter(Boolean).join('\n'),
+    });
+  };
+
   return (
     <div>
       <div className="hero-section">
@@ -557,7 +609,7 @@ export default function SearchAgentView() {
             </span>
           </h3>
 
-          {searchResponse.execution.executed && (
+          {isPollingResults && (
             <div style={{
               background: 'rgba(56, 189, 248, 0.08)',
               border: '1px solid rgba(56, 189, 248, 0.25)',
@@ -588,6 +640,89 @@ export default function SearchAgentView() {
           <div className="code-box">
             {JSON.stringify(searchResponse.search_plan, null, 2)}
           </div>
+        </div>
+      )}
+
+      {/* Extracted & Ranked Candidates (from the browser extension, polled from the backend) */}
+      {isPollingResults && (
+        <div className="card">
+          <h3 className="card-title">
+            <IconSearch size={20} color="var(--primary)" />
+            <span>Candidates Found on Resdex</span>
+            {isPollingResults && <span className="spinner-light-sm" style={{ marginLeft: 4 }}></span>}
+          </h3>
+
+          {!candidateResults || candidateResults.count === 0 ? (
+            <p className="card-subtitle">
+              Waiting for the browser extension to submit candidates extracted from the Resdex results page...
+            </p>
+          ) : (
+            <>
+              <p className="card-subtitle">
+                {candidateResults.count} candidate(s) found
+                {candidateResults.ranked_against_active_plan
+                  ? ' — ranked against the active SearchPlan below.'
+                  : ' — no active SearchPlan to rank against yet.'}
+              </p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {candidateResults.candidates.map((c, i) => (
+                  <div key={i} style={{
+                    border: '1px solid rgba(255,255,255,0.08)',
+                    borderRadius: 8,
+                    padding: 14,
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
+                      <div>
+                        <div style={{ fontWeight: 700 }}>{c.name}</div>
+                        <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
+                          {[c.title, c.company, c.location].filter(Boolean).join(' • ') || 'No additional details extracted'}
+                        </div>
+                      </div>
+                      <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                        {c.scored ? (
+                          <>
+                            <div style={{ fontWeight: 800, fontSize: '1.1rem', color: c.match_score >= 70 ? '#10B981' : c.match_score >= 40 ? '#F59E0B' : '#F43F5E' }}>
+                              {c.match_score}%
+                            </div>
+                            <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
+                              {c.data_completeness}% data completeness
+                            </div>
+                          </>
+                        ) : (
+                          <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Not yet scored</span>
+                        )}
+                      </div>
+                    </div>
+
+                    {(c.matched_requirements?.length > 0 || c.missing_requirements?.length > 0 || c.unavailable_info?.length > 0) && (
+                      <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                        {c.matched_requirements?.map((m, mi) => (
+                          <span key={`m-${mi}`} className="skill-pill" style={{ fontSize: '0.72rem', color: '#10B981' }}>✓ {m}</span>
+                        ))}
+                        {c.missing_requirements?.map((m, mi) => (
+                          <span key={`x-${mi}`} className="skill-pill" style={{ fontSize: '0.72rem', color: '#F43F5E' }}>✗ {m}</span>
+                        ))}
+                        {c.unavailable_info?.map((u, ui) => (
+                          <span key={`u-${ui}`} className="skill-pill" style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }} title="Requested in SearchPlan but no data was extracted for this candidate">? {u}</span>
+                        ))}
+                      </div>
+                    )}
+
+                    {onCompileCandidate && (
+                      <button
+                        type="button"
+                        className="btn-clear-prompt"
+                        style={{ marginTop: 10 }}
+                        onClick={() => handleCompile(c)}
+                      >
+                        Compile Dossier
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
         </div>
       )}
     </div>

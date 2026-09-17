@@ -8,10 +8,13 @@
  *    experience fields have values, etc. — NOT time-based.
  */
 
-const BACKEND_URLS = [
-  "https://recruitment-document-tools.onrender.com/search/active-plan",
-  "http://127.0.0.1:8001/search/active-plan",
-  "http://localhost:8001/search/active-plan",
+// Base backend hosts, tried in order. Kept as bases (not full endpoint URLs) so
+// adding a new endpoint (e.g. /search/results) doesn't require a second,
+// independently-drifting copy of this list — see fetchFromBackend/postToBackend.
+const BACKEND_BASE_URLS = [
+  "https://recruitment-document-tools.onrender.com",
+  "http://127.0.0.1:8001",
+  "http://localhost:8001",
 ];
 let lastProcessedTimestamp = 0;
 let isFilling = false;
@@ -28,6 +31,31 @@ function isOnResultsPage() {
 
 function isOnFormPage() {
   return !isOnResultsPage();
+}
+
+async function fetchFromBackend(path) {
+  for (const base of BACKEND_BASE_URLS) {
+    try {
+      const res = await fetch(base + path);
+      if (res.ok) return await res.json();
+    } catch (e) {}
+  }
+  return null;
+}
+
+async function postToBackend(path, body) {
+  for (const base of BACKEND_BASE_URLS) {
+    try {
+      const res = await fetch(base + path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) return await res.json();
+      console.warn(`[Snypar Bot] POST ${path} to ${base} returned ${res.status}`);
+    } catch (e) {}
+  }
+  return null;
 }
 
 // ─── Floating Status Widget ──────────────────────────────────────────────────
@@ -89,6 +117,41 @@ function showToast(message) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// ─── Per-Step Isolation & Diagnostics ────────────────────────────────────────
+// Wraps each logical form-fill step (keywords, experience, location, ...) so a
+// failure in one step (missing selector, unexpected exception) is recorded and
+// logged but does NOT abort the remaining, independent steps. Pure function —
+// no DOM access — so it's unit-testable without a browser/jsdom.
+async function runStep(name, fn) {
+  const start = Date.now();
+  try {
+    await fn();
+    return { name, status: "ok", ms: Date.now() - start };
+  } catch (err) {
+    console.error(`[Snypar Bot] Step "${name}" failed:`, err);
+    return { name, status: "failed", error: String(err && err.message || err), ms: Date.now() - start };
+  }
+}
+
+function summarizeStepResults(results) {
+  const failed = results.filter((r) => r.status === "failed");
+  const ok = results.filter((r) => r.status === "ok");
+  return { ok: ok.map((r) => r.name), failed: failed.map((r) => ({ name: r.name, error: r.error })) };
+}
+
+// Polls a selector's value instead of a blind fixed-duration sleep, so we move
+// on as soon as the value is registered (React state committed) rather than
+// always waiting the full timeout, while still being bounded.
+async function waitForFieldValue(selector, expectedValue, timeoutMs = 1000, stepMs = 100) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const el = document.querySelector(selector);
+    if (el && String(el.value) === String(expectedValue)) return true;
+    await sleep(stepMs);
+  }
+  return fieldHasValue(selector);
 }
 
 async function pausableSleep(ms) {
@@ -810,6 +873,21 @@ async function waitForFieldsVerified(plan, timeoutMs = 12000) {
   return false;
 }
 
+// ─── Search Submission Verification ──────────────────────────────────────────
+// Clicking a button is not evidence the search actually ran — Resdex may reject
+// the submit, show a validation error, or simply not navigate. isOnResultsPage()
+// (URL contains "/v3/search") is the one objective, already-established signal
+// used elsewhere in this file for results-page detection, so we reuse it here
+// rather than inventing new results-container selectors we can't verify.
+async function waitForResultsPageVerified(timeoutMs = 10000, stepMs = 300) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (isOnResultsPage()) return true;
+    await sleep(stepMs);
+  }
+  return false;
+}
+
 // ─── Main Form Fill ───────────────────────────────────────────────────────────
 
 async function fillResdexForm(plan, autoSubmit = false) {
@@ -824,8 +902,11 @@ async function fillResdexForm(plan, autoSubmit = false) {
   };
   window.addEventListener("submit", blockSubmit, true);
 
+  const stepResults = [];
+
   try {
     // ── STEP 1: Keywords (required, preferred, excluded, mandatory, search_scope) ──
+    stepResults.push(await runStep("keywords", async () => {
     const requiredKws  = (plan.keywords && plan.keywords.required)  || [];
     const preferredKws = (plan.keywords && plan.keywords.preferred) || [];
     const excludedKws  = (plan.keywords && plan.keywords.excluded)  || [];
@@ -896,10 +977,12 @@ async function fillResdexForm(plan, autoSubmit = false) {
         "select#keywordScope", "select[name='keywordScope']"
       ], plan.keywords.search_scope);
     }
+    }));
 
     await pausableSleep(500);
 
     // ── STEP 2: Experience ──────────────────────────────────────────────────
+    stepResults.push(await runStep("experience", async () => {
     if (plan.min_experience !== null && plan.min_experience !== undefined) {
       updateWidgetStatus("Experience (Min)...", "busy", "filling");
       await setExperience(
@@ -916,10 +999,12 @@ async function fillResdexForm(plan, autoSubmit = false) {
       );
       await sleep(300);
     }
+    }));
 
     await pausableSleep(400);
 
     // ── STEP 3: Location (current_location, include_relocation, exclude_anywhere) ──
+    stepResults.push(await runStep("location", async () => {
     if (plan.current_location && plan.current_location.length > 0) {
       const locInput = document.querySelector(
         "input[name='locations'], input[placeholder*='Add location'], input#location"
@@ -947,10 +1032,12 @@ async function fillResdexForm(plan, autoSubmit = false) {
         plan.exclude_anywhere_location
       );
     }
+    }));
 
     await pausableSleep(400);
 
     // ── STEP 4: Salary (currency, min, max, include_unspecified) ────────────
+    stepResults.push(await runStep("salary", async () => {
     if (plan.salary) {
       if (plan.salary.currency) {
         await setSelectDropdown([
@@ -968,7 +1055,11 @@ async function fillResdexForm(plan, autoSubmit = false) {
           setNativeValue(minSalInput, String(plan.salary.min));
           minSalInput.dispatchEvent(new Event("input", { bubbles: true }));
           minSalInput.dispatchEvent(new Event("change", { bubbles: true }));
-          await sleep(300);
+          const ok = await waitForFieldValue(
+            "input[name='minCtc'], input#minSalary, input[placeholder*='Min salary']",
+            plan.salary.min, 800
+          );
+          if (!ok) console.warn("[Snypar Bot] ⚠ salary.min did not register on the input.");
         }
       }
       if (plan.salary.max !== null && plan.salary.max !== undefined) {
@@ -981,7 +1072,11 @@ async function fillResdexForm(plan, autoSubmit = false) {
           setNativeValue(maxSalInput, String(plan.salary.max));
           maxSalInput.dispatchEvent(new Event("input", { bubbles: true }));
           maxSalInput.dispatchEvent(new Event("change", { bubbles: true }));
-          await sleep(300);
+          const ok = await waitForFieldValue(
+            "input[name='maxCtc'], input#maxSalary, input[placeholder*='Max salary']",
+            plan.salary.max, 800
+          );
+          if (!ok) console.warn("[Snypar Bot] ⚠ salary.max did not register on the input.");
         }
       }
 
@@ -992,10 +1087,12 @@ async function fillResdexForm(plan, autoSubmit = false) {
         );
       }
     }
+    }));
 
     await sleep(400);
 
     // ── STEP 5: Employment Details (designation, department_role, industry, company, exclude_company, scopes) ──
+    stepResults.push(await runStep("employment_details", async () => {
     const hasEmpDetails = (plan.designation && plan.designation.length > 0) ||
                           (plan.department_role && plan.department_role.length > 0) ||
                           (plan.industry && plan.industry.length > 0) ||
@@ -1103,10 +1200,12 @@ async function fillResdexForm(plan, autoSubmit = false) {
         "select#excludeCompanyScope", "select[name='excludeCompanyScope']"
       ], plan.exclude_company_search_scope);
     }
+    }));
 
     await pausableSleep(400);
 
     // ── STEP 6: Notice Period ───────────────────────────────────────────────
+    stepResults.push(await runStep("notice_period", async () => {
     if (plan.notice_period && plan.notice_period.length > 0) {
       updateWidgetStatus("Notice Period...", "busy", "filling");
       await ensureSectionExpanded("Notice Period");
@@ -1152,10 +1251,12 @@ async function fillResdexForm(plan, autoSubmit = false) {
         }
       }
     }
+    }));
 
     await pausableSleep(400);
 
     // ── STEP 7: Education Details (ug_qualification, pg_qualification) ──────
+    stepResults.push(await runStep("education_details", async () => {
     if (plan.ug_qualification || plan.pg_qualification) {
       updateWidgetStatus("Education Details...", "busy", "filling");
 
@@ -1167,8 +1268,10 @@ async function fillResdexForm(plan, autoSubmit = false) {
       }
       await sleep(300);
     }
+    }));
 
     // ── STEP 8: Diversity Hiring (gender, career_break, differently_abled, defence_background) ──
+    stepResults.push(await runStep("diversity_hiring", async () => {
     const hasDiversity = plan.gender || plan.career_break || plan.differently_abled || plan.defence_background;
     if (hasDiversity) {
       updateWidgetStatus("Diversity Hiring...", "busy", "filling");
@@ -1187,8 +1290,10 @@ async function fillResdexForm(plan, autoSubmit = false) {
       }
       await sleep(300);
     }
+    }));
 
     // ── STEP 9: Additional Details (candidate_category, candidate_age, job_type, employment_type, work_permit) ──
+    stepResults.push(await runStep("additional_details", async () => {
     const hasAdditional = plan.candidate_category || plan.candidate_age || plan.job_type || plan.employment_type || (plan.work_permit && plan.work_permit.length > 0);
     if (hasAdditional) {
       updateWidgetStatus("Additional Details...", "busy", "filling");
@@ -1213,7 +1318,11 @@ async function fillResdexForm(plan, autoSubmit = false) {
             setNativeValue(minAgeInput, String(plan.candidate_age.min));
             minAgeInput.dispatchEvent(new Event("input", { bubbles: true }));
             minAgeInput.dispatchEvent(new Event("change", { bubbles: true }));
-            await sleep(200);
+            const ok = await waitForFieldValue(
+              "input[name='minAge'], input#minAge, input[placeholder*='Min age']",
+              plan.candidate_age.min, 600
+            );
+            if (!ok) console.warn("[Snypar Bot] ⚠ candidate_age.min did not register on the input.");
           }
         }
         if (plan.candidate_age.max !== null && plan.candidate_age.max !== undefined) {
@@ -1225,7 +1334,11 @@ async function fillResdexForm(plan, autoSubmit = false) {
             setNativeValue(maxAgeInput, String(plan.candidate_age.max));
             maxAgeInput.dispatchEvent(new Event("input", { bubbles: true }));
             maxAgeInput.dispatchEvent(new Event("change", { bubbles: true }));
-            await sleep(200);
+            const ok = await waitForFieldValue(
+              "input[name='maxAge'], input#maxAge, input[placeholder*='Max age']",
+              plan.candidate_age.max, 600
+            );
+            if (!ok) console.warn("[Snypar Bot] ⚠ candidate_age.max did not register on the input.");
           }
         }
       }
@@ -1257,10 +1370,12 @@ async function fillResdexForm(plan, autoSubmit = false) {
         }
       }
     }
+    }));
 
     await pausableSleep(400);
 
     // ── STEP 10: Display Details (candidate_display, verified_mobile, verified_email, attached_resume) ──
+    stepResults.push(await runStep("display_details", async () => {
     if (plan.candidate_display) {
       await clickPill("Display Details", plan.candidate_display);
     }
@@ -1273,13 +1388,25 @@ async function fillResdexForm(plan, autoSubmit = false) {
       console.log(`[Snypar Bot] Ticked ${ticked} show-only checkboxes`);
       await sleep(300);
     }
+    }));
 
     // ── STEP 11: Active In ──────────────────────────────────────────────────
+    stepResults.push(await runStep("active_in", async () => {
     if (plan.active_in) {
       updateWidgetStatus("Active In...", "busy", "filling");
       await setActiveIn(plan.active_in);
       await sleep(300);
     }
+    }));
+
+    // ── Step summary: which field groups succeeded/failed, for diagnosability ──
+    const stepSummary = summarizeStepResults(stepResults);
+    window.snyparLastFillSummary = stepSummary;
+    if (stepSummary.failed.length > 0) {
+      console.warn("[Snypar Bot] Steps that failed (did NOT block other fields):", stepSummary.failed);
+      showToast(`⚠ ${stepSummary.failed.length} field group(s) had errors: ${stepSummary.failed.map(f => f.name).join(", ")}`);
+    }
+    console.log("[Snypar Bot] Step summary:", stepSummary);
 
     // ── STEP 12: DOM-STATE VERIFICATION ─────────────────────────────────────
     updateWidgetStatus("⚙ Verifying all fields...", "busy", "filling");
@@ -1377,20 +1504,53 @@ async function fillResdexForm(plan, autoSubmit = false) {
       }
     }
 
+    let searchVerified = null; // null = not applicable (autoSubmit was false)
+
     if (searchClicked) {
-      updateWidgetStatus("✓ Search Submitted!", "online", "none");
-      showToast("✓ 'Search Candidates' executed successfully on Naukri Resdex!");
+      updateWidgetStatus("Verifying search was submitted...", "busy", "none");
+      searchVerified = await waitForResultsPageVerified(10000);
+
+      if (searchVerified) {
+        updateWidgetStatus("✓ Search Submitted!", "online", "none");
+        showToast("✓ 'Search Candidates' executed successfully on Naukri Resdex!");
+      } else {
+        // The button was clicked, but the results page never appeared — Resdex may
+        // have rejected the submit or shown a validation error. Do NOT report success.
+        updateWidgetStatus("⚠ Search click unconfirmed", "offline", "none");
+        showToast("⚠ Clicked 'Search Candidates' but results page was not detected — please verify manually.");
+        console.warn("[Snypar Bot] Search button was clicked but isOnResultsPage() never became true within timeout.");
+      }
     } else if (autoSubmit) {
+      searchVerified = false;
       updateWidgetStatus("⚠ Search button not found", "online", "none");
       showToast("⚠ Could not find 'Search Candidates' button — please click it manually.");
     } else {
       updateWidgetStatus("✓ All Fields Filled!", "online", "none");
       showToast("✓ All criteria filled — click 'Search Candidates' to execute search.");
     }
+
+    const fillOutcome = {
+      formFilled: true,
+      searchRequested: autoSubmit,
+      searchClicked,
+      searchVerified,
+      stepSummary,
+    };
+    window.snyparLastFillSummary = fillOutcome;
+    return fillOutcome;
   } catch (err) {
     console.error("[Snypar Bot] Auto-fill error:", err);
     updateWidgetStatus("⚠ Error During Fill", "offline", "none");
     showToast(`⚠ Error: ${err.message}`);
+    const fillOutcome = {
+      formFilled: false,
+      searchRequested: autoSubmit,
+      searchClicked: false,
+      searchVerified: false,
+      error: String(err && err.message || err),
+    };
+    window.snyparLastFillSummary = fillOutcome;
+    return fillOutcome;
   } finally {
     window.removeEventListener("submit", blockSubmit, true);
     isPaused = false;
@@ -1456,24 +1616,216 @@ async function ensureOnFormPage() {
   return true;
 }
 
+// ─── Candidate Extraction (Resdex Results Page) ──────────────────────────────
+// No captured real Resdex results-page HTML exists in this repo, so these
+// selectors are best-effort heuristics, not confirmed markup. Every step is
+// designed to fail soft (a missing field yields null, not a thrown error) and
+// to self-report what it found via `diagnostics`, so a live run against the
+// real page is diagnosable/calibratable rather than a silent miss. V1 scope:
+// current visible page only — no pagination/infinite-scroll handling yet.
+
+const PROFILE_LINK_SELECTORS = [
+  "a[href*='/profile']", "a[href*='candidateId']", "a[href*='candidate/']",
+  "a[data-testid*='candidate']", "a[data-testid*='profile']",
+  "a[class*='candidateName']", "a[class*='candidate-name']", "a[class*='profileLink']",
+].join(", ");
+
+const GENERIC_CARD_SELECTORS = [
+  "div[class*='candidateCard']", "div[class*='candidate-card']",
+  "div[class*='resultCard']", "div[class*='result-card']",
+  "div[class*='profileCard']", "div[class*='profile-card']",
+  "li[class*='candidate']", "div[class*='dashboardCard']",
+].join(", ");
+
+const FIELD_CLASS_HINTS = {
+  title: ["title", "designation", "role"],
+  company: ["company", "employer", "organisation", "organization"],
+  location: ["location", "city"],
+  education: ["education", "qualification", "degree"],
+  notice_period: ["notice"],
+};
+
+function safeText(el, maxLen = 120) {
+  if (!el) return null;
+  const t = (el.textContent || "").trim();
+  if (!t) return null;
+  return t.length > maxLen ? t.slice(0, maxLen) : t;
+}
+
+function findChildTextByClassHints(container, hints) {
+  const all = container.querySelectorAll("*");
+  for (const el of all) {
+    const cls = (el.className && el.className.toString() || "").toLowerCase();
+    if (hints.some((h) => cls.includes(h))) {
+      const t = safeText(el);
+      if (t) return t;
+    }
+  }
+  return null;
+}
+
+function findSkillsInContainer(container, maxSkills = 15) {
+  const els = container.querySelectorAll(
+    "[class*='skill'], [class*='tag'], [class*='chip']"
+  );
+  const skills = [];
+  for (const el of els) {
+    const t = safeText(el, 60);
+    if (t && !skills.includes(t)) skills.push(t);
+    if (skills.length >= maxSkills) break;
+  }
+  return skills;
+}
+
+function extractExperienceText(container) {
+  const text = container.textContent || "";
+  const match = text.match(/\b(\d{1,2}(?:\.\d{1,2})?)\s*(?:yrs?|years?)\b(?:\s*,?\s*\d{1,2}\s*(?:months?|mos?)\b)?/i);
+  return match ? match[0].trim() : null;
+}
+
+function extractResdexCandidateId(anchor) {
+  if (!anchor || !anchor.href) return null;
+  const idMatch = anchor.href.match(/[?&](?:candidateId|profileId|id)=([^&#]+)/i);
+  return idMatch ? decodeURIComponent(idMatch[1]) : null;
+}
+
+function findCandidateContainers() {
+  // Strategy 1: profile-link anchors, walked up to a plausible "card" ancestor.
+  const anchors = Array.from(document.querySelectorAll(PROFILE_LINK_SELECTORS))
+    .filter((a) => a.offsetParent !== null && a.textContent.trim().length > 1);
+
+  if (anchors.length > 0) {
+    const seen = new Set();
+    const pairs = [];
+    for (const anchor of anchors) {
+      let node = anchor;
+      let depth = 0;
+      while (node.parentElement && depth < 6) {
+        node = node.parentElement;
+        depth++;
+        if (node.children.length >= 3 || (node.textContent || "").trim().length > 60) break;
+      }
+      if (!seen.has(node)) {
+        seen.add(node);
+        pairs.push({ container: node, anchor });
+      }
+    }
+    return { pairs, strategy: "profile-link-anchor", warnings: [] };
+  }
+
+  // Strategy 2: generic card-class fallback (no profile link found).
+  const cards = Array.from(document.querySelectorAll(GENERIC_CARD_SELECTORS))
+    .filter((el) => el.offsetParent !== null);
+  if (cards.length > 0) {
+    return {
+      pairs: cards.map((c) => ({ container: c, anchor: null })),
+      strategy: "generic-card-class",
+      warnings: ["No profile-link anchors found; used generic card class selectors. profile_url will be unavailable."],
+    };
+  }
+
+  return { pairs: [], strategy: "none", warnings: ["No candidate containers detected with any known strategy."] };
+}
+
+function extractOneCandidate(container, anchor) {
+  const name = anchor ? safeText(anchor, 100) : (
+    findChildTextByClassHints(container, ["name", "candidatename"]) ||
+    safeText(container.querySelector("h1, h2, h3, strong"), 100)
+  );
+  if (!name) return null;
+
+  return {
+    name,
+    title: findChildTextByClassHints(container, FIELD_CLASS_HINTS.title),
+    company: findChildTextByClassHints(container, FIELD_CLASS_HINTS.company),
+    experience: extractExperienceText(container),
+    location: findChildTextByClassHints(container, FIELD_CLASS_HINTS.location),
+    skills: findSkillsInContainer(container),
+    education: findChildTextByClassHints(container, FIELD_CLASS_HINTS.education),
+    notice_period: findChildTextByClassHints(container, FIELD_CLASS_HINTS.notice_period),
+    profile_url: anchor && anchor.href ? anchor.href : null,
+    resdex_candidate_id: extractResdexCandidateId(anchor),
+  };
+}
+
+function extractCandidatesFromResultsPage() {
+  const { pairs, strategy, warnings } = findCandidateContainers();
+  const candidates = [];
+  const fieldHitCounts = {};
+  const extractionWarnings = [...warnings];
+
+  for (const { container, anchor } of pairs) {
+    try {
+      const candidate = extractOneCandidate(container, anchor);
+      if (!candidate) {
+        extractionWarnings.push("A candidate container had no extractable name; skipped.");
+        continue;
+      }
+      candidates.push(candidate);
+      for (const [key, val] of Object.entries(candidate)) {
+        const found = Array.isArray(val) ? val.length > 0 : val !== null && val !== undefined;
+        if (found) fieldHitCounts[key] = (fieldHitCounts[key] || 0) + 1;
+      }
+    } catch (err) {
+      // One bad container must not abort extraction of the rest.
+      extractionWarnings.push(`Extraction error on one container: ${err.message}`);
+    }
+  }
+
+  const diagnostics = {
+    containers_detected: pairs.length,
+    candidates_extracted: candidates.length,
+    field_hit_counts: fieldHitCounts,
+    selector_strategy: strategy,
+    warnings: extractionWarnings,
+  };
+
+  // Deliberately log only structural diagnostics (counts), never candidate content.
+  console.log("[Snypar Bot] Candidate extraction diagnostics:", diagnostics);
+
+  return { candidates, diagnostics };
+}
+
+let lastExtractedResultsUrl = null;
+
+async function extractAndSubmitCandidatesIfNeeded(forced = false) {
+  const currentUrl = window.location.href;
+  if (!forced && lastExtractedResultsUrl === currentUrl) {
+    return; // already extracted this exact results view
+  }
+
+  const { candidates, diagnostics } = extractCandidatesFromResultsPage();
+
+  if (candidates.length === 0) {
+    updateWidgetStatus("⚠ No candidates detected on results page", "offline");
+    return;
+  }
+
+  const result = await postToBackend("/search/results", {
+    page: 1,
+    candidates,
+    diagnostics,
+  });
+
+  if (result) {
+    lastExtractedResultsUrl = currentUrl;
+    updateWidgetStatus(`✓ ${candidates.length} candidate(s) found (${result.total_stored ?? candidates.length} total stored)`, "online");
+  } else {
+    console.warn("[Snypar Bot] Failed to submit extracted candidates to backend — will retry on next poll.");
+    updateWidgetStatus("⚠ Could not submit candidates to server", "offline");
+  }
+}
+
 async function fetchAndFill(forced = false) {
   if (isFilling) return;
 
   if (isOnResultsPage()) {
     updateWidgetStatus("✓ Search Results Active", "online");
+    await extractAndSubmitCandidatesIfNeeded(forced);
     return;
   }
 
-  let fetchedData = null;
-  for (const url of BACKEND_URLS) {
-    try {
-      const res = await fetch(url);
-      if (res.ok) {
-        fetchedData = await res.json();
-        break;
-      }
-    } catch (e) {}
-  }
+  const fetchedData = await fetchFromBackend("/search/active-plan");
 
   if (!fetchedData) {
     updateWidgetStatus("Server Offline", "offline");
@@ -1513,9 +1865,20 @@ async function fetchAndFill(forced = false) {
       lastProcessedTimestamp = fetchedData.timestamp;
       const shouldSubmit = fetchedData.plan?._submit_search === true;
       showToast("⚡ Snypar Bot: Auto-filling candidate search criteria...");
-      await fillResdexForm(fetchedData.plan, shouldSubmit);
+      const outcome = await fillResdexForm(fetchedData.plan, shouldSubmit);
 
-      sessionStorage.setItem(FILL_CACHE_KEY, planTs);
+      // Only mark this plan as "fully applied" (and stop retrying) if either:
+      //  - search submission wasn't requested (form-fill-only is complete once fillResdexForm returns), or
+      //  - search submission WAS requested and we verified the results page actually loaded.
+      // If a search was requested but never verified, deliberately leave the cache
+      // unset so the next eligible poll (after cooldown) retries the click instead
+      // of silently reporting success on a search that may not have run.
+      const searchOutcomeOk = !shouldSubmit || outcome.searchVerified === true;
+      if (searchOutcomeOk) {
+        sessionStorage.setItem(FILL_CACHE_KEY, planTs);
+      } else {
+        console.warn("[Snypar Bot] Search was requested but not verified — plan will be retried on next eligible poll instead of being cached as applied.");
+      }
 
     } else {
       updateWidgetStatus("⚡ Snypar Bot Active", "online");
@@ -1554,7 +1917,12 @@ if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage)
       sendResponse({ status: "resumed" });
 
     } else if (req.action === "GET_STATUS") {
-      sendResponse({ isFilling, isPaused, onResultsPage: isOnResultsPage() });
+      sendResponse({
+        isFilling,
+        isPaused,
+        onResultsPage: isOnResultsPage(),
+        lastFillSummary: window.snyparLastFillSummary || null,
+      });
     }
     return true;
   });

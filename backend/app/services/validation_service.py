@@ -66,6 +66,32 @@ class ValidationService:
             kw_props.get("search_scope", {}).get("options", [])
         )
 
+        # Education options
+        edu_fields = sections.get("education_details", {}).get("fields", {})
+        self.allowed_ug_qualification = set(
+            edu_fields.get("ug_qualification", {}).get("options", [])
+        )
+        self.allowed_pg_qualification = set(
+            edu_fields.get("pg_qualification", {}).get("options", [])
+        )
+
+        # Diversity: career break
+        self.allowed_career_break = set(
+            div_fields.get("career_break", {}).get("options", [])
+        )
+
+        # Employment details scope options
+        emp_fields = sections.get("employment_details", {}).get("fields", {})
+        self.allowed_company_search_scope = set(
+            emp_fields.get("company_search_scope", {}).get("options", [])
+        )
+        self.allowed_exclude_company_search_scope = set(
+            emp_fields.get("exclude_company_search_scope", {}).get("options", [])
+        )
+        self.allowed_designation_search_scope = set(
+            emp_fields.get("designation_search_scope", {}).get("options", [])
+        )
+
     def validate(self, plan: SearchPlan) -> ValidationResult:
         """
         Validates the SearchPlan against Resdex schema constraints.
@@ -144,6 +170,60 @@ class ValidationService:
                     errors.append(
                         f"candidate_age.min ({plan.candidate_age.min}) cannot be greater than candidate_age.max ({plan.candidate_age.max})."
                     )
+
+        # 10. Validate UG/PG Qualification
+        if plan.ug_qualification and plan.ug_qualification not in self.allowed_ug_qualification:
+            errors.append(
+                f"Invalid ug_qualification '{plan.ug_qualification}'. Allowed Resdex options are: {sorted(list(self.allowed_ug_qualification))}"
+            )
+        if plan.pg_qualification and plan.pg_qualification not in self.allowed_pg_qualification:
+            errors.append(
+                f"Invalid pg_qualification '{plan.pg_qualification}'. Allowed Resdex options are: {sorted(list(self.allowed_pg_qualification))}"
+            )
+
+        # 11. Validate Career Break / Differently Abled / Defence Background
+        if plan.career_break and plan.career_break not in self.allowed_career_break:
+            errors.append(
+                f"Invalid career_break '{plan.career_break}'. Allowed Resdex options are: {sorted(list(self.allowed_career_break))}"
+            )
+        if plan.differently_abled and plan.differently_abled not in self.allowed_differently_abled:
+            errors.append(
+                f"Invalid differently_abled '{plan.differently_abled}'. Allowed Resdex options are: {sorted(list(self.allowed_differently_abled))}"
+            )
+        if plan.defence_background and plan.defence_background not in self.allowed_defence:
+            errors.append(
+                f"Invalid defence_background '{plan.defence_background}'. Allowed Resdex options are: {sorted(list(self.allowed_defence))}"
+            )
+
+        # 12. Validate Candidate Category
+        if plan.candidate_category and plan.candidate_category not in self.allowed_categories:
+            errors.append(
+                f"Invalid candidate_category '{plan.candidate_category}'. Allowed Resdex options are: {sorted(list(self.allowed_categories))}"
+            )
+
+        # 13. Validate Employment Details Search Scopes
+        if plan.company_search_scope and plan.company_search_scope not in self.allowed_company_search_scope:
+            errors.append(
+                f"Invalid company_search_scope '{plan.company_search_scope}'. Allowed Resdex options are: {sorted(list(self.allowed_company_search_scope))}"
+            )
+        if (
+            plan.exclude_company_search_scope
+            and plan.exclude_company_search_scope not in self.allowed_exclude_company_search_scope
+        ):
+            errors.append(
+                f"Invalid exclude_company_search_scope '{plan.exclude_company_search_scope}'. Allowed Resdex options are: {sorted(list(self.allowed_exclude_company_search_scope))}"
+            )
+        if (
+            plan.designation_search_scope
+            and plan.designation_search_scope not in self.allowed_designation_search_scope
+        ):
+            errors.append(
+                f"Invalid designation_search_scope '{plan.designation_search_scope}'. Allowed Resdex options are: {sorted(list(self.allowed_designation_search_scope))}"
+            )
+
+        # Note: work_permit is deliberately not strictly validated here — it is marked
+        # `extensible: true` in resdex_schema.json, meaning free-text values beyond the
+        # listed options are valid Resdex input (same treatment as company/designation/location).
 
         is_valid = len(errors) == 0
         return ValidationResult(valid=is_valid, errors=errors, warnings=warnings)
