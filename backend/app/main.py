@@ -3,10 +3,6 @@ import logging
 import os
 import sys
 
-# MUST be at module level, before asyncio.run() creates the event loop.
-# uvicorn worker process imports app.main first, THEN calls asyncio.run().
-# On Windows, SelectorEventLoop (default in some uvicorn versions) cannot spawn
-# subprocesses. async_playwright needs to spawn Chrome → requires ProactorEventLoop.
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
@@ -19,7 +15,6 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.dossier import router as dossier_router
-from app.api.profiles import router as profiles_router
 from app.api.resume_converter import router as resume_converter_router
 from app.api.search import router as search_router
 from app.core.config import settings
@@ -58,8 +53,7 @@ app = FastAPI(
         "• OWASP HTTP Security Headers & Cross-Origin Attack Defense.\n"
         "• Real-Time Data Leakage Prevention (DLP) & PII Redaction.\n"
         "• In-Memory Token Bucket Rate Limiting & Payload Size Protection.\n"
-        "• High-resolution multi-page PDF rendering via PyMuPDF.\n"
-        "• Deterministic ResdexFormExecutor with decoupled selectors."
+        "• High-resolution multi-page PDF rendering via PyMuPDF."
     ),
     version=settings.APP_VERSION,
     docs_url="/docs",
@@ -182,7 +176,6 @@ async def generic_exception_handler(request: Request, exc: Exception):
 # 5. Include API Routers
 # ------------------------------------------------------------------------------
 app.include_router(search_router)
-app.include_router(profiles_router)
 app.include_router(dossier_router)
 app.include_router(resume_converter_router)
 

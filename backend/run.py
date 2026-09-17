@@ -1,11 +1,5 @@
 """
-Windows-safe uvicorn launcher for the Playwright-based Resdex backend.
-
-On Windows, asyncio defaults to SelectorEventLoop which cannot spawn subprocesses.
-async_playwright needs to spawn Chrome as a subprocess → requires ProactorEventLoop.
-
-We must set the policy HERE, before uvicorn calls asyncio.new_event_loop(),
-because setting it inside main.py is too late (loop already running by then).
+Uvicorn launcher for the profile-bot backend.
 
 Usage:
     python run.py
@@ -16,9 +10,6 @@ import asyncio
 import sys
 
 if sys.platform == "win32":
-    # Must be set before uvicorn creates the event loop.
-    # ProactorEventLoop is the only loop on Windows that supports subprocess spawning,
-    # which async_playwright needs to launch the Chrome/Chromium browser process.
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 import argparse
@@ -36,6 +27,5 @@ if __name__ == "__main__":
         host=args.host,
         port=args.port,
         reload=not args.no_reload,
-        loop="asyncio",   # Tells uvicorn to use asyncio (ProactorEventLoop via policy above)
         log_level="info",
     )

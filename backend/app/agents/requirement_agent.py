@@ -241,9 +241,9 @@ Read the job description and return ONLY a JSON object with these exact fields:
   "job_type": null,
   "employment_type": null,
   "candidate_display": null,
-  "verified_mobile": null,
-  "verified_email": null,
-  "attached_resume": null,
+  "verified_mobile": true,
+  "verified_email": true,
+  "attached_resume": true,
   "active_in": null,
   "confidence": 0.95,
   "uncertain_fields": []
@@ -256,7 +256,8 @@ Rules:
 - ug_qualification: ONLY set if the JD explicitly states a degree requirement. Allowed values: "Any UG qualification", "Specific UG qualification", "No UG qualification". Otherwise null.
 - pg_qualification: ONLY set if the JD explicitly states a postgraduate requirement. Allowed values: "Any PG qualification", "Specific PG qualification", "No PG qualification". Otherwise null.
 - Experience: ONLY extract if explicitly stated in the text (e.g. "5 to 10 years"). NEVER invent or guess experience numbers if not mentioned in the JD.
-- NEVER assume or inject hardcoded values for active_in, verified_mobile, verified_email, attached_resume, or location. If not explicitly requested in the requirement, set them to null.
+- verified_mobile, verified_email, attached_resume: ALWAYS set to true by default (show only candidates with verified contact info and resume). Only set to false if explicitly excluded.
+- NEVER assume or inject hardcoded values for active_in, gender, career_break, differently_abled, defence_background, or location. If not explicitly requested in the requirement, set them to null.
 - Return ONLY raw JSON. No markdown, no explanation."""
 
         headers = {
@@ -517,9 +518,9 @@ Rules:
             job_type=job_type,
             employment_type=emp_type,
             candidate_display=None,
-            verified_mobile=None,
-            verified_email=None,
-            attached_resume=None,
+            verified_mobile=True,
+            verified_email=True,
+            attached_resume=True,
             active_in=None,
             confidence=1.0,
             uncertain_fields=[],

@@ -1,23 +1,13 @@
 from app.core.config import settings
 from app.core.exceptions import (
-    BrowserDriverError,
     CandidateBotException,
-    NaukriAuthenticationRequired,
-    NaukriSecurityChallenge,
-    NaukriPageChanged,
-    NaukriSearchFailed,
     PortalNotSupportedException,
-    SeleniumDriverError,
+    RequirementParsingError,
 )
 
 __all__ = [
     "settings",
-    "BrowserDriverError",
     "CandidateBotException",
-    "NaukriAuthenticationRequired",
-    "NaukriSecurityChallenge",
-    "NaukriPageChanged",
-    "NaukriSearchFailed",
     "PortalNotSupportedException",
-    "SeleniumDriverError",
+    "RequirementParsingError",
 ]

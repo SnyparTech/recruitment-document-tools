@@ -15,20 +15,15 @@ const BACKEND_URLS = [
 ];
 let lastProcessedTimestamp = 0;
 let isFilling = false;
-let isPaused = false;          // True while user has paused mid-fill
+let isPaused = false;
 let lastFillCompletedAt = 0;
-const FILL_COOLDOWN_MS = 90_000; // 90s minimum between auto-triggered fills
-const FILL_CACHE_KEY = "snypar_last_fill_ts"; // sessionStorage key
+const FILL_COOLDOWN_MS = 90_000;
+const FILL_CACHE_KEY = "snypar_last_fill_ts";
 
-// Naukri Resdex URL patterns  (ground truth from selectors.py)
-// Form page:    https://resdex.naukri.com/v3?activeTab=advSrch
-// Results page: https://resdex.naukri.com/v3/search?sid=...
 const RESDEX_FORM_URL = "https://resdex.naukri.com/v3?activeTab=advSrch";
 
 function isOnResultsPage() {
-  const href = window.location.href;
-  // Results page always has /v3/search in the path (the form page is /v3 without /search)
-  return href.includes("/v3/search");
+  return window.location.href.includes("/v3/search");
 }
 
 function isOnFormPage() {
@@ -62,13 +57,6 @@ function createFloatingWidget() {
   });
 }
 
-/**
- * updateWidgetStatus — updates dot state + text + shows/hides Pause/Resume buttons.
- * state: "online" | "offline" | "busy" | "paused"
- * showPause: true  → show Pause button (bot is filling, not paused)
- * showPause: false → hide both buttons (idle/done/error)
- * showPause: "paused" → hide Pause, show Resume
- */
 function updateWidgetStatus(text, state = "online", buttonMode = "none") {
   const dot = document.getElementById("snypar-dot");
   const label = document.getElementById("snypar-status-text");
@@ -81,9 +69,7 @@ function updateWidgetStatus(text, state = "online", buttonMode = "none") {
     "snypar-badge-dot " +
     (state === "offline" ? "offline" : state === "busy" ? "busy" : "");
 
-  // Pause button: show only while actively filling and not paused
   if (pauseBtn) pauseBtn.style.display  = buttonMode === "filling" ? "flex" : "none";
-  // Resume button: show only while paused mid-fill
   if (resumeBtn) resumeBtn.style.display = buttonMode === "paused"  ? "flex" : "none";
 }
 
@@ -105,16 +91,11 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/**
- * Pausable sleep — sleeps for `ms`, but also polls isPaused every 300ms.
- * If paused, it suspends until resumed. Call this between major steps.
- */
 async function pausableSleep(ms) {
   const end = Date.now() + ms;
   while (Date.now() < end) {
     await sleep(Math.min(300, end - Date.now()));
   }
-  // After base sleep, wait indefinitely while paused
   while (isPaused) {
     updateWidgetStatus("⏸ Paused — click Resume to continue", "busy", "paused");
     await sleep(300);
@@ -131,10 +112,8 @@ function setNativeValue(el, value) {
   nativeSetter.call(el, value);
 }
 
-// ─── Shared suggestion selectors (autocomplete + AI suggested keywords) ────────
-// Covers Naukri's regular autocomplete items AND the "✨ AI suggested keywords" chips.
+// ─── Shared suggestion selectors ─────────────────────────────────────────────
 const SUGGESTION_SELECTORS = [
-  // Standard and React suggestor items
   "div.sug-item", "li.sug-item", "span.sug-item",
   "div.sug-text", "span.sug-text",
   "div.tuple", "div.tuple-wrap", "span.tuple-wrap",
@@ -151,7 +130,6 @@ const SUGGESTION_SELECTORS = [
   "[role='listbox'] [role='option']", "[role='listbox'] li", "[role='listbox'] div",
   "div[class*='dropdown-menu'] *",
   "div[class*='menu'] li", "div[class*='menu'] div",
-  // AI suggested keywords panel chips
   "div[class*='aiKeyword']", "span[class*='aiKeyword']", "button[class*='aiKeyword']",
   "div[class*='ai-keyword']", "span[class*='ai-keyword']", "button[class*='ai-keyword']",
   "div[class*='suggestedKeyword'] span", "div[class*='suggestedKeyword'] button", "div[class*='suggestedKeyword']",
@@ -161,7 +139,6 @@ const SUGGESTION_SELECTORS = [
   "div[class*='recommend'] span", "div[class*='recommend'] button",
 ].join(", ");
 
-// Poll until any visible suggestion appears (up to maxMs)
 async function waitForDropdown(maxMs = 1500) {
   const step = 150;
   let elapsed = 0;
@@ -174,10 +151,7 @@ async function waitForDropdown(maxMs = 1500) {
   return false;
 }
 
-// Click the best-matching visible suggestion for targetText.
-// Scored matching: exact match (100) → normalized match (95) → prefix match (80) → word token overlap (40-70).
-// Never clicks arbitrary unrelated suggestions.
-function clickBestSuggestion(targetText, activeInput = null) {
+function clickBestSuggestion(targetText) {
   if (!targetText) return false;
   const target = targetText.toLowerCase().trim();
   const targetNorm = target.replace(/[^a-z0-9]/g, '');
@@ -217,7 +191,6 @@ function clickBestSuggestion(targetText, activeInput = null) {
     }
   }
 
-  // Only click if it's a solid match (score >= 40)
   if (bestItem && bestScore >= 40) {
     console.log(`[Snypar Bot] Selected suggestion: "${bestItem.textContent.trim()}" (score: ${Math.round(bestScore)}) for "${targetText}"`);
     bestItem.click();
@@ -226,15 +199,12 @@ function clickBestSuggestion(targetText, activeInput = null) {
   return false;
 }
 
-// Generic: type into any autocomplete field and select from dropdown (location, designation, role)
-// If no dropdown option matches, confirms custom input via Enter and blur so it is preserved.
 async function typeAndSelectFromDropdown(input, text, fieldLabel = '') {
   if (!text || !text.trim()) return false;
   const cleanText = text.trim();
   input.focus();
   await sleep(150);
 
-  // Clear via execCommand + nativeSetter
   input.select();
   document.execCommand('selectAll');
   document.execCommand('delete');
@@ -244,7 +214,6 @@ async function typeAndSelectFromDropdown(input, text, fieldLabel = '') {
   }
   await sleep(100);
 
-  // Insert text
   const inserted = document.execCommand('insertText', false, cleanText);
   if (!inserted || input.value !== cleanText) {
     setNativeValue(input, cleanText);
@@ -252,19 +221,16 @@ async function typeAndSelectFromDropdown(input, text, fieldLabel = '') {
     input.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
-  // Wait for dropdown
   const appeared = await waitForDropdown(1500);
   console.log(`[Snypar Bot] ${fieldLabel} dropdown ${appeared ? '✓' : '✗'} for "${cleanText}"`);
 
-  // Click the best matching suggestion
   let selected = false;
-  if (clickBestSuggestion(cleanText, input)) {
+  if (clickBestSuggestion(cleanText)) {
     await sleep(400);
     selected = true;
     console.log(`[Snypar Bot] ✓ "${cleanText}" selected (${fieldLabel})`);
   }
 
-  // If no suggestion matched or was clicked, confirm custom value via Enter and blur
   if (!selected) {
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
     input.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
@@ -276,13 +242,13 @@ async function typeAndSelectFromDropdown(input, text, fieldLabel = '') {
     console.log(`[Snypar Bot] ✓ Confirmed "${cleanText}" as custom ${fieldLabel}`);
   }
 
-  // Dismiss dropdown if still open
   input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
   await sleep(200);
   return true;
 }
 
-// Helper to locate the keyword section container for scoped chip counting
+// ─── Keyword Helpers ─────────────────────────────────────────────────────────
+
 function getKeywordContainer(kwInput) {
   return kwInput.closest(
     ".keyword-container, .chip-container, .input-container, .tags-input, .suggestor-wrapper, div[class*='keyword'], div[class*='chip'], div[class*='tag']"
@@ -312,15 +278,12 @@ function hasKeywordChip(keyword) {
   return false;
 }
 
-// Type keyword and confirm it through suggestions, Enter, Tab, comma, or blur.
-// CRITICAL: NEVER delete or wipe unlisted keywords like "FastAPI"!
 async function typeAndConfirmKeyword(kwInput, keyword) {
   if (!keyword || !keyword.trim()) return;
   const cleanKw = keyword.trim();
   kwInput.focus();
   await sleep(150);
 
-  // Clear field
   kwInput.select();
   document.execCommand('selectAll');
   document.execCommand('delete');
@@ -330,7 +293,6 @@ async function typeAndConfirmKeyword(kwInput, keyword) {
   }
   await sleep(100);
 
-  // Insert text
   const inserted = document.execCommand('insertText', false, cleanKw);
   if (!inserted || kwInput.value !== cleanKw) {
     setNativeValue(kwInput, cleanKw);
@@ -339,15 +301,13 @@ async function typeAndConfirmKeyword(kwInput, keyword) {
   }
   await sleep(300);
 
-  // Wait for dropdown
   await waitForDropdown(1000);
 
   const container = getKeywordContainer(kwInput);
   const chipsBefore = countKeywordChipsInContainer(container);
   let confirmed = false;
 
-  // Strategy 1: Click best matching suggestion if available
-  if (clickBestSuggestion(cleanKw, kwInput)) {
+  if (clickBestSuggestion(cleanKw)) {
     await sleep(400);
     if (hasKeywordChip(cleanKw) || countKeywordChipsInContainer(container) > chipsBefore || kwInput.value === '') {
       confirmed = true;
@@ -355,7 +315,6 @@ async function typeAndConfirmKeyword(kwInput, keyword) {
     }
   }
 
-  // Strategy 2: Press Enter to convert into chip (standard tag input)
   if (!confirmed) {
     kwInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
     kwInput.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
@@ -368,7 +327,6 @@ async function typeAndConfirmKeyword(kwInput, keyword) {
     }
   }
 
-  // Strategy 3: Try Tab key
   if (!confirmed) {
     kwInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', code: 'Tab', keyCode: 9, which: 9, bubbles: true, cancelable: true }));
     kwInput.dispatchEvent(new KeyboardEvent('keyup', { key: 'Tab', code: 'Tab', keyCode: 9, which: 9, bubbles: true, cancelable: true }));
@@ -380,7 +338,6 @@ async function typeAndConfirmKeyword(kwInput, keyword) {
     }
   }
 
-  // Strategy 4: Try Comma
   if (!confirmed) {
     document.execCommand('insertText', false, ',');
     kwInput.dispatchEvent(new KeyboardEvent('keydown', { key: ',', code: 'Comma', keyCode: 188, which: 188, bubbles: true, cancelable: true }));
@@ -393,12 +350,9 @@ async function typeAndConfirmKeyword(kwInput, keyword) {
     }
   }
 
-  // Verification & final blur commit
   if (confirmed || hasKeywordChip(cleanKw) || kwInput.value === '') {
-    // Successfully converted into chip or accepted
     console.log(`[Snypar Bot] ✓ Keyword "${cleanKw}" successfully confirmed`);
   } else {
-    // If still in input field, trigger change & blur to commit
     kwInput.dispatchEvent(new Event('change', { bubbles: true }));
     kwInput.dispatchEvent(new Event('blur', { bubbles: true }));
     await sleep(200);
@@ -406,7 +360,6 @@ async function typeAndConfirmKeyword(kwInput, keyword) {
     if (hasKeywordChip(cleanKw) || kwInput.value === '') {
       console.log(`[Snypar Bot] ✓ Keyword "${cleanKw}" confirmed via blur`);
     } else {
-      // Clear input only so the NEXT keyword has a fresh input
       console.warn(`[Snypar Bot] ⚠ Keyword "${cleanKw}" could not be chipped; clearing input for next entry.`);
       kwInput.focus();
       kwInput.select();
@@ -417,7 +370,7 @@ async function typeAndConfirmKeyword(kwInput, keyword) {
   await sleep(150);
 }
 
-// ─── AI Suggested Keywords Selection ─────────────────────────────────────────
+// ─── AI Suggested Keywords ───────────────────────────────────────────────────
 
 async function selectRelevantAISuggestedKeywords(requiredKws, preferredKws, mandatorySet) {
   const allTargets = [...(requiredKws || []), ...(preferredKws || [])].map(k => k.toLowerCase().trim());
@@ -457,8 +410,6 @@ async function selectRelevantAISuggestedKeywords(requiredKws, preferredKws, mand
   }
 }
 
-// ─── Click Mandatory Star on a Keyword Chip ──────────────────────────────────
-
 async function clickKeywordStar(skillName) {
   if (!skillName) return false;
   const clean = skillName.toLowerCase().trim();
@@ -486,15 +437,13 @@ async function clickKeywordStar(skillName) {
   return false;
 }
 
-// ─── Count keyword chips currently added ─────────────────────────────────────
-
 function countKeywordChips() {
   return document.querySelectorAll(
     "div[class*='chip'], span[class*='chip'], div[class*='tag'], span[class*='tag'], li[class*='chip'], li[class*='tag'], div[class*='pill'], span[class*='pill']"
   ).length;
 }
 
-// ─── Expand Section ───────────────────────────────────────────────────────────
+// ─── Section Expand ──────────────────────────────────────────────────────────
 
 async function ensureSectionExpanded(sectionName) {
   const toggles = Array.from(
@@ -515,8 +464,6 @@ async function ensureSectionExpanded(sectionName) {
     }
   }
 }
-
-// ─── Verify a field has a value (DOM-state check) ────────────────────────────
 
 function fieldHasValue(selector) {
   const el = document.querySelector(selector);
@@ -541,7 +488,6 @@ async function setExperience(selector, value) {
         return true;
       }
     }
-    // Try closest numeric match
     for (let i = 0; i < el.options.length; i++) {
       if (parseFloat(el.options[i].text) === parseFloat(valStr)) {
         el.selectedIndex = i;
@@ -557,90 +503,268 @@ async function setExperience(selector, value) {
     el.dispatchEvent(new Event("change", { bubbles: true }));
     await sleep(300);
 
-    // Try clicking matching option in dropdown
     const options = document.querySelectorAll(
       "div.sug-item, li.suggestion-item, div[class*='option'], li[class*='option'], ul li"
     );
     for (const opt of options) {
-      if (
-        opt.textContent.trim() === valStr &&
-        opt.offsetParent !== null
-      ) {
+      if (opt.textContent.trim() === valStr && opt.offsetParent !== null) {
         opt.click();
         await sleep(200);
         return true;
       }
     }
 
-    // Press Enter to confirm
-    el.dispatchEvent(
-      new KeyboardEvent("keydown", { key: "Enter", keyCode: 13, bubbles: true })
-    );
+    el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", keyCode: 13, bubbles: true }));
     await sleep(200);
     return fieldHasValue(selector);
   }
 }
 
-// ─── Set Active In Dropdown ───────────────────────────────────────────────────
+// ─── Click Pill Button ───────────────────────────────────────────────────────
 
-async function setActiveIn(value) {
-  const selects = document.querySelectorAll(
-    "select#activeIn, select[name='activeIn'], select#searchActivePeriod"
-  );
-  for (const sel of selects) {
-    for (let i = 0; i < sel.options.length; i++) {
-      if (sel.options[i].text.toLowerCase().includes(value.toLowerCase())) {
-        sel.selectedIndex = i;
-        sel.dispatchEvent(new Event("change", { bubbles: true }));
-        return true;
+async function clickPill(sectionName, pillText) {
+  if (!pillText) return false;
+  await ensureSectionExpanded(sectionName);
+  await sleep(300);
+
+  const allElements = Array.from(document.querySelectorAll(
+    "span, div, button, label, a, li"
+  )).filter(el => el.offsetParent !== null);
+
+  // Try exact match first
+  for (const el of allElements) {
+    const text = el.textContent.trim();
+    if (text.toLowerCase() === pillText.toLowerCase()) {
+      const cls = (el.className && el.className.toString()) || "";
+      const ariaPressed = el.getAttribute("aria-pressed");
+      if (!cls.includes("active") && !cls.includes("selected") && ariaPressed !== "true") {
+        el.click();
+        console.log(`[Snypar Bot] ✓ Clicked pill "${pillText}" in ${sectionName}`);
+        await sleep(200);
+      } else {
+        console.log(`[Snypar Bot] ✓ Pill "${pillText}" already active in ${sectionName}`);
+      }
+      return true;
+    }
+  }
+
+  // Try contains match
+  for (const el of allElements) {
+    const text = el.textContent.trim().toLowerCase();
+    if (text.includes(pillText.toLowerCase())) {
+      el.click();
+      console.log(`[Snypar Bot] ✓ Clicked pill "${pillText}" via contains match in ${sectionName}`);
+      await sleep(200);
+      return true;
+    }
+  }
+
+  console.warn(`[Snypar Bot] ⚠ Pill "${pillText}" not found in ${sectionName}`);
+  return false;
+}
+
+// ─── Set Select/Dropdown ─────────────────────────────────────────────────────
+
+async function setSelectDropdown(selectors, value) {
+  if (!value) return false;
+  const selectorList = Array.isArray(selectors) ? selectors : [selectors];
+
+  for (const sel of selectorList) {
+    const el = document.querySelector(sel);
+    if (!el) continue;
+
+    if (el.tagName.toLowerCase() === "select") {
+      for (let i = 0; i < el.options.length; i++) {
+        if (el.options[i].text.toLowerCase().includes(value.toLowerCase()) ||
+            el.options[i].value.toLowerCase().includes(value.toLowerCase())) {
+          el.selectedIndex = i;
+          el.dispatchEvent(new Event("change", { bubbles: true }));
+          console.log(`[Snypar Bot] ✓ Set "${value}" in ${sel}`);
+          return true;
+        }
       }
     }
   }
   return false;
 }
 
-// ─── Tick Show-Only Checkboxes ────────────────────────────────────────────────
+// ─── Set Active In ───────────────────────────────────────────────────────────
+
+async function setActiveIn(value) {
+  if (!value) return false;
+
+  const selectors = [
+    "select#activeIn", "select[name='activeIn']", "select#searchActivePeriod",
+    "select[name='searchActivePeriod']"
+  ];
+
+  for (const sel of selectors) {
+    const el = document.querySelector(sel);
+    if (el && el.tagName.toLowerCase() === "select") {
+      for (let i = 0; i < el.options.length; i++) {
+        if (el.options[i].text.toLowerCase().includes(value.toLowerCase())) {
+          el.selectedIndex = i;
+          el.dispatchEvent(new Event("change", { bubbles: true }));
+          console.log(`[Snypar Bot] ✓ Set active_in "${value}"`);
+          return true;
+        }
+      }
+    }
+  }
+
+  // Try React custom dropdown
+  const triggers = Array.from(document.querySelectorAll(
+    "span, div, button"
+  )).filter(el => el.textContent.trim().toLowerCase().includes("active in") && el.offsetParent !== null);
+
+  if (triggers.length > 0) {
+    triggers[0].click();
+    await sleep(400);
+
+    const options = Array.from(document.querySelectorAll(
+      "li, div[role='option'], span"
+    )).filter(el => el.textContent.trim().toLowerCase().includes(value.toLowerCase()) && el.offsetParent !== null);
+
+    if (options.length > 0) {
+      options[0].click();
+      console.log(`[Snypar Bot] ✓ Set active_in "${value}" via dropdown`);
+      await sleep(200);
+      return true;
+    }
+  }
+
+  return false;
+}
+
+// ─── Tick Checkbox ───────────────────────────────────────────────────────────
+
+async function tickCheckbox(selector, checked) {
+  if (checked === null || checked === undefined) return false;
+  const el = document.querySelector(selector);
+  if (!el) return false;
+  if (checked && !el.checked) {
+    el.click();
+    console.log(`[Snypar Bot] ✓ Ticked checkbox ${selector}`);
+    await sleep(100);
+  } else if (!checked && el.checked) {
+    el.click();
+    console.log(`[Snypar Bot] ✓ Unticked checkbox ${selector}`);
+    await sleep(100);
+  }
+  return true;
+}
+
+// ─── Tick Show-Only Pills (verified mobile, verified email, attached resume) ──
+// On Naukri, these are pill buttons with '+' icon, NOT checkboxes.
+// Strategy: find element containing the text, check if already active, click if not.
 
 async function tickShowOnlyCheckboxes(plan) {
   const targets = [];
   if (plan?.verified_mobile) {
-    targets.push({ key: "verified mobile", selector: "input#verifiedMobile, input[name='verifiedMobile']" });
+    targets.push({ key: "verified mobile" });
   }
   if (plan?.verified_email) {
-    targets.push({ key: "verified email", selector: "input#verifiedEmail, input[name='verifiedEmail']" });
+    targets.push({ key: "verified email" });
   }
   if (plan?.attached_resume) {
-    targets.push({ key: "attached resume", selector: "input#attachedResume, input[name='attachedResume']" });
+    targets.push({ key: "attached resume" });
   }
 
   if (targets.length === 0) return 0;
 
   let ticked = 0;
+
+  // First expand Additional Details section if needed
+  await ensureSectionExpanded("Additional Details");
+  await sleep(300);
+
   for (const target of targets) {
-    let input = document.querySelector(target.selector);
-    if (input) {
-      if (!input.checked) input.click();
-      ticked++;
-    } else {
-      const lbl = labels.find((l) =>
-        l.textContent.toLowerCase().includes(target.key)
+    const searchText = target.key.toLowerCase();
+    let success = false;
+
+    // Strategy 1: Find pill/chip/tag button with exact or contains text match
+    const allClickable = Array.from(document.querySelectorAll(
+      "span, div, button, label, a, li"
+    )).filter(el => {
+      const text = el.textContent.trim().toLowerCase();
+      const isButton = el.tagName === "BUTTON" || el.tagName === "A" ||
+                       el.getAttribute("role") === "button" || el.getAttribute("role") === "checkbox";
+      const isPill = el.className && (
+        el.className.toString().includes("chip") ||
+        el.className.toString().includes("pill") ||
+        el.className.toString().includes("tag") ||
+        el.className.toString().includes("btn") ||
+        el.className.toString().includes("option")
       );
-      if (lbl) {
-        const cb = lbl.querySelector("input[type='checkbox']");
+      return (text.includes(searchText) || text === searchText) &&
+             el.offsetParent !== null &&
+             (isButton || isPill || el.tagName === "LABEL" || el.tagName === "LI");
+    });
+
+    for (const el of allClickable) {
+      const cls = (el.className && el.className.toString()) || "";
+      const ariaPressed = el.getAttribute("aria-pressed");
+      const isChecked = cls.includes("active") || cls.includes("selected") ||
+                        cls.includes("checked") || ariaPressed === "true";
+
+      if (!isChecked) {
+        el.click();
+        console.log(`[Snypar Bot] ✓ Clicked show-only pill "${target.key}"`);
+        success = true;
+        await sleep(300);
+        break;
+      } else {
+        console.log(`[Snypar Bot] ✓ Show-only pill "${target.key}" already active`);
+        success = true;
+        break;
+      }
+    }
+
+    // Strategy 2: Try checkbox input as fallback
+    if (!success) {
+      const cbSelectors = [
+        "input#verifiedMobile", "input[name='verifiedMobile']",
+        "input#verifiedEmail", "input[name='verifiedEmail']",
+        "input#attachedResume", "input[name='attachedResume']"
+      ];
+      for (const sel of cbSelectors) {
+        const cb = document.querySelector(sel);
+        if (cb && !cb.checked) {
+          cb.click();
+          console.log(`[Snypar Bot] ✓ Ticked checkbox "${target.key}"`);
+          success = true;
+          await sleep(100);
+          break;
+        }
+      }
+    }
+
+    // Strategy 3: Find by label text and click associated checkbox or pill
+    if (!success) {
+      const labels = Array.from(document.querySelectorAll("label"));
+      const label = labels.find(l => l.textContent.trim().toLowerCase().includes(searchText) && l.offsetParent !== null);
+      if (label) {
+        const cb = label.querySelector("input[type='checkbox']");
         if (cb) {
           if (!cb.checked) cb.click();
+          console.log(`[Snypar Bot] ✓ Ticked checkbox via label "${target.key}"`);
+          success = true;
         } else {
-          lbl.click();
+          label.click();
+          console.log(`[Snypar Bot] ✓ Clicked label "${target.key}"`);
+          success = true;
         }
-        ticked++;
         await sleep(100);
       }
     }
+
+    if (success) ticked++;
   }
+
   return ticked;
 }
 
-// ─── DOM-State Verification Before Search ────────────────────────────────────
+// ─── DOM-State Verification ──────────────────────────────────────────────────
 
 async function waitForFieldsVerified(plan, timeoutMs = 12000) {
   const start = Date.now();
@@ -651,17 +775,13 @@ async function waitForFieldsVerified(plan, timeoutMs = 12000) {
   while (Date.now() - start < timeoutMs) {
     const checks = [];
 
-    // 1. Keywords chips (selectors.py: KEYWORD_CHIP)
     if (totalKws > 0) {
-      const allKws = [...new Set([...requiredKws, ...preferredKws])];
-      const matched = allKws.filter(kw => hasKeywordChip(kw)).length;
       checks.push({
         name: "keywords",
-        ok: matched > 0 || countKeywordChips() > 0,
+        ok: countKeywordChips() > 0,
       });
     }
 
-    // 2. Experience (selectors.py: MIN_EXP_INPUT uses input[name='minExp'])
     if (plan.min_experience !== null && plan.min_experience !== undefined) {
       checks.push({
         name: "min_experience",
@@ -697,7 +817,6 @@ async function fillResdexForm(plan) {
   isFilling = true;
   console.log("[Snypar Bot] Starting auto-fill with SearchPlan:", plan);
 
-  // Temporary submit intercepter to guarantee form is not submitted prematurely
   const blockSubmit = (e) => {
     e.preventDefault();
     e.stopImmediatePropagation();
@@ -706,16 +825,16 @@ async function fillResdexForm(plan) {
   window.addEventListener("submit", blockSubmit, true);
 
   try {
-    // ── STEP 1: Keywords ────────────────────────────────────────────────────
+    // ── STEP 1: Keywords (required, preferred, excluded, mandatory, search_scope) ──
     const requiredKws  = (plan.keywords && plan.keywords.required)  || [];
     const preferredKws = (plan.keywords && plan.keywords.preferred) || [];
+    const excludedKws  = (plan.keywords && plan.keywords.excluded)  || [];
     const allKws = [...new Set([...requiredKws, ...preferredKws])];
     const mandatorySet = new Set(requiredKws.map((k) => k.toLowerCase().trim()));
 
     if (allKws.length > 0) {
       updateWidgetStatus(`Keywords (0/${allKws.length})...`, "busy", "filling");
 
-      // Ground-truth selector from selectors.py: KEYWORD_INPUT
       const kwInput = document.querySelector(
         "input[name='ezKeywordsAny'], input[placeholder*='Enter keywords like skills'], " +
         "input#keywords, input.keyword-input, input[name='keyword'], input[id*='keyword']"
@@ -735,16 +854,15 @@ async function fillResdexForm(plan) {
             await clickKeywordStar(kw);
           }
 
-          // Check pause after each keyword
           await pausableSleep(200);
         }
 
-        // Select any matching AI Suggested Keywords on the page
+        // AI Suggested Keywords
         updateWidgetStatus("Checking AI Suggested Keywords...", "busy", "filling");
         await selectRelevantAISuggestedKeywords(requiredKws, preferredKws, mandatorySet);
         await sleep(200);
 
-        // Tick global mandatory checkbox if present (selectors.py: MANDATORY_KEYWORDS_CHECKBOX)
+        // Mandatory keywords checkbox
         const mustHaveCheck = document.querySelector(
           "input#must-have-checkbox, input[name='must-have-checkbox'], " +
           "input#mandatoryKeywords, input[id*='mustHave'], input[id*='mandatory']"
@@ -754,16 +872,34 @@ async function fillResdexForm(plan) {
           await sleep(200);
         }
       } else {
-        console.warn("[Snypar Bot] Keyword input not found. Available inputs:",
-          Array.from(document.querySelectorAll("input")).map(i => `${i.name || i.id || i.type} placeholder=${i.placeholder}`).join(", ")
-        );
+        console.warn("[Snypar Bot] Keyword input not found.");
       }
+    }
+
+    // Excluded keywords
+    if (excludedKws.length > 0) {
+      const excludeInput = document.querySelector(
+        "input[name='ezKeywordsExclude'], input#excludeKeywords, input[name='excludeKeyword'], " +
+        "input[placeholder*='exclude']"
+      );
+      if (excludeInput) {
+        for (const kw of excludedKws) {
+          await typeAndConfirmKeyword(excludeInput, kw);
+          await sleep(200);
+        }
+      }
+    }
+
+    // Keyword search scope
+    if (plan.keywords && plan.keywords.search_scope && plan.keywords.search_scope !== "Entire resume") {
+      await setSelectDropdown([
+        "select#keywordScope", "select[name='keywordScope']"
+      ], plan.keywords.search_scope);
     }
 
     await pausableSleep(500);
 
     // ── STEP 2: Experience ──────────────────────────────────────────────────
-    // selectors.py: MIN_EXP_INPUT = "input[name='minExp']...", MAX_EXP_INPUT = "input[name='maxExp']..."
     if (plan.min_experience !== null && plan.min_experience !== undefined) {
       updateWidgetStatus("Experience (Min)...", "busy", "filling");
       await setExperience(
@@ -783,7 +919,7 @@ async function fillResdexForm(plan) {
 
     await pausableSleep(400);
 
-    // ── STEP 3: Location ────────────────────────────────────────────────────
+    // ── STEP 3: Location (current_location, include_relocation, exclude_anywhere) ──
     if (plan.current_location && plan.current_location.length > 0) {
       const locInput = document.querySelector(
         "input[name='locations'], input[placeholder*='Add location'], input#location"
@@ -798,19 +934,30 @@ async function fillResdexForm(plan) {
       }
     }
 
-
-
-    if (plan.include_relocation) {
-      const reloCb = document.querySelector(
-        "input#prefLocCheckbox, input[name='prefLocCheckbox'], input#includeRelocation"
+    if (plan.include_relocation !== null && plan.include_relocation !== undefined) {
+      await tickCheckbox(
+        "input#prefLocCheckbox, input[name='prefLocCheckbox'], input#includeRelocation",
+        plan.include_relocation
       );
-      if (reloCb && !reloCb.checked) reloCb.click();
+    }
+
+    if (plan.exclude_anywhere_location !== null && plan.exclude_anywhere_location !== undefined) {
+      await tickCheckbox(
+        "input#exact-pref-match-checkbox, input#excludeAnywhere",
+        plan.exclude_anywhere_location
+      );
     }
 
     await pausableSleep(400);
 
-    // ── STEP 4: Salary ──────────────────────────────────────────────────────
+    // ── STEP 4: Salary (currency, min, max, include_unspecified) ────────────
     if (plan.salary) {
+      if (plan.salary.currency) {
+        await setSelectDropdown([
+          "select#salaryCurrency", "select[name='currency']"
+        ], plan.salary.currency);
+      }
+
       if (plan.salary.min !== null && plan.salary.min !== undefined) {
         updateWidgetStatus("Salary (Min)...", "busy");
         const minSalInput = document.querySelector(
@@ -837,16 +984,32 @@ async function fillResdexForm(plan) {
           await sleep(300);
         }
       }
+
+      if (plan.salary.include_unspecified !== null && plan.salary.include_unspecified !== undefined) {
+        await tickCheckbox(
+          "input#include-candidate-ctc, input#includeUnspecifiedSalary",
+          plan.salary.include_unspecified
+        );
+      }
     }
 
     await sleep(400);
 
-    // ── STEP 5: Employment Details — Designation ────────────────────────────
-    if (plan.designation && plan.designation.length > 0) {
+    // ── STEP 5: Employment Details (designation, department_role, industry, company, exclude_company, scopes) ──
+    const hasEmpDetails = (plan.designation && plan.designation.length > 0) ||
+                          (plan.department_role && plan.department_role.length > 0) ||
+                          (plan.industry && plan.industry.length > 0) ||
+                          (plan.company && plan.company.length > 0) ||
+                          (plan.exclude_company && plan.exclude_company.length > 0);
+
+    if (hasEmpDetails) {
       updateWidgetStatus("Expanding Employment Details...", "busy", "filling");
       await ensureSectionExpanded("Employment Details");
       await sleep(500);
+    }
 
+    // Designation
+    if (plan.designation && plan.designation.length > 0) {
       const desigInput = document.querySelector(
         "input[name='designation'], input#designation, input[placeholder*='Designation'], input[placeholder*='designation']"
       );
@@ -860,12 +1023,15 @@ async function fillResdexForm(plan) {
       }
     }
 
-    // ── STEP 6: Department Role ─────────────────────────────────────────────
-    if (plan.department_role && plan.department_role.length > 0) {
-      updateWidgetStatus("Expanding Employment Details...", "busy", "filling");
-      await ensureSectionExpanded("Employment Details");
-      await sleep(400);
+    // Designation search scope
+    if (plan.designation_search_scope && plan.designation_search_scope !== "Current designation") {
+      await setSelectDropdown([
+        "select#designationScope", "select[name='designationScope']"
+      ], plan.designation_search_scope);
+    }
 
+    // Department Role
+    if (plan.department_role && plan.department_role.length > 0) {
       const roleInput = document.querySelector(
         "input[name='departmentRole'], input#departmentRole, input[placeholder*='Department'], input[placeholder*='Role']"
       );
@@ -879,20 +1045,101 @@ async function fillResdexForm(plan) {
       }
     }
 
+    // Industry
+    if (plan.industry && plan.industry.length > 0) {
+      const indInput = document.querySelector(
+        "input[name='industry'], input#industry, input[placeholder*='industry']"
+      );
+      if (indInput) {
+        for (let i = 0; i < plan.industry.length; i++) {
+          const ind = plan.industry[i];
+          updateWidgetStatus(`Industry ${i + 1}/${plan.industry.length}: "${ind}"`, "busy", "filling");
+          await typeAndSelectFromDropdown(indInput, ind, 'Industry');
+          await pausableSleep(100);
+        }
+      }
+    }
+
+    // Company
+    if (plan.company && plan.company.length > 0) {
+      const compInput = document.querySelector(
+        "input[name='company'], input#company, input[placeholder*='company']"
+      );
+      if (compInput) {
+        for (let i = 0; i < plan.company.length; i++) {
+          const comp = plan.company[i];
+          updateWidgetStatus(`Company ${i + 1}/${plan.company.length}: "${comp}"`, "busy", "filling");
+          await typeAndSelectFromDropdown(compInput, comp, 'Company');
+          await pausableSleep(100);
+        }
+      }
+    }
+
+    // Company search scope
+    if (plan.company_search_scope && plan.company_search_scope !== "Current company") {
+      await setSelectDropdown([
+        "select#companyScope", "select[name='companyScope']"
+      ], plan.company_search_scope);
+    }
+
+    // Exclude Company
+    if (plan.exclude_company && plan.exclude_company.length > 0) {
+      const exCompInput = document.querySelector(
+        "input[name='excludeCompany'], input#excludeCompany, input[placeholder*='exclude company']"
+      );
+      if (exCompInput) {
+        for (let i = 0; i < plan.exclude_company.length; i++) {
+          const comp = plan.exclude_company[i];
+          updateWidgetStatus(`Exclude Company ${i + 1}/${plan.exclude_company.length}: "${comp}"`, "busy", "filling");
+          await typeAndSelectFromDropdown(exCompInput, comp, 'Exclude Company');
+          await pausableSleep(100);
+        }
+      }
+    }
+
+    // Exclude company search scope
+    if (plan.exclude_company_search_scope && plan.exclude_company_search_scope !== "Current company") {
+      await setSelectDropdown([
+        "select#excludeCompanyScope", "select[name='excludeCompanyScope']"
+      ], plan.exclude_company_search_scope);
+    }
+
     await pausableSleep(400);
 
-    // ── STEP 7: Notice Period ───────────────────────────────────────────────
+    // ── STEP 6: Notice Period ───────────────────────────────────────────────
     if (plan.notice_period && plan.notice_period.length > 0) {
       updateWidgetStatus("Notice Period...", "busy", "filling");
       await ensureSectionExpanded("Notice Period");
       await sleep(500);
 
+      // Normalize notice period display values
+      const noticePeriodDisplayMap = {
+        "0-15 days": "0 - 15 days",
+        "1 month": "1 Month",
+        "2 months": "2 Months",
+        "3 months": "3 Months",
+        "more than 3 months": "More than 3 Months",
+        "currently serving notice period": "Currently Serving Notice Period",
+        "any": "Any",
+      };
+
       const labels = Array.from(document.querySelectorAll("label, span, div.checkbox, li"));
       for (const np of plan.notice_period) {
+        const npDisplay = noticePeriodDisplayMap[np.toLowerCase().trim()] || np;
         const npClean = np.toLowerCase();
-        const match = labels.find((l) =>
-          l.textContent.toLowerCase().includes(npClean)
+
+        // Try exact match on display text first
+        let match = labels.find((l) =>
+          l.textContent.trim().toLowerCase() === npDisplay.toLowerCase()
         );
+
+        // Fallback to contains match
+        if (!match) {
+          match = labels.find((l) =>
+            l.textContent.trim().toLowerCase().includes(npClean)
+          );
+        }
+
         if (match) {
           const cb = match.querySelector("input[type='checkbox']");
           if (cb) {
@@ -900,6 +1147,7 @@ async function fillResdexForm(plan) {
           } else {
             match.click();
           }
+          console.log(`[Snypar Bot] ✓ Notice period: "${npDisplay}"`);
           await sleep(200);
         }
       }
@@ -907,9 +1155,118 @@ async function fillResdexForm(plan) {
 
     await pausableSleep(400);
 
-    // ── STEP 8: Additional Details (only if explicitly requested) ──────────
-    if (plan.verified_mobile || plan.verified_email || plan.attached_resume) {
+    // ── STEP 7: Education Details (ug_qualification, pg_qualification) ──────
+    if (plan.ug_qualification || plan.pg_qualification) {
+      updateWidgetStatus("Education Details...", "busy", "filling");
+
+      if (plan.ug_qualification) {
+        await clickPill("Education Details", plan.ug_qualification);
+      }
+      if (plan.pg_qualification) {
+        await clickPill("Education Details", plan.pg_qualification);
+      }
+      await sleep(300);
+    }
+
+    // ── STEP 8: Diversity Hiring (gender, career_break, differently_abled, defence_background) ──
+    const hasDiversity = plan.gender || plan.career_break || plan.differently_abled || plan.defence_background;
+    if (hasDiversity) {
+      updateWidgetStatus("Diversity Hiring...", "busy", "filling");
+
+      if (plan.gender) {
+        await clickPill("Diversity Hiring", plan.gender);
+      }
+      if (plan.career_break) {
+        await clickPill("Diversity Hiring", plan.career_break);
+      }
+      if (plan.differently_abled) {
+        await clickPill("Diversity Hiring", plan.differently_abled);
+      }
+      if (plan.defence_background) {
+        await clickPill("Diversity Hiring", plan.defence_background);
+      }
+      await sleep(300);
+    }
+
+    // ── STEP 9: Additional Details (candidate_category, candidate_age, job_type, employment_type, work_permit) ──
+    const hasAdditional = plan.candidate_category || plan.candidate_age || plan.job_type || plan.employment_type || (plan.work_permit && plan.work_permit.length > 0);
+    if (hasAdditional) {
       updateWidgetStatus("Additional Details...", "busy", "filling");
+      await ensureSectionExpanded("Additional Details");
+      await sleep(500);
+
+      // Candidate Category
+      if (plan.candidate_category) {
+        await setSelectDropdown([
+          "select#candidateCategory", "select[name='candidateCategory']"
+        ], plan.candidate_category);
+      }
+
+      // Candidate Age
+      if (plan.candidate_age) {
+        if (plan.candidate_age.min !== null && plan.candidate_age.min !== undefined) {
+          const minAgeInput = document.querySelector(
+            "input[name='minAge'], input#minAge, input[placeholder*='Min age']"
+          );
+          if (minAgeInput) {
+            minAgeInput.focus();
+            setNativeValue(minAgeInput, String(plan.candidate_age.min));
+            minAgeInput.dispatchEvent(new Event("input", { bubbles: true }));
+            minAgeInput.dispatchEvent(new Event("change", { bubbles: true }));
+            await sleep(200);
+          }
+        }
+        if (plan.candidate_age.max !== null && plan.candidate_age.max !== undefined) {
+          const maxAgeInput = document.querySelector(
+            "input[name='maxAge'], input#maxAge, input[placeholder*='Max age']"
+          );
+          if (maxAgeInput) {
+            maxAgeInput.focus();
+            setNativeValue(maxAgeInput, String(plan.candidate_age.max));
+            maxAgeInput.dispatchEvent(new Event("input", { bubbles: true }));
+            maxAgeInput.dispatchEvent(new Event("change", { bubbles: true }));
+            await sleep(200);
+          }
+        }
+      }
+
+      // Job Type
+      if (plan.job_type) {
+        await setSelectDropdown([
+          "select#jobType", "select[name='jobType']"
+        ], plan.job_type);
+      }
+
+      // Employment Type
+      if (plan.employment_type) {
+        await setSelectDropdown([
+          "select#employmentType", "select[name='employmentType']"
+        ], plan.employment_type);
+      }
+
+      // Work Permit
+      if (plan.work_permit && plan.work_permit.length > 0) {
+        const wpInput = document.querySelector(
+          "input#workPermit, input[placeholder*='Work permit'], input[placeholder*='work permit']"
+        );
+        if (wpInput) {
+          for (const wp of plan.work_permit) {
+            await typeAndSelectFromDropdown(wpInput, wp, 'Work Permit');
+            await sleep(100);
+          }
+        }
+      }
+    }
+
+    await pausableSleep(400);
+
+    // ── STEP 10: Display Details (candidate_display, verified_mobile, verified_email, attached_resume) ──
+    if (plan.candidate_display) {
+      await clickPill("Display Details", plan.candidate_display);
+    }
+
+    if (plan.verified_mobile || plan.verified_email || plan.attached_resume) {
+      updateWidgetStatus("Show Only...", "busy", "filling");
       await ensureSectionExpanded("Additional Details");
       await sleep(500);
       const ticked = await tickShowOnlyCheckboxes(plan);
@@ -917,14 +1274,14 @@ async function fillResdexForm(plan) {
       await sleep(300);
     }
 
-    // ── STEP 9: Active In (only if explicitly requested) ───────────────────
+    // ── STEP 11: Active In ──────────────────────────────────────────────────
     if (plan.active_in) {
       updateWidgetStatus("Active In...", "busy", "filling");
       await setActiveIn(plan.active_in);
       await sleep(300);
     }
 
-    // ── STEP 10: DOM-STATE VERIFICATION (not time-based) ───────────────────
+    // ── STEP 12: DOM-STATE VERIFICATION ─────────────────────────────────────
     updateWidgetStatus("⚙ Verifying all fields...", "busy", "filling");
     showToast("⚡ Verifying all fields are complete before searching...");
     const verified = await waitForFieldsVerified(plan, 12000);
@@ -933,21 +1290,27 @@ async function fillResdexForm(plan) {
       showToast("⚠ Some fields may not have registered — check the form.");
     }
 
-    // ── Wait if user paused right before search ───────────────────────────────
     if (isPaused) {
       updateWidgetStatus("⏸ Paused before search — resume to submit", "busy", "paused");
       while (isPaused) { await sleep(300); }
     }
 
-    // ── STEP 11: Click Search Candidates ────────────────────────────────────
+    // ── STEP 13: Click Search Candidates ────────────────────────────────────
     updateWidgetStatus("Clicking Search Candidates...", "busy");
-    // Remove premature submit blocker before final submission
     window.removeEventListener("submit", blockSubmit, true);
     await sleep(600);
 
+    // Blur all inputs to commit React state and clear any text selection
+    document.querySelectorAll("input, select, textarea").forEach(el => {
+      el.dispatchEvent(new Event("blur", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    window.getSelection().removeAllRanges();
+    document.activeElement?.blur();
+    await sleep(300);
+
     let searchClicked = false;
 
-    // Strategy A: Precise Naukri class-based selectors (never match text inputs)
     const preciseSelectors = [
       "button#searchButton",
       "button[data-testid='search-btn']",
@@ -973,7 +1336,6 @@ async function fillResdexForm(plan) {
       }
     }
 
-    // Strategy B: Text-content match — ONLY real <button> elements, not inputs
     if (!searchClicked) {
       const allBtns = Array.from(document.querySelectorAll("button, a[role='button']"));
       const searchBtn = allBtns.find((b) => {
@@ -996,9 +1358,6 @@ async function fillResdexForm(plan) {
     } else {
       updateWidgetStatus("✓ All Fields Filled!", "online", "none");
       showToast("✓ All criteria completed — manually click 'Search Candidates' if needed.");
-      console.warn("[Snypar Bot] Search button not found. Buttons on page:",
-        Array.from(document.querySelectorAll("button")).map(b => `[${b.className}] "${b.textContent.trim().substring(0,40)}"`).join(", ")
-      );
     }
   } catch (err) {
     console.error("[Snypar Bot] Auto-fill error:", err);
@@ -1006,18 +1365,16 @@ async function fillResdexForm(plan) {
     showToast(`⚠ Error: ${err.message}`);
   } finally {
     window.removeEventListener("submit", blockSubmit, true);
-    isPaused = false;         // Always clear pause on completion/error
+    isPaused = false;
     isFilling = false;
     lastFillCompletedAt = Date.now();
   }
 }
 
-// ─── Real-Time Sync Loop (Fully Automatic, No Manual Button) ─────────────────
+// ─── Real-Time Sync Loop ─────────────────────────────────────────────────────
 
-// Wait for keyword input field to appear (form DOM ready)
 async function waitForFormReady(timeoutMs = 20000) {
   const start = Date.now();
-  // Ground-truth selectors from selectors.py
   const formInputSelectors = [
     "input[name='ezKeywordsAny']",
     "input[placeholder*='Enter keywords like skills']",
@@ -1036,7 +1393,6 @@ async function waitForFormReady(timeoutMs = 20000) {
         return true;
       }
     }
-    // Also check if we accidentally ended up on results page
     if (isOnResultsPage()) {
       console.log("[Snypar Bot] Still on results page after navigation — retrying...");
       await ensureOnFormPage();
@@ -1049,14 +1405,11 @@ async function waitForFormReady(timeoutMs = 20000) {
   return false;
 }
 
-// Navigate to search form page if we're on the results page
 async function ensureOnFormPage() {
   if (isOnResultsPage()) {
     updateWidgetStatus("Navigating to Search Form...", "busy");
     showToast("⚡ Snypar Bot: Going to search form to fill criteria...");
-    console.log("[Snypar Bot] On results page — navigating to form:", RESDEX_FORM_URL);
 
-    // First try clicking the 'Modify' link on the results page
     const modifyLinks = Array.from(
       document.querySelectorAll("a, button, span")
     ).filter(
@@ -1068,20 +1421,16 @@ async function ensureOnFormPage() {
       console.log("[Snypar Bot] Clicking Modify link...");
       modifyLinks[0].click();
     } else {
-      // Navigate directly to form page
       window.location.href = RESDEX_FORM_URL;
     }
-    // Navigation will reload the page — the content script reinitialises on new page
-    return false; // Signal: do not proceed with fill on this page
+    return false;
   }
-  return true; // Already on form page
+  return true;
 }
 
 async function fetchAndFill(forced = false) {
-  // ── Guard: if already filling, skip ────────────────────────────────────────
   if (isFilling) return;
 
-  // ── Guard: on results page, just show stable status (don't auto-navigate) ──
   if (isOnResultsPage()) {
     updateWidgetStatus("✓ Search Results Active", "online");
     return;
@@ -1107,14 +1456,12 @@ async function fetchAndFill(forced = false) {
     if (fetchedData.has_plan && fetchedData.plan) {
       const planTs = String(fetchedData.timestamp);
 
-      // ── Guard: same plan already applied (sessionStorage cache) ────────────
       const cachedTs = sessionStorage.getItem(FILL_CACHE_KEY);
       if (!forced && cachedTs === planTs) {
         updateWidgetStatus("✓ Plan Already Applied", "online");
         return;
       }
 
-      // ── Guard: cooldown — don't re-trigger within 90s of last fill ──────────
       const msSinceFill = Date.now() - lastFillCompletedAt;
       if (!forced && lastFillCompletedAt > 0 && msSinceFill < FILL_COOLDOWN_MS) {
         const secLeft = Math.ceil((FILL_COOLDOWN_MS - msSinceFill) / 1000);
@@ -1122,13 +1469,11 @@ async function fetchAndFill(forced = false) {
         return;
       }
 
-      // ── Guard: only proceed on genuinely new plan (or forced) ───────────────
       if (!forced && fetchedData.timestamp <= lastProcessedTimestamp) {
         updateWidgetStatus("✓ Plan Already Applied", "online");
         return;
       }
 
-      // We're on the form page — wait for form DOM to be ready
       updateWidgetStatus("Waiting for form...", "busy");
       const formReady = await waitForFormReady(15000);
       if (!formReady) {
@@ -1141,7 +1486,6 @@ async function fetchAndFill(forced = false) {
       showToast("⚡ Snypar Bot: Auto-filling candidate search criteria...");
       await fillResdexForm(fetchedData.plan);
 
-      // ── Cache the applied plan timestamp so re-navigating doesn't re-fill ───
       sessionStorage.setItem(FILL_CACHE_KEY, planTs);
 
     } else {
@@ -1170,14 +1514,14 @@ if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage)
 
     } else if (req.action === "PAUSE") {
       isPaused = true;
-      updateWidgetStatus("\u23f8 Paused \u2014 click Resume to continue", "busy", "paused");
-      showToast("\u23f8 Auto-fill paused.");
+      updateWidgetStatus("⏸ Paused — click Resume to continue", "busy", "paused");
+      showToast("⏸ Auto-fill paused.");
       sendResponse({ status: "paused" });
 
     } else if (req.action === "RESUME") {
       isPaused = false;
-      updateWidgetStatus("\u25b6 Resuming...", "busy", "filling");
-      showToast("\u25b6 Auto-fill resumed.");
+      updateWidgetStatus("▶ Resuming...", "busy", "filling");
+      showToast("▶ Auto-fill resumed.");
       sendResponse({ status: "resumed" });
 
     } else if (req.action === "GET_STATUS") {
@@ -1186,7 +1530,6 @@ if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage)
     return true;
   });
 }
-
 
 // ─── Initialize on Page Load ──────────────────────────────────────────────────
 

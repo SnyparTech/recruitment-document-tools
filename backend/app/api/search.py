@@ -15,14 +15,13 @@ from app.schemas.requirement import (
     ValidationResult,
 )
 from app.schemas.search_plan import SearchPlan
-from app.services.form_service import FormService
-from app.portals.naukri_resdex import NaukriResdexPortal
+from app.services.requirement_service import RequirementService
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/search", tags=["Candidate Search"])
 
-form_service = FormService()
+requirement_service = RequirementService()
 
 ALLOWED_DOC_EXTENSIONS = {".pdf", ".docx", ".doc", ".txt"}
 MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
@@ -37,7 +36,7 @@ _latest_plan_timestamp = 0.0
     summary="Get active SearchPlan for Naukri Resdex browser auto-fill",
 )
 async def get_active_plan():
-    """Returns the latest SearchPlan for the extension or bookmarklet to auto-fill."""
+    """Returns the latest SearchPlan for the extension to auto-fill."""
     global _latest_search_plan, _latest_plan_timestamp
     return {
         "status": "success",
@@ -51,60 +50,77 @@ async def get_active_plan():
     "/candidates",
     response_model=CandidateSearchResponse,
     status_code=status.HTTP_200_OK,
-    summary="Generate SearchPlan, Validate against Resdex Schema, and Optionally Execute",
+    summary="Generate SearchPlan from natural language requirement",
 )
 async def search_candidates(
     request: CandidateSearchRequest,
 ) -> CandidateSearchResponse:
     """
-    Schema-driven Resdex candidate search endpoint.
+    Parses natural language requirement into structured SearchPlan.
+    Plan is stored for the extension to pick up.
     """
     global _latest_search_plan, _latest_plan_timestamp
-    response = await form_service.process_search_request(request)
-    if response and response.search_plan:
-        _latest_search_plan = response.search_plan.model_dump()
-        _latest_plan_timestamp = time.time()
-    return response
+
+    plan, validation = requirement_service.process_requirement(request.requirement)
+
+    if request.active_in:
+        plan.active_in = request.active_in
+    if request.verified_mobile is not None:
+        plan.verified_mobile = request.verified_mobile
+    if request.verified_email is not None:
+        plan.verified_email = request.verified_email
+    if request.attached_resume is not None:
+        plan.attached_resume = request.attached_resume
+
+    _latest_search_plan = plan.model_dump()
+    _latest_plan_timestamp = time.time()
+
+    execution_result = ExecutionResult(
+        requested=False,
+        executed=False,
+        form_filled=False,
+        search_submitted=False,
+        fields_interacted=[],
+        message="SearchPlan generated. Extension will auto-fill the form.",
+    )
+
+    return CandidateSearchResponse(
+        requirement=request.requirement,
+        search_plan=plan,
+        validation=validation,
+        execution=execution_result,
+    )
 
 
 class DirectSearchPlanRequest(BaseModel):
-    plan: SearchPlan = Field(..., description="Pre-built SearchPlan to execute directly")
-    execute: bool = Field(default=False, description="Whether to execute form filling")
-    submit_search: bool = Field(default=False, description="Whether to submit the search after filling")
+    plan: SearchPlan = Field(..., description="Pre-built SearchPlan to store for extension")
 
 
 @router.post(
     "/plan",
     response_model=CandidateSearchResponse,
     status_code=status.HTTP_200_OK,
-    summary="Execute a pre-built SearchPlan directly",
+    summary="Store a pre-built SearchPlan for extension",
 )
-async def execute_search_plan(
+async def store_search_plan(
     request: DirectSearchPlanRequest,
 ) -> CandidateSearchResponse:
-    """Executes a pre-built SearchPlan directly, bypassing the LLM requirement parser."""
+    """Stores a pre-built SearchPlan for the extension to pick up."""
     global _latest_search_plan, _latest_plan_timestamp
 
     plan = request.plan
 
+    _latest_search_plan = plan.model_dump()
+    _latest_plan_timestamp = time.time()
+
     execution_result = ExecutionResult(
-        requested=request.execute,
+        requested=False,
         executed=False,
         form_filled=False,
         search_submitted=False,
         fields_interacted=[],
-        message="Dry-run mode: SearchPlan executed without Selenium.",
+        message="SearchPlan stored. Extension will auto-fill the form.",
     )
-
-    if request.execute:
-        portal = NaukriResdexPortal()
-        execution_result = await portal.execute_plan(
-            plan=plan,
-            submit_search=request.submit_search,
-        )
-
-    _latest_search_plan = plan.model_dump()
-    _latest_plan_timestamp = time.time()
 
     return CandidateSearchResponse(
         requirement="(direct SearchPlan)",
