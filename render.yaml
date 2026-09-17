@@ -3,6 +3,7 @@ services:
     name: profile-bot
     env: python
     buildCommand: pip install -r backend/requirements.txt
+    preInstallCommand: echo "No browser automation — extension-based flow only"
     startCommand: cd backend && uvicorn app.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: PYTHON_VERSION
