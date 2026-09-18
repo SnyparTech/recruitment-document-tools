@@ -311,9 +311,13 @@ async function typeAndSelectFromDropdown(input, text, fieldLabel = '') {
   }
 
   if (!selected) {
-    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
-    input.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
-    input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+    // bubbles:false — the target's own "confirm on Enter" handler still fires
+    // (capture+target phase run regardless of bubbles), but the event never
+    // reaches Naukri's form-level "Enter anywhere submits the search" listener,
+    // which was firing a premature search mid-fill.
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: false, cancelable: true }));
+    input.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: false, cancelable: true }));
+    input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: false, cancelable: true }));
     await sleep(200);
 
     input.dispatchEvent(new Event('change', { bubbles: true }));
@@ -395,9 +399,11 @@ async function typeAndConfirmKeyword(kwInput, keyword) {
   }
 
   if (!confirmed) {
-    kwInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
-    kwInput.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
-    kwInput.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+    // bubbles:false — see note in typeAndSelectFromDropdown: keeps the chip
+    // confirm working without leaking Enter to Naukri's form-level submit listener.
+    kwInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: false, cancelable: true }));
+    kwInput.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: false, cancelable: true }));
+    kwInput.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: false, cancelable: true }));
     await sleep(350);
 
     if (hasKeywordChip(cleanKw) || countKeywordChipsInContainer(container) > chipsBefore || kwInput.value === '') {
@@ -557,7 +563,24 @@ async function setExperience(selector, value) {
   if (value === null || value === undefined) return false;
   const valStr = String(value);
   const el = document.querySelector(selector);
-  if (!el) return false;
+  if (!el) {
+    // Selector list is a guess at Naukri's DOM — log every "exp"-related
+    // element still on the page so a failed match is diagnosable from the
+    // console instead of silently no-oping the whole experience filter.
+    const candidates = Array.from(document.querySelectorAll(
+      "[id*='exp' i], [name*='exp' i], [class*='exp' i]"
+    )).map(e => ({
+      tag: e.tagName.toLowerCase(),
+      id: e.id || null,
+      name: e.getAttribute("name") || null,
+      cls: (e.className && e.className.toString()) || null,
+    }));
+    console.warn(
+      `[Snypar Bot] Experience selector matched nothing ("${selector}"). ` +
+      `exp-like elements on page:`, candidates
+    );
+    return false;
+  }
 
   if (el.tagName && el.tagName.toLowerCase() === "select") {
     for (let i = 0; i < el.options.length; i++) {
@@ -593,7 +616,8 @@ async function setExperience(selector, value) {
       }
     }
 
-    el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", keyCode: 13, bubbles: true }));
+    // bubbles:false — same reasoning as the keyword/dropdown Enter fallbacks.
+    el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", keyCode: 13, bubbles: false, cancelable: true }));
     await sleep(200);
     return fieldHasValue(selector);
   }
@@ -1436,7 +1460,8 @@ async function fillResdexForm(plan, autoSubmit = false) {
     const verified = await waitForFieldsVerified(plan, 12000);
 
     if (!verified) {
-      showToast("⚠ Some fields may not have registered — check the form.");
+      console.warn("[Snypar Bot] Field verification failed — blocking auto-submit so the search doesn't run on an incomplete form.");
+      showToast("⚠ Some fields did not register (see console) — search NOT submitted. Fix the form and click Search manually.");
     }
 
     if (isPaused) {
@@ -1458,7 +1483,9 @@ async function fillResdexForm(plan, autoSubmit = false) {
 
     let searchClicked = false;
 
-    if (autoSubmit) {
+    if (autoSubmit && !verified) {
+      updateWidgetStatus("⚠ Verification failed — search not submitted", "offline", "none");
+    } else if (autoSubmit) {
       updateWidgetStatus("Clicking Search Candidates...", "busy");
       await sleep(400);
 
@@ -1542,6 +1569,9 @@ async function fillResdexForm(plan, autoSubmit = false) {
         showToast("⚠ Clicked 'Search Candidates' but results page was not detected — please verify manually.");
         console.warn("[Snypar Bot] Search button was clicked but isOnResultsPage() never became true within timeout.");
       }
+    } else if (autoSubmit && !verified) {
+      searchVerified = false;
+      showToast("⚠ Form incomplete (see console) — please fix the flagged fields and click Search manually.");
     } else if (autoSubmit) {
       searchVerified = false;
       updateWidgetStatus("⚠ Search button not found", "online", "none");
@@ -1553,6 +1583,7 @@ async function fillResdexForm(plan, autoSubmit = false) {
 
     const fillOutcome = {
       formFilled: true,
+      fieldsVerified: verified,
       searchRequested: autoSubmit,
       searchClicked,
       searchVerified,
