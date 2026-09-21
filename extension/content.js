@@ -852,23 +852,42 @@ async function setActiveIn(value) {
     }
   }
 
-  // Naukri custom dropdown: div.active-in-wrap > div.dropdown-head > i.ico-expand
+  // Naukri custom dropdown: opener span.selected-value; options li#option-N > div.dropdown-tuple > span.pre-wrap
   const wrap = document.querySelector("div.active-in-wrap");
   if (wrap) {
-    const opener = wrap.querySelector("i.ico-expand") || wrap.querySelector("div.dropdown-head") || wrap;
-    opener.click();
-    await sleep(400);
-    const want = value.toLowerCase().trim();
-    const opts = Array.from(wrap.querySelectorAll("li")).filter((li) => li.offsetParent !== null);
-    const opt = opts.find((li) => li.textContent.trim().toLowerCase() === want) ||
-                opts.find((li) => li.textContent.trim().toLowerCase().includes(want));
-    if (opt) {
-      opt.click();
-      console.log(`[Snypar Bot] ✓ Set active_in "${value}" via active-in-wrap`);
-      await sleep(200);
-      return true;
+    const m = String(value).toLowerCase().match(/(\d+)\s*(day|week|month|year)/);
+    let want = String(value).toLowerCase().trim();
+    if (m) {
+      let n = parseInt(m[1], 10);
+      let unit = m[2];
+      if (unit === "week") { n *= 7; unit = "day"; }
+      want = `${n} ${unit}${n === 1 ? "" : "s"}`;
     }
-    console.warn(`[Snypar Bot] active-in-wrap options:`, opts.map((o) => o.textContent.trim()));
+    const norm2 = (t) => (t || "").replace(/\s+/g, " ").trim().toLowerCase();
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const opener = wrap.querySelector("span.selected-value") ||
+                     wrap.querySelector("div.dropdown-head") || wrap;
+      for (const type of ["mousedown", "mouseup", "click"]) {
+        opener.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+      }
+      await sleep(500);
+      const opts = Array.from(document.querySelectorAll("li[id^='option-'] span.pre-wrap"))
+        .filter((sp) => sp.offsetParent !== null);
+      const opt = opts.find((sp) => norm2(sp.textContent) === want) ||
+                  opts.find((sp) => norm2(sp.textContent).includes(want));
+      if (opt) {
+        const li = opt.closest("li") || opt;
+        for (const type of ["mousedown", "mouseup", "click"]) {
+          li.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+        }
+        await sleep(300);
+        const shown = norm2(wrap.querySelector("span.selected-value")?.textContent);
+        console.log(`[Snypar Bot] Active-in "${value}" -> option "${want}", now showing "${shown}"`);
+        if (shown.includes(want)) return true;
+      } else {
+        console.warn(`[Snypar Bot] active-in option "${want}" not found; visible:`, opts.map((o) => norm2(o.textContent)));
+      }
+    }
   }
 
   // Try React custom dropdown
@@ -2101,32 +2120,90 @@ function extractCandidatesFromResultsPage() {
 
 let lastExtractedResultsUrl = null;
 
+const SUBMIT_CHUNK_SIZE = 50;       // backend accepts at most 50 candidates per request
+const AUTOPAGE_KEY = "snypar_autopage_active";
+const AUTOPAGE_MAX_PAGES = 10;      // safety cap on pages walked per search
+
+function currentResultsPageNo() {
+  const n = parseInt(new URL(window.location.href).searchParams.get("pageNo") || "1", 10);
+  return Number.isFinite(n) && n > 0 ? n : 1;
+}
+
+function currentResPerPage() {
+  const n = parseInt(new URL(window.location.href).searchParams.get("resPerPage") || "40", 10);
+  return Number.isFinite(n) && n > 0 ? n : 40;
+}
+
+async function postCandidatesInChunks(candidates, diagnostics, page) {
+  let lastResult = null;
+  for (let i = 0; i < candidates.length; i += SUBMIT_CHUNK_SIZE) {
+    const chunk = candidates.slice(i, i + SUBMIT_CHUNK_SIZE);
+    const result = await postToBackend("/search/results", {
+      page,
+      candidates: chunk,
+      diagnostics: i === 0 ? diagnostics : undefined,
+    });
+    if (!result) return null;
+    lastResult = result;
+  }
+  return lastResult;
+}
+
 async function extractAndSubmitCandidatesIfNeeded(forced = false) {
   const currentUrl = window.location.href;
   if (!forced && lastExtractedResultsUrl === currentUrl) {
     return; // already extracted this exact results view
   }
 
+  // SPA pagination swaps cards after the URL changes; wait for the card count to settle.
+  let prev = -1;
+  for (let i = 0; i < 10; i++) {
+    const n = findCandidateContainers().pairs.length;
+    if (n > 0 && n === prev) break;
+    prev = n;
+    await sleep(700);
+  }
+
   const { candidates, diagnostics } = extractCandidatesFromResultsPage();
 
   if (candidates.length === 0) {
     updateWidgetStatus("⚠ No candidates detected on results page", "offline");
+    sessionStorage.removeItem(AUTOPAGE_KEY);
     return;
   }
 
-  const result = await postToBackend("/search/results", {
-    page: 1,
-    candidates,
-    diagnostics,
-  });
+  const pageNo = currentResultsPageNo();
+  const before = sessionStorage.getItem("snypar_autopage_total");
+  const result = await postCandidatesInChunks(candidates, diagnostics, pageNo);
 
-  if (result) {
-    lastExtractedResultsUrl = currentUrl;
-    updateWidgetStatus(`✓ ${candidates.length} candidate(s) found (${result.total_stored ?? candidates.length} total stored)`, "online");
-  } else {
+  if (!result) {
     console.warn("[Snypar Bot] Failed to submit extracted candidates to backend — will retry on next poll.");
     updateWidgetStatus("⚠ Could not submit candidates to server", "offline");
+    return;
   }
+
+  lastExtractedResultsUrl = currentUrl;
+  const total = result.total_stored ?? candidates.length;
+  updateWidgetStatus(`✓ ${candidates.length} candidate(s) found on page ${pageNo} (${total} total stored)`, "online");
+
+  if (sessionStorage.getItem(AUTOPAGE_KEY) !== "1") return;
+
+  const grewBy = before === null ? total : total - parseInt(before, 10);
+  sessionStorage.setItem("snypar_autopage_total", String(total));
+  const lastPage = candidates.length < currentResPerPage() || grewBy <= 0 || pageNo >= AUTOPAGE_MAX_PAGES;
+  if (lastPage) {
+    console.log(`[Snypar Bot] Auto-pagination finished at page ${pageNo} (${total} candidates stored).`);
+    sessionStorage.removeItem(AUTOPAGE_KEY);
+    sessionStorage.removeItem("snypar_autopage_total");
+    updateWidgetStatus(`✓ Done: ${total} candidates from ${pageNo} page(s)`, "online");
+    return;
+  }
+
+  console.log(`[Snypar Bot] Auto-pagination: going to page ${pageNo + 1}`);
+  await sleep(1200);
+  const nextUrl = new URL(window.location.href);
+  nextUrl.searchParams.set("pageNo", String(pageNo + 1));
+  window.location.href = nextUrl.toString();
 }
 
 async function fetchAndFill(forced = false) {
@@ -2177,6 +2254,10 @@ async function fetchAndFill(forced = false) {
 
       lastProcessedTimestamp = fetchedData.timestamp;
       const shouldSubmit = fetchedData.plan?._submit_search === true;
+      if (shouldSubmit) {
+        sessionStorage.setItem(AUTOPAGE_KEY, "1");
+        sessionStorage.removeItem("snypar_autopage_total");
+      }
       showToast("⚡ Snypar Bot: Auto-filling candidate search criteria...");
       const outcome = await fillResdexForm(fetchedData.plan, shouldSubmit);
 

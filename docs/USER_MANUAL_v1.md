@@ -82,7 +82,7 @@ The list is sorted from best to weakest match.
 4. Download the Word document. It contains the candidate's name and contact line, the photo, the ID proof, and the full resume, each on its own page.
 
 ## 6. Good to Know
-- Only the results currently on screen are collected. If Resdex has several pages, you will see the first page's candidates.
+- After a live search, the helper moves through the result pages by itself (up to 10 pages) and collects every candidate it finds.
 - If a candidate detail is blank, Resdex may not have shown it on the card.
 - Your search details and candidate list are kept only for your current session. They are cleared when the system restarts, and you can clear the list yourself.
 - Always double-check the filled form before relying on the results. Take a quick look at the filters Resdex shows as applied.
