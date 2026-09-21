@@ -1903,6 +1903,10 @@ function findChildTextByClassHints(container, hints) {
 // Label/pattern based fallback on the card's visible text — independent of
 // Naukri's (unknown, unstable) class names. Lines like "Current: Sr Engineer at
 // Acme", "Education: B.Tech", "Notice period: 15 days", "Key skills: a, b".
+function splitSkills(text) {
+  return text.split(/[,|•·]/).map((x) => x.trim()).filter((x) => x && x.length < 60 && !/^more$/i.test(x)).slice(0, 40);
+}
+
 function parseCardText(container) {
   const raw = (container.innerText || container.textContent || "");
   const lines = raw.split(/\n+/).map((l) => l.replace(/\s+/g, " ").trim()).filter(Boolean);
@@ -1944,8 +1948,16 @@ function parseCardText(container) {
     }
     if (!out.skills.length) {
       const k = val("key ?skills?|skills|keywords");
-      if (k) out.skills = k.split(/[,|•·]/).map((x) => x.trim()).filter((x) => x && x.length < 60).slice(0, 15);
+      if (k) {
+        // Skill list can wrap onto following lines; read until the next labelled row.
+        let full = k;
+        const stop = /^(?:current|previous|education|pref|may also know|key ?skills?|\d+ similar profiles)/i;
+        for (let j = i + (labelVal(line, "key ?skills?|skills|keywords") ? 1 : 2); j < lines.length && !stop.test(lines[j]); j++) full += " | " + lines[j];
+        out.skills = splitSkills(full);
+      }
     }
+    const may = val("may also know");
+    if (may) out.also_know = splitSkills(may);
   }
   for (const line of lines) {
     const hm = line.match(/^(\d{1,2}\s*y(?:\s*\d{1,2}\s*m)?)\s*(?:[|•·]\s*)?(?:(?:₹|Rs\.?)\s*[\d.,]+\s*(?:Lacs?|LPA|Lakhs?)\s*(?:[|•·]\s*)?)?(.*)$/i);
@@ -2074,7 +2086,7 @@ function extractOneCandidate(container, anchor) {
     company: txt.company || findChildTextByClassHints(container, FIELD_CLASS_HINTS.company),
     experience: extractExperienceText(container) || txt.experience,
     location: txt.location || findChildTextByClassHints(container, FIELD_CLASS_HINTS.location),
-    skills: txt.skills.length ? txt.skills : skills,
+    skills: [...new Set([...(txt.skills.length ? txt.skills : skills), ...(txt.also_know || [])])],
     education: txt.education || findChildTextByClassHints(container, FIELD_CLASS_HINTS.education),
     notice_period: txt.notice_period || findChildTextByClassHints(container, FIELD_CLASS_HINTS.notice_period),
     profile_url: anchor && anchor.href ? anchor.href : null,
@@ -2132,7 +2144,7 @@ let lastExtractedResultsUrl = null;
 
 const SUBMIT_CHUNK_SIZE = 50;       // backend accepts at most 50 candidates per request
 const AUTOPAGE_KEY = "snypar_autopage_active";
-const AUTOPAGE_MAX_PAGES = 50;      // safety cap on pages walked per search
+const AUTOPAGE_MAX_PAGES = 200;      // safety cap on pages walked per search
 
 function currentResultsPageNo() {
   const n = parseInt(new URL(window.location.href).searchParams.get("pageNo") || "1", 10);
@@ -2144,11 +2156,12 @@ function currentResPerPage() {
   return Number.isFinite(n) && n > 0 ? n : 40;
 }
 
-async function postCandidatesInChunks(candidates, diagnostics, page) {
+async function postCandidatesInChunks(candidates, diagnostics, page, searchId) {
   let lastResult = null;
   for (let i = 0; i < candidates.length; i += SUBMIT_CHUNK_SIZE) {
     const chunk = candidates.slice(i, i + SUBMIT_CHUNK_SIZE);
     const result = await postToBackend("/search/results", {
+      search_id: searchId || undefined,
       page,
       candidates: chunk,
       diagnostics: i === 0 ? diagnostics : undefined,
@@ -2159,15 +2172,47 @@ async function postCandidatesInChunks(candidates, diagnostics, page) {
   return lastResult;
 }
 
+function currentSearchId() {
+  return new URL(window.location.href).searchParams.get("sid");
+}
+
+function readTotalResultPages() {
+  // Resdex shows "Page 1 of 24" next to the pager.
+  const m = (document.body.innerText || "").match(/Page\s+\d+\s+of\s+(\d+)/i);
+  return m ? parseInt(m[1], 10) : null;
+}
+
+let extractionInFlight = false;
+
 async function extractAndSubmitCandidatesIfNeeded(forced = false) {
   const currentUrl = window.location.href;
   if (!forced && lastExtractedResultsUrl === currentUrl) {
     return; // already extracted this exact results view
   }
+  if (extractionInFlight) return; // the 2s poll must not start a second overlapping run
+  extractionInFlight = true;
+  try {
+    await extractAndSubmitOnce(currentUrl);
+  } finally {
+    extractionInFlight = false;
+  }
+}
+
+async function extractAndSubmitOnce(currentUrl) {
+  // A different search id (user pressed Modify / ran a new search) means fresh results:
+  // collect every page of it too.
+  const sid = currentSearchId();
+  if (sid && sessionStorage.getItem("snypar_last_sid") !== sid) {
+    sessionStorage.setItem("snypar_last_sid", sid);
+    if (sessionStorage.getItem(AUTOPAGE_KEY) !== "1") {
+      sessionStorage.setItem(AUTOPAGE_KEY, "1");
+      sessionStorage.removeItem("snypar_autopage_total");
+    }
+  }
 
   // SPA pagination swaps cards after the URL changes; wait for the card count to settle.
   let prev = -1;
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < 20; i++) {
     const n = findCandidateContainers().pairs.length;
     if (n > 0 && n === prev) break;
     prev = n;
@@ -2178,13 +2223,11 @@ async function extractAndSubmitCandidatesIfNeeded(forced = false) {
 
   if (candidates.length === 0) {
     updateWidgetStatus("⚠ No candidates detected on results page", "offline");
-    sessionStorage.removeItem(AUTOPAGE_KEY);
-    return;
+    return; // keep the auto-pagination flag; the next poll retries
   }
 
   const pageNo = currentResultsPageNo();
-  const before = sessionStorage.getItem("snypar_autopage_total");
-  const result = await postCandidatesInChunks(candidates, diagnostics, pageNo);
+  const result = await postCandidatesInChunks(candidates, diagnostics, pageNo, sid);
 
   if (!result) {
     console.warn("[Snypar Bot] Failed to submit extracted candidates to backend — will retry on next poll.");
@@ -2194,14 +2237,15 @@ async function extractAndSubmitCandidatesIfNeeded(forced = false) {
 
   lastExtractedResultsUrl = currentUrl;
   const total = result.total_stored ?? candidates.length;
-  updateWidgetStatus(`✓ ${candidates.length} candidate(s) found on page ${pageNo} (${total} total stored)`, "online");
+  const totalPages = readTotalResultPages();
+  updateWidgetStatus(`✓ Page ${pageNo}${totalPages ? "/" + totalPages : ""}: ${candidates.length} found (${total} total stored)`, "online");
 
   if (sessionStorage.getItem(AUTOPAGE_KEY) !== "1") return;
 
-  const grewBy = before === null ? total : total - parseInt(before, 10);
-  sessionStorage.setItem("snypar_autopage_total", String(total));
-  const lastPage = candidates.length < currentResPerPage() || grewBy <= 0 || pageNo >= AUTOPAGE_MAX_PAGES;
-  if (lastPage) {
+  // Last page: known total, else a short page.
+  const lastPage = totalPages ? pageNo >= totalPages
+                              : candidates.length < currentResPerPage();
+  if (lastPage || pageNo >= AUTOPAGE_MAX_PAGES) {
     console.log(`[Snypar Bot] Auto-pagination finished at page ${pageNo} (${total} candidates stored).`);
     sessionStorage.removeItem(AUTOPAGE_KEY);
     sessionStorage.removeItem("snypar_autopage_total");
@@ -2209,7 +2253,7 @@ async function extractAndSubmitCandidatesIfNeeded(forced = false) {
     return;
   }
 
-  console.log(`[Snypar Bot] Auto-pagination: going to page ${pageNo + 1}`);
+  console.log(`[Snypar Bot] Auto-pagination: going to page ${pageNo + 1}${totalPages ? " of " + totalPages : ""}`);
   await sleep(1200);
   const nextUrl = new URL(window.location.href);
   nextUrl.searchParams.set("pageNo", String(pageNo + 1));

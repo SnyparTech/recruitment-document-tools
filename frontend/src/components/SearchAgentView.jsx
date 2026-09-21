@@ -704,7 +704,8 @@ export default function SearchAgentView({ onCompileCandidate }) {
                     )}
 
                     {c.skills?.length > 0 && (
-                      <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                      <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+                        <strong style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Skills on profile:</strong>
                         {c.skills.map((sk, si) => (
                           <span key={`s-${si}`} className="skill-pill" style={{ fontSize: '0.72rem' }}>{sk}</span>
                         ))}

@@ -149,6 +149,7 @@ NOTICE_PERIOD_MAP: Dict[str, str] = {
     "currently serving": "Currently serving notice period",
 }
 
+DEFAULT_ACTIVE_IN = "15 days"
 MANDATORY_NOTICE_OPTION = "Currently serving notice period"
 
 
@@ -268,7 +269,7 @@ Rules:
 - pg_qualification: ONLY set if the JD explicitly states a postgraduate requirement. Allowed values: __PG_OPTIONS__. Otherwise null.
 - Experience: ONLY extract if explicitly stated in the text (e.g. "5 to 10 years"). NEVER invent or guess experience numbers if not mentioned in the JD.
 - verified_mobile, verified_email, attached_resume: ALWAYS set to true by default (show only candidates with verified contact info and resume). Only set to false if explicitly excluded.
-- NEVER assume or inject hardcoded values for active_in, gender, career_break, differently_abled, defence_background, or location. If not explicitly requested in the requirement, set them to null.
+- Leave active_in null unless stated (the system defaults it to 15 days). NEVER assume or inject hardcoded values for gender, career_break, differently_abled, defence_background, or location. If not explicitly requested in the requirement, set them to null.
 - Return ONLY raw JSON. No markdown, no explanation."""
 
         # Substitute education option lists from resdex_schema.json (not hardcoded) so the
@@ -785,6 +786,10 @@ Rules:
             if normalized_np and MANDATORY_NOTICE_OPTION not in normalized_np:
                 normalized_np.append(MANDATORY_NOTICE_OPTION)
             plan.notice_period = list(dict.fromkeys(normalized_np)) or None
+
+        # Recruiter default: candidates active in the last 15 days.
+        if not plan.active_in:
+            plan.active_in = DEFAULT_ACTIVE_IN
 
         # Only set mandatory flag if required keywords are present and not explicitly set
         if plan.keywords and plan.keywords.required and plan.keywords.mandatory is None:

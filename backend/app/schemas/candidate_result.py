@@ -55,6 +55,7 @@ class CandidateExtractionDiagnostics(BaseModel):
 
 class SubmitCandidateResultsRequest(BaseModel):
     candidates: List[CandidateResult] = Field(default_factory=list, max_length=50)
+    search_id: Optional[str] = Field(default=None, description="Resdex search id; a change means a new search, so stored candidates are replaced.")
     page: int = Field(default=1, ge=1, description="Results page number this batch was scraped from")
     diagnostics: Optional[CandidateExtractionDiagnostics] = Field(default=None)
 

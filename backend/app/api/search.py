@@ -3,7 +3,7 @@ import logging
 import os
 import re
 import time
-from typing import List
+from typing import List, Optional
 from fastapi import APIRouter, File, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
 import fitz  # PyMuPDF
@@ -39,6 +39,7 @@ _latest_plan_timestamp = 0.0
 # isolation), not addressed in this change.
 _latest_candidates: List[CandidateResult] = []
 _latest_candidates_timestamp = 0.0
+_latest_search_id: Optional[str] = None
 
 
 @router.get(
@@ -69,7 +70,7 @@ async def search_candidates(
     Parses natural language requirement into structured SearchPlan.
     Plan is stored for the extension to pick up.
     """
-    global _latest_search_plan, _latest_plan_timestamp
+    global _latest_search_plan, _latest_plan_timestamp, _latest_candidates, _latest_candidates_timestamp
 
     plan, validation = requirement_service.process_requirement(request.requirement)
 
@@ -95,6 +96,8 @@ async def search_candidates(
             },
         )
 
+    _latest_candidates = []
+    _latest_candidates_timestamp = time.time()
     plan_dict = plan.model_dump()
     plan_dict["_submit_search"] = request.submit_search
     _latest_search_plan = plan_dict
@@ -190,7 +193,12 @@ async def submit_candidate_results(request: SubmitCandidateResultsRequest):
     counts, no candidate content) are logged for selector calibration but not
     persisted.
     """
-    global _latest_candidates, _latest_candidates_timestamp
+    global _latest_candidates, _latest_candidates_timestamp, _latest_search_id
+
+    # A new Resdex search (e.g. user pressed Modify) replaces the old list.
+    if request.search_id and request.search_id != _latest_search_id:
+        _latest_candidates = []
+        _latest_search_id = request.search_id
 
     if request.diagnostics:
         logger.info(
