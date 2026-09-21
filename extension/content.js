@@ -257,7 +257,7 @@ function getComboboxListbox(el) {
   return document.getElementById(id);
 }
 
-function clickBestSuggestion(targetText, nearEl = null) {
+function clickBestSuggestion(targetText, nearEl = null, minScore = 70) {
   if (!targetText) return false;
   const target = targetText.toLowerCase().trim();
   const targetNorm = target.replace(/[^a-z0-9]/g, '');
@@ -324,7 +324,7 @@ function clickBestSuggestion(targetText, nearEl = null) {
   // page text sharing one word (see DROPDOWN_PROXIMITY_PX comment above), so
   // anything scoring under 70 is treated as no match and falls through to
   // the free-text confirm path in typeAndSelectFromDropdown instead.
-  if (bestItem && bestScore >= 70) {
+  if (bestItem && bestScore >= minScore) {
     console.log(`[Snypar Bot] Selected suggestion: "${bestItem.textContent.trim()}" (score: ${Math.round(bestScore)}) for "${targetText}"`);
     bestItem.click();
     return true;
@@ -452,7 +452,9 @@ async function typeAndConfirmKeyword(kwInput, keyword) {
   const chipsBefore = countKeywordChipsInContainer(container);
   let confirmed = false;
 
-  if (clickBestSuggestion(cleanKw, kwInput)) {
+  // Keywords: only accept an (almost) exact suggestion; otherwise type it as-is and Tab,
+  // so "Databricks" never turns into "Databricks Unified Data Analytics".
+  if (clickBestSuggestion(cleanKw, kwInput, 95)) {
     await sleep(400);
     if (hasKeywordChip(cleanKw) || countKeywordChipsInContainer(container) > chipsBefore || kwInput.value === '') {
       confirmed = true;
@@ -864,30 +866,44 @@ async function setActiveIn(value) {
       want = `${n} ${unit}${n === 1 ? "" : "s"}`;
     }
     const norm2 = (t) => (t || "").replace(/\s+/g, " ").trim().toLowerCase();
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const opener = wrap.querySelector("span.selected-value") ||
-                     wrap.querySelector("div.dropdown-head") || wrap;
-      for (const type of ["mousedown", "mouseup", "click"]) {
-        opener.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+    const openers = () => [
+      wrap.querySelector("span.selected-value"),
+      wrap.querySelector("span.dropdown-head-value"),
+      wrap.querySelector("div.dropdown-head"),
+      wrap.querySelector("i.ico-expand"),
+      wrap,
+    ].filter(Boolean);
+    const findOpt = () => Array.from(document.querySelectorAll("li span.pre-wrap, li div.dropdown-tuple"))
+      .filter((sp) => sp.offsetParent !== null)
+      .filter((sp) => norm2(sp.textContent) === want)[0];
+    // Drop focus/suggestions left over from the keyword field first.
+    document.activeElement && document.activeElement.blur && document.activeElement.blur();
+    for (const opener of openers()) {
+      let opt = findOpt();
+      if (!opt) {
+        opener.scrollIntoView({ block: "center" });
+        opener.click();
+        await sleep(500);
+        opt = findOpt();
+        if (!opt) {
+          for (const type of ["mousedown", "mouseup", "click"]) {
+            opener.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+          }
+          await sleep(500);
+          opt = findOpt();
+        }
       }
-      await sleep(500);
-      const opts = Array.from(document.querySelectorAll("li[id^='option-'] span.pre-wrap"))
-        .filter((sp) => sp.offsetParent !== null);
-      const opt = opts.find((sp) => norm2(sp.textContent) === want) ||
-                  opts.find((sp) => norm2(sp.textContent).includes(want));
       if (opt) {
         const li = opt.closest("li") || opt;
-        for (const type of ["mousedown", "mouseup", "click"]) {
-          li.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
-        }
-        await sleep(300);
+        li.scrollIntoView({ block: "nearest" });
+        li.click();
+        await sleep(400);
         const shown = norm2(wrap.querySelector("span.selected-value")?.textContent);
         console.log(`[Snypar Bot] Active-in "${value}" -> option "${want}", now showing "${shown}"`);
         if (shown.includes(want)) return true;
-      } else {
-        console.warn(`[Snypar Bot] active-in option "${want}" not found; visible:`, opts.map((o) => norm2(o.textContent)));
       }
     }
+    console.warn(`[Snypar Bot] active-in "${want}" could not be selected; wrap html:`, wrap.outerHTML.slice(0, 1500));
   }
 
   // Try React custom dropdown

@@ -694,7 +694,7 @@ Rules:
 
         # "8 to 15 LPA" or "8-15 LPA" or "8-15 lakhs"
         range_match = re.search(
-            r"(\d+(?:\.\d+)?)\s*(?:to|-)\s*(\d+(?:\.\d+)?)\s*(?:lpa|lakhs?|lac|l)",
+            r"(\d+(?:\.\d+)?)\s*(?:lpa|lakhs?|lacs?|l)?\s*(?:to|-)\s*(\d+(?:\.\d+)?)\s*(?:lpa|lakhs?|lacs?|l)",
             lower,
         )
         if range_match:
@@ -786,6 +786,13 @@ Rules:
             if normalized_np and MANDATORY_NOTICE_OPTION not in normalized_np:
                 normalized_np.append(MANDATORY_NOTICE_OPTION)
             plan.notice_period = list(dict.fromkeys(normalized_np)) or None
+
+        # Resdex salary inputs are in lakhs; an LLM may return rupees (e.g. 2000000).
+        if plan.salary and (plan.salary.currency or "INR") == "INR":
+            for attr in ("min", "max"):
+                v = getattr(plan.salary, attr)
+                if v is not None and v >= 1000:
+                    setattr(plan.salary, attr, round(v / 100000, 2))
 
         # Recruiter default: candidates active in the last 15 days.
         if not plan.active_in:
