@@ -124,6 +124,9 @@ function sleep(ms) {
 // failure in one step (missing selector, unexpected exception) is recorded and
 // logged but does NOT abort the remaining, independent steps. Pure function —
 // no DOM access — so it's unit-testable without a browser/jsdom.
+// Employment Details section: fill Notice Period only, skip everything else.
+const EMPLOYMENT_NOTICE_ONLY = true;
+
 async function runStep(name, fn) {
   const start = Date.now();
   try {
@@ -230,14 +233,60 @@ async function waitForDropdown(maxMs = 1500) {
   return false;
 }
 
-function clickBestSuggestion(targetText) {
+// Real typeahead dropdowns render directly below/above the field that opened
+// them. SUGGESTION_SELECTORS queries the whole document, so without this
+// proximity filter it also matches unrelated, still-visible text elsewhere on
+// the page (leftover chips from another field, sidebar filters, "recommended
+// skills" widgets) — confirmed live: designation lookups matched a sidebar
+// "Engineering - Software & QA" filter and a concatenated keyword-chip blob
+// instead of the real dropdown option, because both scored high enough on
+// substring/token overlap alone.
+const DROPDOWN_PROXIMITY_PX = 400;
+
+// Naukri's combobox inputs (role="combobox") point at their real option list
+// via aria-owns/aria-controls, rendered as a separate DOM subtree elsewhere in
+// the page — not matched by any of SUGGESTION_SELECTORS' class-name guesses.
+// Confirmed live: minExp/maxExp inputs carry aria-owns="mu6xgaf9xxk6w" etc.,
+// and the actual numeric options only ever live inside that element. When
+// available this is authoritative and replaces the generic/proximity search
+// entirely, instead of just narrowing it.
+function getComboboxListbox(el) {
+  if (!el) return null;
+  const id = el.getAttribute('aria-owns') || el.getAttribute('aria-controls');
+  if (!id) return null;
+  return document.getElementById(id);
+}
+
+function clickBestSuggestion(targetText, nearEl = null) {
   if (!targetText) return false;
   const target = targetText.toLowerCase().trim();
   const targetNorm = target.replace(/[^a-z0-9]/g, '');
   const tokens = target.split(/[\s\/\-_,]+/).filter(w => w.length >= 2);
 
-  const all = Array.from(document.querySelectorAll(SUGGESTION_SELECTORS))
-    .filter(s => s.offsetParent !== null && isPlausibleSuggestionElement(s));
+  const listbox = getComboboxListbox(nearEl);
+  let all;
+
+  if (listbox) {
+    let opts = Array.from(listbox.querySelectorAll("[role='option'], li"))
+      .filter(s => s.offsetParent !== null);
+    if (opts.length === 0) {
+      opts = Array.from(listbox.querySelectorAll("div, span"))
+        .filter(s => s.offsetParent !== null && s.children.length === 0);
+    }
+    all = opts.filter(isPlausibleSuggestionElement);
+  } else {
+    all = Array.from(document.querySelectorAll(SUGGESTION_SELECTORS))
+      .filter(s => s.offsetParent !== null && isPlausibleSuggestionElement(s));
+
+    if (nearEl) {
+      const anchorRect = nearEl.getBoundingClientRect();
+      all = all.filter((s) => {
+        const r = s.getBoundingClientRect();
+        return Math.abs(r.top - anchorRect.bottom) <= DROPDOWN_PROXIMITY_PX
+          || Math.abs(anchorRect.top - r.bottom) <= DROPDOWN_PROXIMITY_PX;
+      });
+    }
+  }
 
   if (all.length === 0) return false;
 
@@ -270,12 +319,25 @@ function clickBestSuggestion(targetText) {
     }
   }
 
-  if (bestItem && bestScore >= 40) {
+  // 70 = "startsWith"/"includes" tier (real value, real widget). The 40-69
+  // token-overlap tier below it is too permissive — it clicked unrelated
+  // page text sharing one word (see DROPDOWN_PROXIMITY_PX comment above), so
+  // anything scoring under 70 is treated as no match and falls through to
+  // the free-text confirm path in typeAndSelectFromDropdown instead.
+  if (bestItem && bestScore >= 70) {
     console.log(`[Snypar Bot] Selected suggestion: "${bestItem.textContent.trim()}" (score: ${Math.round(bestScore)}) for "${targetText}"`);
     bestItem.click();
     return true;
   }
   return false;
+}
+
+// Confirm/advance with Tab, as a human does. Never dispatch Enter: Naukri's
+// form-level listener treats it as "submit search".
+function pressTab(el) {
+  const init = { key: 'Tab', code: 'Tab', keyCode: 9, which: 9, bubbles: true, cancelable: true };
+  el.dispatchEvent(new KeyboardEvent('keydown', init));
+  el.dispatchEvent(new KeyboardEvent('keyup', init));
 }
 
 async function typeAndSelectFromDropdown(input, text, fieldLabel = '') {
@@ -303,21 +365,21 @@ async function typeAndSelectFromDropdown(input, text, fieldLabel = '') {
   const appeared = await waitForDropdown(1500);
   console.log(`[Snypar Bot] ${fieldLabel} dropdown ${appeared ? '✓' : '✗'} for "${cleanText}"`);
 
+  // Listbox can vanish/re-render while typing (seen for Location) — retry.
   let selected = false;
-  if (clickBestSuggestion(cleanText)) {
-    await sleep(400);
-    selected = true;
-    console.log(`[Snypar Bot] ✓ "${cleanText}" selected (${fieldLabel})`);
+  for (let attempt = 0; attempt < 6 && !selected; attempt++) {
+    if (clickBestSuggestion(cleanText, input)) {
+      await sleep(400);
+      selected = true;
+      console.log(`[Snypar Bot] ✓ "${cleanText}" selected (${fieldLabel})`);
+    } else {
+      await sleep(250);
+    }
   }
 
   if (!selected) {
-    // bubbles:false — the target's own "confirm on Enter" handler still fires
-    // (capture+target phase run regardless of bubbles), but the event never
-    // reaches Naukri's form-level "Enter anywhere submits the search" listener,
-    // which was firing a premature search mid-fill.
-    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: false, cancelable: true }));
-    input.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: false, cancelable: true }));
-    input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: false, cancelable: true }));
+    // Tab (never Enter — Enter triggers Naukri's form-level search submit).
+    pressTab(input);
     await sleep(200);
 
     input.dispatchEvent(new Event('change', { bubbles: true }));
@@ -390,7 +452,7 @@ async function typeAndConfirmKeyword(kwInput, keyword) {
   const chipsBefore = countKeywordChipsInContainer(container);
   let confirmed = false;
 
-  if (clickBestSuggestion(cleanKw)) {
+  if (clickBestSuggestion(cleanKw, kwInput)) {
     await sleep(400);
     if (hasKeywordChip(cleanKw) || countKeywordChipsInContainer(container) > chipsBefore || kwInput.value === '') {
       confirmed = true;
@@ -399,22 +461,7 @@ async function typeAndConfirmKeyword(kwInput, keyword) {
   }
 
   if (!confirmed) {
-    // bubbles:false — see note in typeAndSelectFromDropdown: keeps the chip
-    // confirm working without leaking Enter to Naukri's form-level submit listener.
-    kwInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: false, cancelable: true }));
-    kwInput.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: false, cancelable: true }));
-    kwInput.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: false, cancelable: true }));
-    await sleep(350);
-
-    if (hasKeywordChip(cleanKw) || countKeywordChipsInContainer(container) > chipsBefore || kwInput.value === '') {
-      confirmed = true;
-      console.log(`[Snypar Bot] ✓ "${cleanKw}" added via Enter key`);
-    }
-  }
-
-  if (!confirmed) {
-    kwInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', code: 'Tab', keyCode: 9, which: 9, bubbles: true, cancelable: true }));
-    kwInput.dispatchEvent(new KeyboardEvent('keyup', { key: 'Tab', code: 'Tab', keyCode: 9, which: 9, bubbles: true, cancelable: true }));
+    pressTab(kwInput);
     await sleep(300);
 
     if (hasKeywordChip(cleanKw) || countKeywordChipsInContainer(container) > chipsBefore || kwInput.value === '') {
@@ -531,6 +578,24 @@ function countKeywordChips() {
 // ─── Section Expand ──────────────────────────────────────────────────────────
 
 async function ensureSectionExpanded(sectionName) {
+  // Naukri collapsers: div.naukri-collapser(-collapsed|-expanded) with a header row.
+  const want = sectionName.toLowerCase();
+  const collapsers = Array.from(document.querySelectorAll("div.naukri-collapser"));
+  const collapser = collapsers.find((c) => {
+    const h = c.querySelector(".naukri-collapser-header-row");
+    return h && h.textContent.toLowerCase().includes(want);
+  });
+  if (collapser) {
+    if (collapser.classList.contains("naukri-collapser-collapsed")) {
+      const header = collapser.querySelector(".naukri-collapser-header-row");
+      header.scrollIntoView({ block: "center" });
+      header.click();
+      await sleep(500);
+      console.log(`[Snypar Bot] ✓ Expanded section "${sectionName}"`);
+    }
+    return;
+  }
+
   const toggles = Array.from(
     document.querySelectorAll(
       "h2, h3, div[class*='accordion'], div[class*='section-header'], button, span[class*='header'], a"
@@ -599,27 +664,93 @@ async function setExperience(selector, value) {
     }
     return false;
   } else {
+    // Human opens the dropdown by clicking the input first; without that the
+    // aria-owns listbox stays empty (seen in recorder trace).
+    for (const type of ["mousedown", "mouseup", "click"]) {
+      el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+    }
     el.focus();
+    await sleep(300);
     setNativeValue(el, valStr);
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
     await sleep(300);
 
-    const options = document.querySelectorAll(
-      "div.sug-item, li.suggestion-item, div[class*='option'], li[class*='option'], ul li"
-    );
-    for (const opt of options) {
-      if (opt.textContent.trim() === valStr && opt.offsetParent !== null) {
-        opt.click();
-        await sleep(200);
-        return true;
+    // el is a role="combobox" input whose real option list lives in a separate
+    // aria-owns/aria-controls element (see getComboboxListbox) — confirmed live
+    // via DOM dump (aria-owns="mu6xgaf9xxk6w"), not matched by any class-name
+    // guess. That listbox populates asynchronously after the input event, so
+    // poll briefly instead of reading it once. Only fall back to the generic
+    // proximity-filtered scan (which was matching leftover keyword/designation
+    // suggestion text, not real numbers) when there's no aria-owns/aria-controls
+    // to resolve at all.
+    const listbox = getComboboxListbox(el);
+    let visibleOptions = [];
+    if (listbox) {
+      for (let waited = 0; waited < 1200; waited += 150) {
+        visibleOptions = Array.from(listbox.querySelectorAll("[role='option'], li"))
+          .filter(o => o.offsetParent !== null);
+        if (visibleOptions.length === 0) {
+          visibleOptions = Array.from(listbox.querySelectorAll("div, span"))
+            .filter(o => o.offsetParent !== null && o.children.length === 0);
+        }
+        if (visibleOptions.length > 0) break;
+        await sleep(150);
       }
     }
+    if (visibleOptions.length === 0) {
+      const elRect = el.getBoundingClientRect();
+      visibleOptions = Array.from(document.querySelectorAll(
+        "div.sug-item, li.suggestion-item, div[class*='option'], li[class*='option'], ul li"
+      )).filter((opt) => {
+        if (opt.offsetParent === null) return false;
+        const r = opt.getBoundingClientRect();
+        return Math.abs(r.top - elRect.bottom) <= DROPDOWN_PROXIMITY_PX
+          || Math.abs(elRect.top - r.bottom) <= DROPDOWN_PROXIMITY_PX;
+      });
+    }
+    console.log(
+      `[Snypar Bot] setExperience("${selector}", "${valStr}") — ${visibleOptions.length} visible option(s):`,
+      visibleOptions.slice(0, 10).map(o => o.textContent.trim())
+    );
 
+    // Exact text match first (handles plain "5"), then a numeric match that
+    // tolerates suffixes like "5 Years"/"5+ Yrs" — the exact-only check was
+    // silently matching nothing for fields whose options render with a suffix.
+    let opt = visibleOptions.find(o => o.textContent.trim() === valStr);
+    if (!opt) {
+      const numVal = parseFloat(valStr);
+      opt = visibleOptions.find(o => parseFloat(o.textContent.trim()) === numVal);
+    }
+    if (opt) {
+      console.log(`[Snypar Bot] setExperience matched option "${opt.textContent.trim()}" — clicking.`);
+      opt.click();
+      await sleep(200);
+      const ok = fieldHasValue(selector);
+      console.log(`[Snypar Bot] setExperience("${selector}") after option click — value="${document.querySelector(selector)?.value}" verified=${ok}`);
+      return ok;
+    }
+
+    console.warn(`[Snypar Bot] setExperience("${selector}") — no matching option found, falling back to Tab key.`);
+    // Dump the real markup around this field once, on the failing path only —
+    // fieldHasValue() only reads el.value, which setNativeValue() already set
+    // directly; that makes verification pass even when Naukri's own dropdown
+    // widget never registered a real selection (its confirm handler may live
+    // on a bubble-phase wrapper, not on the input itself). Until real DOM is
+    // captured from a live run, we can't tell which case this is — log it.
+    const wrapper = el.closest("div, li") || el.parentElement;
+    console.log(
+      `[Snypar Bot] setExperience("${selector}") DOM dump — el.outerHTML:`,
+      el.outerHTML,
+      "wrapper.outerHTML:",
+      wrapper ? wrapper.outerHTML.slice(0, 1500) : null
+    );
     // bubbles:false — same reasoning as the keyword/dropdown Enter fallbacks.
-    el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", keyCode: 13, bubbles: false, cancelable: true }));
+    pressTab(el);
     await sleep(200);
-    return fieldHasValue(selector);
+    const ok = fieldHasValue(selector);
+    console.log(`[Snypar Bot] setExperience("${selector}") after Tab fallback — value="${document.querySelector(selector)?.value}" verified=${ok}`);
+    return ok;
   }
 }
 
@@ -721,6 +852,25 @@ async function setActiveIn(value) {
     }
   }
 
+  // Naukri custom dropdown: div.active-in-wrap > div.dropdown-head > i.ico-expand
+  const wrap = document.querySelector("div.active-in-wrap");
+  if (wrap) {
+    const opener = wrap.querySelector("i.ico-expand") || wrap.querySelector("div.dropdown-head") || wrap;
+    opener.click();
+    await sleep(400);
+    const want = value.toLowerCase().trim();
+    const opts = Array.from(wrap.querySelectorAll("li")).filter((li) => li.offsetParent !== null);
+    const opt = opts.find((li) => li.textContent.trim().toLowerCase() === want) ||
+                opts.find((li) => li.textContent.trim().toLowerCase().includes(want));
+    if (opt) {
+      opt.click();
+      console.log(`[Snypar Bot] ✓ Set active_in "${value}" via active-in-wrap`);
+      await sleep(200);
+      return true;
+    }
+    console.warn(`[Snypar Bot] active-in-wrap options:`, opts.map((o) => o.textContent.trim()));
+  }
+
   // Try React custom dropdown
   const triggers = Array.from(document.querySelectorAll(
     "span, div, button"
@@ -790,6 +940,20 @@ async function tickShowOnlyCheckboxes(plan) {
   for (const target of targets) {
     const searchText = target.key.toLowerCase();
     let success = false;
+
+    // Strategy 0: exact chip in #displayDetailsSection (per recorder trace)
+    const exactChip = Array.from(document.querySelectorAll(
+      "#displayDetailsSection .suggestor-tag.selectable-chip"
+    )).find(c => c.textContent.trim().toLowerCase().includes(searchText));
+    if (exactChip) {
+      const before = exactChip.className;
+      exactChip.scrollIntoView({ block: "center" });
+      exactChip.click();
+      await sleep(200);
+      console.log(`[Snypar Bot] ✓ Show-only chip "${target.key}" class before="${before}" after="${exactChip.className}"`);
+      ticked++;
+      continue;
+    }
 
     // Strategy 1: Find pill/chip/tag button with exact or contains text match
     const allClickable = Array.from(document.querySelectorAll(
@@ -1139,17 +1303,15 @@ async function fillResdexForm(plan, autoSubmit = false) {
 
     // ── STEP 5: Employment Details (designation, department_role, industry, company, exclude_company, scopes) ──
     stepResults.push(await runStep("employment_details", async () => {
-    const hasEmpDetails = (plan.designation && plan.designation.length > 0) ||
-                          (plan.department_role && plan.department_role.length > 0) ||
-                          (plan.industry && plan.industry.length > 0) ||
-                          (plan.company && plan.company.length > 0) ||
-                          (plan.exclude_company && plan.exclude_company.length > 0);
-
-    if (hasEmpDetails) {
+    // Employment Details: ONLY Notice Period is handled (step 6). Designation,
+    // dept/role, industry and company fields are intentionally ignored — Naukri
+    // auto-suggests those from keywords and filling them narrows results.
+    if (plan.notice_period && plan.notice_period.length > 0) {
       updateWidgetStatus("Expanding Employment Details...", "busy", "filling");
       await ensureSectionExpanded("Employment Details");
       await sleep(500);
     }
+    if (EMPLOYMENT_NOTICE_ONLY) return;
 
     // Designation
     if (plan.designation && plan.designation.length > 0) {
@@ -1254,47 +1416,46 @@ async function fillResdexForm(plan, autoSubmit = false) {
     stepResults.push(await runStep("notice_period", async () => {
     if (plan.notice_period && plan.notice_period.length > 0) {
       updateWidgetStatus("Notice Period...", "busy", "filling");
-      await ensureSectionExpanded("Notice Period");
+      await ensureSectionExpanded("Employment Details");
       await sleep(500);
 
-      // Normalize notice period display values
       const noticePeriodDisplayMap = {
         "0-15 days": "0 - 15 days",
-        "1 month": "1 Month",
-        "2 months": "2 Months",
-        "3 months": "3 Months",
-        "more than 3 months": "More than 3 Months",
-        "currently serving notice period": "Currently Serving Notice Period",
-        "any": "Any",
+        "1 month": "1 month",
+        "2 months": "2 months",
+        "3 months": "3 months",
+        "more than 3 months": "more than 3 months",
+        "currently serving notice period": "currently serving notice period",
+        "any": "any",
       };
+      const norm = (t) => t.replace(/\s+/g, " ").trim().toLowerCase();
 
-      const labels = Array.from(document.querySelectorAll("label, span, div.checkbox, li"));
-      for (const np of plan.notice_period) {
-        const npDisplay = noticePeriodDisplayMap[np.toLowerCase().trim()] || np;
-        const npClean = np.toLowerCase();
+      // Multi-select: every requested option, plus "Currently serving notice
+      // period" which is mandatory whenever a notice period is set.
+      const wanted = [];
+      for (const np of [...plan.notice_period, "Currently serving notice period"]) {
+        const disp = norm(noticePeriodDisplayMap[norm(np)] || np);
+        if (!wanted.includes(disp)) wanted.push(disp);
+      }
 
-        // Try exact match on display text first
-        let match = labels.find((l) =>
-          l.textContent.trim().toLowerCase() === npDisplay.toLowerCase()
-        );
-
-        // Fallback to contains match
-        if (!match) {
-          match = labels.find((l) =>
-            l.textContent.trim().toLowerCase().includes(npClean)
-          );
+      const chipRoot = document.querySelector("#noticePeriodTags");
+      const getChips = () => chipRoot
+        ? Array.from(chipRoot.querySelectorAll(".suggestor-tag.selectable-chip"))
+        : [];
+      if (!getChips().length) {
+        console.warn("[Snypar Bot] #noticePeriodTags chips not found — notice period not set");
+      }
+      for (const disp of wanted) {
+        const chip = getChips().find((c) => norm(c.textContent) === disp);
+        if (!chip) {
+          console.warn(`[Snypar Bot] Notice period chip "${disp}" not found`);
+          continue;
         }
-
-        if (match) {
-          const cb = match.querySelector("input[type='checkbox']");
-          if (cb) {
-            if (!cb.checked) cb.click();
-          } else {
-            match.click();
-          }
-          console.log(`[Snypar Bot] ✓ Notice period: "${npDisplay}"`);
-          await sleep(200);
-        }
+        const before = chip.className;
+        chip.scrollIntoView({ block: "center" });
+        chip.click();
+        await sleep(300);
+        console.log(`[Snypar Bot] ✓ Notice period chip "${disp}" class before="${before}" after="${chip.className}"`);
       }
     }
     }));
@@ -1491,17 +1652,15 @@ async function fillResdexForm(plan, autoSubmit = false) {
 
       // Strategy 1: precise CSS selectors
       const preciseSelectors = [
+        "button#adv-search-btn",
         "button#searchButton",
         "button[data-testid='search-btn']",
         "button[data-testid='searchButton']",
-        "a.searchProfiles",
-        "button.searchProfiles",
         "button.search-btn",
         "button[class*='searchBtn']",
         "button[class*='search-btn']",
         "button[class*='SearchBtn']",
         "button[class*='srchBtn']",
-        "a[class*='searchProfiles']",
         "input[type='submit'][value*='Search']",
         "input[type='submit'][value*='search']",
       ];
@@ -1706,15 +1865,85 @@ function safeText(el, maxLen = 120) {
 }
 
 function findChildTextByClassHints(container, hints) {
+  // Leaf-most match only: an outer wrapper whose class merely contains e.g.
+  // "role" would otherwise return the whole card's text truncated to 120 chars.
+  const matches = (el) => {
+    const cls = (el.className && el.className.toString() || "").toLowerCase();
+    return hints.some((h) => cls.includes(h));
+  };
   const all = container.querySelectorAll("*");
   for (const el of all) {
-    const cls = (el.className && el.className.toString() || "").toLowerCase();
-    if (hints.some((h) => cls.includes(h))) {
-      const t = safeText(el);
-      if (t) return t;
-    }
+    if (!matches(el)) continue;
+    if (Array.from(el.querySelectorAll("*")).some(matches)) continue;
+    const t = safeText(el);
+    if (t && t.length <= 100) return t;
   }
   return null;
+}
+
+// Label/pattern based fallback on the card's visible text — independent of
+// Naukri's (unknown, unstable) class names. Lines like "Current: Sr Engineer at
+// Acme", "Education: B.Tech", "Notice period: 15 days", "Key skills: a, b".
+function parseCardText(container) {
+  const raw = (container.innerText || container.textContent || "");
+  const lines = raw.split(/\n+/).map((l) => l.replace(/\s+/g, " ").trim()).filter(Boolean);
+  const out = { title: null, company: null, location: null, education: null, notice_period: null, skills: [], experience: null };
+  const labelVal = (line, labels) => {
+    const m = line.match(new RegExp("^(?:" + labels + ")\\s*[:\\-–]\\s*(.+)$", "i"));
+    return m ? m[1].trim() : null;
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const next = lines[i + 1] || null;
+    // Value can be on the same line after the label, or on the next line.
+    const val = (labels) => labelVal(line, labels) ||
+      (new RegExp("^(?:" + labels + ")\\s*:?$", "i").test(line) ? next : null);
+
+    if (!out.title || !out.company) {
+      const cur = val("current(?: designation| company)?|designation|current role");
+      if (cur) {
+        const m = cur.match(/^(.+?)\s+at\s+(.+)$/i);
+        if (m) { out.title = out.title || m[1].trim(); out.company = out.company || m[2].trim(); }
+        else if (!out.title) out.title = cur;
+      }
+    }
+    if (!out.company) {
+      const c = val("current company|company|employer|previous company");
+      if (c) out.company = c;
+    }
+    if (!out.location) {
+      const l = val("current location|location|current loc|pref(?:erred)? loc(?:ation)?");
+      if (l) out.location = l;
+    }
+    if (!out.education) {
+      const e = val("education|qualification|highest qualification");
+      if (e) out.education = e;
+    }
+    if (!out.notice_period) {
+      const n = val("notice period|availability to join|notice");
+      if (n) out.notice_period = n;
+    }
+    if (!out.skills.length) {
+      const k = val("key ?skills?|skills|keywords");
+      if (k) out.skills = k.split(/[,|•·]/).map((x) => x.trim()).filter((x) => x && x.length < 60).slice(0, 15);
+    }
+  }
+  // "5 Yrs | ₹ 12 Lacs | Hyderabad" style summary rows: split on separators.
+  if (!out.location || !out.experience) {
+    for (const line of lines) {
+      if (!/[|•·]/.test(line)) continue;
+      const parts = line.split(/[|•·]/).map((x) => x.trim()).filter(Boolean);
+      for (const part of parts) {
+        if (!out.experience && /^\d{1,2}(?:\.\d+)?\s*(?:yrs?|years?)/i.test(part)) out.experience = part;
+        else if (!out.location && /^[A-Za-z][A-Za-z .,&\/-]{2,60}$/.test(part) &&
+                 !/lacs?|lpa|yrs?|years?|months?|days?|notice/i.test(part) &&
+                 parts.some((p) => /\d\s*(?:yrs?|years?)/i.test(p))) {
+          out.location = part;
+        }
+      }
+    }
+  }
+  return out;
 }
 
 function findSkillsInContainer(container, maxSkills = 15) {
@@ -1777,7 +2006,28 @@ function findCandidateContainers() {
     };
   }
 
-  return { pairs: [], strategy: "none", warnings: ["No candidate containers detected with any known strategy."] };
+  // Neither known strategy matched. Distinguish "Naukri genuinely returned 0
+  // results" from "our selectors miss the real markup" without guessing at
+  // more selectors — log what's actually on the page so the next console
+  // paste is conclusive instead of another round of blind selector tweaks.
+  const bodyText = (document.body.textContent || "").slice(0, 2000);
+  const looksLikeNoResults = /\bno\s+(matching\s+)?(candidates?|results?|profiles?)\b/i.test(bodyText);
+  console.log(
+    "[Snypar Bot] findCandidateContainers — no containers via known selectors.",
+    "looksLikeNoResultsMessage:", looksLikeNoResults,
+    "url:", window.location.href,
+    "bodyTextSample:", bodyText.slice(0, 300)
+  );
+
+  return {
+    pairs: [],
+    strategy: "none",
+    warnings: [
+      looksLikeNoResults
+        ? "Naukri appears to show a genuine 'no results' state for this search."
+        : "No candidate containers detected with any known strategy — selectors likely stale; see DOM dump logged above.",
+    ],
+  };
 }
 
 function extractOneCandidate(container, anchor) {
@@ -1787,18 +2037,28 @@ function extractOneCandidate(container, anchor) {
   );
   if (!name) return null;
 
-  return {
+  const txt = parseCardText(container);
+  const skills = findSkillsInContainer(container);
+  const result = {
     name,
-    title: findChildTextByClassHints(container, FIELD_CLASS_HINTS.title),
-    company: findChildTextByClassHints(container, FIELD_CLASS_HINTS.company),
-    experience: extractExperienceText(container),
-    location: findChildTextByClassHints(container, FIELD_CLASS_HINTS.location),
-    skills: findSkillsInContainer(container),
-    education: findChildTextByClassHints(container, FIELD_CLASS_HINTS.education),
-    notice_period: findChildTextByClassHints(container, FIELD_CLASS_HINTS.notice_period),
+    title: txt.title || findChildTextByClassHints(container, FIELD_CLASS_HINTS.title),
+    company: txt.company || findChildTextByClassHints(container, FIELD_CLASS_HINTS.company),
+    experience: extractExperienceText(container) || txt.experience,
+    location: txt.location || findChildTextByClassHints(container, FIELD_CLASS_HINTS.location),
+    skills: txt.skills.length ? txt.skills : skills,
+    education: txt.education || findChildTextByClassHints(container, FIELD_CLASS_HINTS.education),
+    notice_period: txt.notice_period || findChildTextByClassHints(container, FIELD_CLASS_HINTS.notice_period),
     profile_url: anchor && anchor.href ? anchor.href : null,
     resdex_candidate_id: extractResdexCandidateId(anchor),
   };
+  // One-time calibration dump: if the key fields are still empty, log the real
+  // card markup/text so selectors can be written from it instead of guessed.
+  if (!window.__snyCardDumped && !result.title && !result.location && !result.company) {
+    window.__snyCardDumped = true;
+    console.log("[Snypar Bot] Card extraction found no title/company/location. Card innerText:",
+      (container.innerText || "").slice(0, 1200), "\nCard outerHTML:", container.outerHTML.slice(0, 3000));
+  }
+  return result;
 }
 
 function extractCandidatesFromResultsPage() {

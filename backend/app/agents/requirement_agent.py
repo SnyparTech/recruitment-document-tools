@@ -146,7 +146,10 @@ NOTICE_PERIOD_MAP: Dict[str, str] = {
     "90 days": "3 months",
     "serving notice": "Currently serving notice period",
     "serving notice period": "Currently serving notice period",
+    "currently serving": "Currently serving notice period",
 }
+
+MANDATORY_NOTICE_OPTION = "Currently serving notice period"
 
 
 def load_resdex_schema() -> Dict[str, Any]:
@@ -777,6 +780,10 @@ Rules:
                     normalized_np.append(np)
                 elif np.lower() in NOTICE_PERIOD_MAP:
                     normalized_np.append(NOTICE_PERIOD_MAP[np.lower()])
+            # "Currently serving notice period" is always selected alongside
+            # any other notice period (multi-select), per recruiter requirement.
+            if normalized_np and MANDATORY_NOTICE_OPTION not in normalized_np:
+                normalized_np.append(MANDATORY_NOTICE_OPTION)
             plan.notice_period = list(dict.fromkeys(normalized_np)) or None
 
         # Only set mandatory flag if required keywords are present and not explicitly set

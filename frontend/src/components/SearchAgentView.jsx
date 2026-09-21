@@ -694,6 +694,23 @@ export default function SearchAgentView({ onCompileCandidate }) {
                       </div>
                     </div>
 
+                    {(c.experience || c.education || c.notice_period || c.profile_url) && (
+                      <div style={{ marginTop: 8, fontSize: '0.8rem', color: 'var(--text-secondary)', display: 'flex', flexWrap: 'wrap', gap: '4px 14px' }}>
+                        {c.experience && <span><strong>Experience:</strong> {c.experience}</span>}
+                        {c.education && <span><strong>Education:</strong> {c.education}</span>}
+                        {c.notice_period && <span><strong>Notice:</strong> {c.notice_period}</span>}
+                        {c.profile_url && <a href={c.profile_url} target="_blank" rel="noreferrer">View profile</a>}
+                      </div>
+                    )}
+
+                    {c.skills?.length > 0 && (
+                      <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                        {c.skills.map((sk, si) => (
+                          <span key={`s-${si}`} className="skill-pill" style={{ fontSize: '0.72rem' }}>{sk}</span>
+                        ))}
+                      </div>
+                    )}
+
                     {(c.matched_requirements?.length > 0 || c.missing_requirements?.length > 0 || c.unavailable_info?.length > 0) && (
                       <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                         {c.matched_requirements?.map((m, mi) => (
