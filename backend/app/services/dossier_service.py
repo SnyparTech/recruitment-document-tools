@@ -508,7 +508,11 @@ class DossierService:
         converted_resume_path: Optional[str] = None
         self.last_converted_resume_path = None
 
+        pre_resume_snapshot: Optional[bytes] = None
         if resume_bytes:
+            _buf = io.BytesIO()
+            doc.save(_buf)
+            pre_resume_snapshot = _buf.getvalue()
             effective_resume_bytes = resume_bytes
             effective_filename = resume_filename
             is_word_format = lower_resume.endswith(".docx") or lower_resume.endswith(".doc")
@@ -564,9 +568,47 @@ class DossierService:
         if converted_resume_path and os.path.exists(converted_resume_path):
             self._optimize_word_document_gaps(converted_resume_path)
 
+        # Safety net: a multi-page PDF resume must never silently vanish. If the
+        # converted/embedded output holds too little text, rebuild the resume
+        # section from rendered page images of the original PDF.
+        if resume_bytes and pre_resume_snapshot and lower_resume.endswith(".pdf"):
+            try:
+                if not self._resume_embedded_ok(file_path, resume_bytes, pre_resume_snapshot):
+                    logger.warning(
+                        "Resume content missing/truncated after PDF->DOCX embedding; "
+                        "falling back to page-image rendering of the original PDF."
+                    )
+                    fb_doc = docx.Document(io.BytesIO(pre_resume_snapshot))
+                    self._embed_exact_resume_document(fb_doc, resume_bytes, resume_filename)
+                    fb_doc.save(file_path)
+            except Exception as exc:
+                logger.warning(f"Resume verification/fallback failed: {exc}")
+
         logger.info(f"Compiled candidate profile dossier saved: {file_path}")
 
         return dossier_id, file_path, converted_resume_path
+
+    @staticmethod
+    def _docx_text_len(source) -> int:
+        d = docx.Document(source)
+        total = sum(len(p.text.strip()) for p in d.paragraphs)
+        for t in d.tables:
+            for row in t.rows:
+                for cell in row.cells:
+                    total += len(cell.text.strip())
+        return total
+
+    def _resume_embedded_ok(self, file_path: str, pdf_bytes: bytes, snapshot: bytes) -> bool:
+        """True if the dossier gained roughly as much text as the source PDF holds."""
+        try:
+            with fitz.open(stream=pdf_bytes, filetype="pdf") as pdf_doc:
+                src_len = sum(len(pg.get_text().strip()) for pg in pdf_doc)
+        except Exception:
+            return True
+        if src_len < 200:
+            return True  # scanned/image PDF: text check is meaningless
+        gained = self._docx_text_len(file_path) - self._docx_text_len(io.BytesIO(snapshot))
+        return gained >= 0.4 * src_len
 
     def _render_pdf_to_images(
         self, pdf_bytes: bytes, max_pages: int = 25, dpi: int = 150

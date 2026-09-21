@@ -1908,7 +1908,7 @@ function parseCardText(container) {
   const lines = raw.split(/\n+/).map((l) => l.replace(/\s+/g, " ").trim()).filter(Boolean);
   const out = { title: null, company: null, location: null, education: null, notice_period: null, skills: [], experience: null };
   const labelVal = (line, labels) => {
-    const m = line.match(new RegExp("^(?:" + labels + ")\\s*[:\\-–]\\s*(.+)$", "i"));
+    const m = line.match(new RegExp("^(?:" + labels + ")(?:\\s*[:\\-–]\\s*|\\s+)(\\S.*)$", "i"));
     return m ? m[1].trim() : null;
   };
   for (let i = 0; i < lines.length; i++) {
@@ -1919,7 +1919,7 @@ function parseCardText(container) {
       (new RegExp("^(?:" + labels + ")\\s*:?$", "i").test(line) ? next : null);
 
     if (!out.title || !out.company) {
-      const cur = val("current(?: designation| company)?|designation|current role");
+      const cur = val("current(?: designation| company)?|designation|current role|previous");
       if (cur) {
         const m = cur.match(/^(.+?)\s+at\s+(.+)$/i);
         if (m) { out.title = out.title || m[1].trim(); out.company = out.company || m[2].trim(); }
@@ -1931,7 +1931,7 @@ function parseCardText(container) {
       if (c) out.company = c;
     }
     if (!out.location) {
-      const l = val("current location|location|current loc|pref(?:erred)? loc(?:ation)?");
+      const l = val("current location|location|current loc|pref(?:erred|\\.)? ?locations?");
       if (l) out.location = l;
     }
     if (!out.education) {
@@ -1945,6 +1945,15 @@ function parseCardText(container) {
     if (!out.skills.length) {
       const k = val("key ?skills?|skills|keywords");
       if (k) out.skills = k.split(/[,|•·]/).map((x) => x.trim()).filter((x) => x && x.length < 60).slice(0, 15);
+    }
+  }
+  for (const line of lines) {
+    const hm = line.match(/^(\d{1,2}\s*y(?:\s*\d{1,2}\s*m)?)\s*(?:[|•·]\s*)?(?:(?:₹|Rs\.?)\s*[\d.,]+\s*(?:Lacs?|LPA|Lakhs?)\s*(?:[|•·]\s*)?)?(.*)$/i);
+    if (hm) {
+      out.experience = out.experience || hm[1].trim();
+      const loc = hm[2].trim();
+      if (!out.location && loc && loc.length < 60) out.location = loc;
+      break;
     }
   }
   // "5 Yrs | ₹ 12 Lacs | Hyderabad" style summary rows: split on separators.
@@ -1979,8 +1988,9 @@ function findSkillsInContainer(container, maxSkills = 15) {
 }
 
 function extractExperienceText(container) {
-  const text = container.textContent || "";
-  const match = text.match(/\b(\d{1,2}(?:\.\d{1,2})?)\s*(?:yrs?|years?)\b(?:\s*,?\s*\d{1,2}\s*(?:months?|mos?)\b)?/i);
+  const text = (container.innerText || container.textContent || "").replace(/\s+/g, " ");
+  const match =
+    text.match(/(\d{1,2}(?:\.\d{1,2})?)\s*(?:yrs?|years?|y)(?:\s*,?\s*\d{1,2}\s*(?:months?|mos?|m))?/i);
   return match ? match[0].trim() : null;
 }
 
@@ -2072,9 +2082,9 @@ function extractOneCandidate(container, anchor) {
   };
   // One-time calibration dump: if the key fields are still empty, log the real
   // card markup/text so selectors can be written from it instead of guessed.
-  if (!window.__snyCardDumped && !result.title && !result.location && !result.company) {
+  if (!window.__snyCardDumped && (!result.experience || !result.notice_period || result.skills.length < 2)) {
     window.__snyCardDumped = true;
-    console.log("[Snypar Bot] Card extraction found no title/company/location. Card innerText:",
+    console.log("[Snypar Bot] Card is missing experience/notice/skills. Card innerText:",
       (container.innerText || "").slice(0, 1200), "\nCard outerHTML:", container.outerHTML.slice(0, 3000));
   }
   return result;
@@ -2122,7 +2132,7 @@ let lastExtractedResultsUrl = null;
 
 const SUBMIT_CHUNK_SIZE = 50;       // backend accepts at most 50 candidates per request
 const AUTOPAGE_KEY = "snypar_autopage_active";
-const AUTOPAGE_MAX_PAGES = 10;      // safety cap on pages walked per search
+const AUTOPAGE_MAX_PAGES = 50;      // safety cap on pages walked per search
 
 function currentResultsPageNo() {
   const n = parseInt(new URL(window.location.href).searchParams.get("pageNo") || "1", 10);
