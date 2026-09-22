@@ -1087,6 +1087,19 @@ export default function SearchAgentView({ onCompileCandidate }) {
                       </div>
                     )}
 
+                    {c.ai_summary && (
+                      <div style={{
+                        marginTop: 8,
+                        fontSize: '0.8rem',
+                        color: 'var(--text-secondary)',
+                        fontStyle: 'italic',
+                        borderLeft: '2px solid var(--primary)',
+                        paddingLeft: 8,
+                      }}>
+                        {c.ai_summary}
+                      </div>
+                    )}
+
                     {(c.matched_requirements?.length > 0 || c.missing_requirements?.length > 0 || c.unavailable_info?.length > 0) && (
                       <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                         {c.matched_requirements?.map((m, mi) => (

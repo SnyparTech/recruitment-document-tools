@@ -2202,6 +2202,21 @@ function findCandidateContainers() {
   };
 }
 
+// Naukri's AI-generated candidate summary (the text shown when hovering the
+// three-dots/info icon) lives statically in the DOM already — no hover
+// simulation needed. It's on the anchor `a.candidate-profile-summary`
+// (a more specific subclass of `.link.ext`, which is reused elsewhere on the
+// page e.g. the nav "go to advance search form" icon — must scope to this
+// class, not `.link.ext`), both as a `title` attribute and as visible
+// (highlighted) span text. Confirmed via live DOM capture 2026-09-22.
+// Not every candidate has one — Naukri only generates it for some profiles.
+function extractAiSummary(container) {
+  const el = container.querySelector("a.candidate-profile-summary");
+  if (!el) return null;
+  const text = (el.getAttribute("title") || el.textContent || "").trim();
+  return text || null;
+}
+
 function extractOneCandidate(container, anchor) {
   const name = anchor ? safeText(anchor, 100) : (
     findChildTextByClassHints(container, ["name", "candidatename"]) ||
@@ -2222,6 +2237,7 @@ function extractOneCandidate(container, anchor) {
     notice_period: txt.notice_period || findChildTextByClassHints(container, FIELD_CLASS_HINTS.notice_period),
     profile_url: anchor && anchor.href ? anchor.href : null,
     resdex_candidate_id: extractResdexCandidateId(anchor),
+    ai_summary: extractAiSummary(container),
   };
   // One-time calibration dump: if the key fields are still empty, log the real
   // card markup/text so selectors can be written from it instead of guessed.
