@@ -2233,8 +2233,31 @@ function extractOneCandidate(container, anchor) {
   return result;
 }
 
-function extractCandidatesFromResultsPage() {
+async function extractCandidatesFromResultsPage() {
   const { pairs, strategy, warnings } = findCandidateContainers();
+
+  // Cards truncate long skill/tag lists behind a "+N more" toggle
+  // (button.more.naukri-btn-empty, confirmed via live trace: click on it
+  // opens the hidden chips). parseCardText/findSkillsInContainer both read
+  // off container.innerText, which excludes CSS-hidden content, so without
+  // this click every card's skill list silently stops at whatever fit before
+  // "+N more" — real data, just incomplete. Scoped to each card's own
+  // container (not document-wide) so this can't hit an unrelated "more" link
+  // elsewhere on the page (e.g. a sidebar filter).
+  let expandedAny = false;
+  for (const { container } of pairs) {
+    const moreBtn = container.querySelector("button.more.naukri-btn-empty");
+    if (moreBtn && moreBtn.offsetParent !== null) {
+      try {
+        moreBtn.click();
+        expandedAny = true;
+      } catch (err) {
+        // Non-fatal — that card just keeps its truncated skill list.
+      }
+    }
+  }
+  if (expandedAny) await sleep(300); // let React re-render the expanded chips before reading
+
   const candidates = [];
   const fieldHitCounts = {};
   const extractionWarnings = [...warnings];
@@ -2385,7 +2408,7 @@ async function extractAndSubmitOnce(currentUrl) {
     await sleep(700);
   }
 
-  const { candidates, diagnostics } = extractCandidatesFromResultsPage();
+  const { candidates, diagnostics } = await extractCandidatesFromResultsPage();
 
   if (candidates.length === 0) {
     updateWidgetStatus("⚠ No candidates detected on results page", "offline");
