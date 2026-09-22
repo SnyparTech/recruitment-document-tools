@@ -2098,7 +2098,7 @@ function parseCardText(container) {
       if (!/[|•·]/.test(line)) continue;
       const parts = line.split(/[|•·]/).map((x) => x.trim()).filter(Boolean);
       for (const part of parts) {
-        if (!out.experience && /^\d{1,2}(?:\.\d+)?\s*(?:yrs?|years?)/i.test(part)) out.experience = part;
+        if (!out.experience && /^\d{1,2}(?:\.\d+)?\s*(?:yrs?|years?)/i.test(part)) out.experience = part;
         else if (!out.location && /^[A-Za-z][A-Za-z .,&\/-]{2,60}$/.test(part) &&
                  !/lacs?|lpa|yrs?|years?|months?|days?|notice/i.test(part) &&
                  parts.some((p) => /\d\s*(?:yrs?|years?)/i.test(p))) {
@@ -2126,8 +2126,15 @@ function findSkillsInContainer(container, maxSkills = 15) {
 function extractExperienceText(container) {
   const text = (container.innerText || container.textContent || "").replace(/\s+/g, " ");
   const match =
-    text.match(/(\d{1,2}(?:\.\d{1,2})?)\s*(?:yrs?|years?|y)(?:\s*,?\s*\d{1,2}\s*(?:months?|mos?|m))?/i);
-  return match ? match[0].trim() : null;
+    text.match(/(\d{1,2}(?:\.\d{1,2})?)\s*(?:yrs?|years?|y)(?:\s*,?\s*\d{1,2}\s*(?:months?|mos?|m))?/i);
+  if (match) return match[0].trim();
+  // 0-experience Resdex cards show the literal word "Fresher" instead of a
+  // "Xy Ym" pattern — the regex above never matches that, so these candidates
+  // fell through with no experience value at all (noisy dump + ranking marks
+  // the dimension "unavailable" instead of correctly scoring 0 years).
+  // Backend's parse_experience_years() has a matching "fresher" -> 0.0 case.
+  if (/\bfresher\b/i.test(text)) return "Fresher";
+  return null;
 }
 
 function extractResdexCandidateId(anchor) {

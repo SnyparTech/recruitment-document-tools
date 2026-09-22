@@ -103,6 +103,21 @@ CANONICAL_SKILLS: Dict[str, str] = {
     "vuejs": "Vue.js",
     "nextjs": "Next.js",
     "next.js": "Next.js",
+    # AI/ML frameworks & tooling
+    "langgraph": "LangGraph",
+    "langchain": "LangChain",
+    "llamaindex": "LlamaIndex",
+    "pytorch": "PyTorch",
+    "tensorflow": "TensorFlow",
+    "keras": "Keras",
+    "scikit-learn": "scikit-learn",
+    "sklearn": "scikit-learn",
+    "hugging face": "Hugging Face",
+    "huggingface": "Hugging Face",
+    "transformers": "Transformers",
+    "opencv": "OpenCV",
+    "mlflow": "MLflow",
+    "rag": "RAG",
 }
 
 LOCATION_ALIASES: Dict[str, str] = {
@@ -622,6 +637,25 @@ Rules:
                     if canonical not in required_skills:
                         required_skills.append(canonical)
 
+        # 3. Named-tool lists after cue phrases ("frameworks like X and Y",
+        # "tools such as X, Y"), so tools not yet in CANONICAL_SKILLS (new/
+        # niche ones, e.g. "LangGraph") aren't silently dropped just because
+        # they're absent from the taxonomy. Keeps the JD's own casing.
+        for cue_match in re.finditer(
+            r"(?:frameworks?|tools?|technologies?|libraries?|platforms?)\s+(?:like|such as|including)\s+([^.\n]+)",
+            text,
+            re.IGNORECASE,
+        ):
+            list_text = re.split(r"\band\b|,", cue_match.group(1))
+            for item in list_text:
+                name = item.strip().strip(".").strip()
+                # Keep short, proper-noun-ish tokens (1-3 words); drop stray
+                # trailing clauses the split can't cleanly separate.
+                if name and len(name) <= 30 and len(name.split()) <= 3:
+                    canonical = CANONICAL_SKILLS.get(name.lower(), name)
+                    if canonical not in required_skills and canonical not in preferred_skills:
+                        required_skills.append(canonical)
+
         return required_skills, preferred_skills
 
     def _extract_experience_rule(
@@ -630,8 +664,10 @@ Rules:
         """Extracts experience bounds (Rule 4)."""
         lower = text.lower()
 
-        # Fresher check
-        if "fresher" in lower or "0 years" in lower or "entry level" in lower:
+        # Fresher check. Word-boundary on "0 years" — plain substring check
+        # matched "1*0 years*", "2*0 years*" etc. (any number ending in 0),
+        # which is how "Minimum of 10 years" was misread as 0 years experience.
+        if "fresher" in lower or re.search(r"\b0\+?\s*(?:years?|yrs?)\b", lower) or "entry level" in lower:
             return 0.0, 1.0
 
         # "2 to 5 years" or "2-5 years" or "2 - 5 yrs"
@@ -641,9 +677,9 @@ Rules:
         if range_match:
             return float(range_match.group(1)), float(range_match.group(2))
 
-        # "at least 3 years" or "min 3 years" or "3+ years"
+        # "at least 3 years", "min 3 years", "minimum of 10 years", "3+ years"
         min_match = re.search(
-            r"(?:at least|minimum|min|above)\s*(\d+(?:\.\d+)?)\s*(?:years?|yrs?)",
+            r"(?:at least|minimum|min|above)\s*(?:of\s*)?(\d+(?:\.\d+)?)\s*(?:years?|yrs?)",
             lower,
         )
         if min_match:
@@ -653,9 +689,9 @@ Rules:
         if plus_match:
             return float(plus_match.group(1)), None
 
-        # "up to 5 years" or "maximum 5 years" or "max 5 yrs"
+        # "up to 5 years", "maximum of 5 years", "max 5 yrs"
         max_match = re.search(
-            r"(?:up to|maximum|max|under|below)\s*(\d+(?:\.\d+)?)\s*(?:years?|yrs?)",
+            r"(?:up to|maximum|max|under|below)\s*(?:of\s*)?(\d+(?:\.\d+)?)\s*(?:years?|yrs?)",
             lower,
         )
         if max_match:
@@ -742,29 +778,57 @@ Rules:
 
         return matched if matched else None
 
+    # Only a JD that explicitly names the role being hired for should set a
+    # designation. Cue phrases the target title actually appears after.
+    _ROLE_CUE_RE = re.compile(
+        r"(?:job\s*title|position|designation|role)\s*[:\-]\s*([^\n.]{2,60})"
+        r"|(?:hiring|looking|seeking)\s+(?:for\s+)?(?:an?\s+)?([A-Za-z][A-Za-z /\-]{2,50}?)"
+        r"(?:\s+with|\s+who|\s+to|\s+for|[.\n,]|$)"
+        r"|(?:for the role of|as an?)\s+([A-Za-z][A-Za-z /\-]{2,50}?)"
+        r"(?:\s+with|\s+who|\s+to|[.\n,]|$)",
+        re.IGNORECASE,
+    )
+
     def _extract_roles_rule(
         self, text: str
     ) -> Tuple[List[str], List[str]]:
-        """Extracts department roles and designations."""
-        lower = text.lower()
+        """
+        Extracts department role & designation — ONLY from an explicitly stated
+        target job title ("Job Title:", "hiring for a ...", "as a ..."), never
+        by guessing from skills/technologies merely mentioned anywhere in the
+        JD. The old version matched any keyword occurrence in the whole text,
+        so a JD that only said "collaborating with data engineers" (naming a
+        peer role, not the role being hired) got hallucinated designation
+        ["Data Engineer", "Senior Data Engineer", "Big Data Engineer"]. If the
+        JD never states a target title, this correctly returns nothing rather
+        than guessing.
+        """
         roles: List[str] = []
         designations: List[str] = []
 
-        if "ai/ml" in lower or "ai-ml" in lower or ("ai" in lower and "ml" in lower):
+        match = self._ROLE_CUE_RE.search(text)
+        if not match:
+            return roles, designations
+
+        title_phrase = next((g for g in match.groups() if g), "").strip().lower()
+        if not title_phrase:
+            return roles, designations
+
+        if "ai/ml" in title_phrase or "ai-ml" in title_phrase or ("ai" in title_phrase and "ml" in title_phrase):
             roles.append("AI/ML Engineer")
             designations.extend(["AI Engineer", "Machine Learning Engineer", "ML Engineer"])
-        elif "data engineer" in lower:
+        elif "data engineer" in title_phrase:
             roles.append("Data Engineer")
             designations.extend(["Data Engineer", "Senior Data Engineer", "Big Data Engineer"])
-        elif "react" in lower or "frontend" in lower:
+        elif "react" in title_phrase or "frontend" in title_phrase or "front end" in title_phrase:
             roles.append("Frontend Developer")
             designations.extend(["Frontend Developer", "React Developer", "UI Developer"])
-        elif "python" in lower:
+        elif "python" in title_phrase:
             roles.append("Python Developer")
             designations.extend(["Python Developer", "Python Backend Engineer"])
-        elif "sap" in lower:
+        elif "sap" in title_phrase:
             roles.append("SAP Consultant")
-            if "lead" in lower:
+            if "lead" in title_phrase:
                 designations.extend(["Lead SAP Consultant", "SAP Implementation Lead", "SAP Project Lead"])
             else:
                 designations.extend(["SAP Consultant", "SAP Specialist", "Senior SAP Consultant"])
