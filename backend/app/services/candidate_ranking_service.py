@@ -19,8 +19,37 @@ BASE_WEIGHTS = {
 }
 
 
-def _normalize(text: str) -> str:
-    return re.sub(r"[^a-z0-9]", "", (text or "").lower())
+def _tokens_match(needle: str, haystack: str) -> bool:
+    """
+    True if `needle` is present in `haystack` as a whole word/phrase, not a
+    bare substring. Plain substring containment (the old behavior) produced
+    false positives for short skills/designations — e.g. required skill "AI"
+    normalized to "ai" would match candidate skill "Maintenance" ("m-AI-
+    ntenance" contains "ai"), or "R" would match "HR", "Marketing", etc.
+    This is the root cause behind reported "wrong" ranking: candidates
+    getting matched_requirements credit for skills/roles they don't have.
+    Word-boundary regex on the *lowercased* (not de-spaced) text avoids that,
+    while still matching multi-word phrases like "machine learning" whole.
+    """
+    needle = (needle or "").strip().lower()
+    haystack = (haystack or "").strip().lower()
+    if not needle or not haystack:
+        return False
+    if needle == haystack:
+        return True
+    # Lookbehind blocks mid-word matches on both sides (no "ai" inside
+    # "maintenance"). Lookahead only blocks a following LETTER, not a digit,
+    # so versioned skills still match their base name ("Python" ~ "Python3",
+    # "HTML" ~ "HTML5") without opening the door to "java" matching
+    # "javascript".
+    pattern = r"(?<![a-z0-9])" + re.escape(needle) + r"(?![a-z])"
+    if re.search(pattern, haystack):
+        return True
+    # Reverse direction too (candidate skill phrase fully contains needle as a
+    # word), and the symmetric case where haystack is a whole word inside needle
+    # (e.g. required "Full Stack Developer" vs candidate title "Developer").
+    pattern2 = r"(?<![a-z0-9])" + re.escape(haystack) + r"(?![a-z])"
+    return bool(re.search(pattern2, needle))
 
 
 def parse_experience_years(raw: Optional[str]) -> Optional[float]:
@@ -45,14 +74,12 @@ def _score_skills(candidate_skills: List[str], required: List[str], preferred: L
     if not candidate_skills:
         return None, [], []  # plan requires it, but we have no data — caller marks unavailable
 
-    cand_norm = {_normalize(s): s for s in candidate_skills}
     matched, missing = [], []
 
     def _check(skill_list):
         hits = 0
         for s in skill_list:
-            sn = _normalize(s)
-            if any(sn in cn or cn in sn for cn in cand_norm if sn and cn):
+            if any(_tokens_match(s, cs) for cs in candidate_skills):
                 matched.append(s)
                 hits += 1
             else:
@@ -79,11 +106,9 @@ def _score_role(candidate_title: Optional[str], designations: List[str]) -> Tupl
     if not candidate_title:
         return None, [], []
 
-    title_norm = _normalize(candidate_title)
     matched, missing = [], []
     for d in designations:
-        dn = _normalize(d)
-        if dn and (dn in title_norm or title_norm in dn):
+        if _tokens_match(d, candidate_title):
             matched.append(d)
         else:
             missing.append(d)
@@ -118,11 +143,9 @@ def _score_location(candidate_location: Optional[str], target_locations: Optiona
     if not candidate_location:
         return None, [], []
 
-    cand_norm = _normalize(candidate_location)
     matched, missing = [], []
     for loc in target_locations:
-        ln = _normalize(loc)
-        if ln and (ln in cand_norm or cand_norm in ln):
+        if _tokens_match(loc, candidate_location):
             matched.append(loc)
         else:
             missing.append(loc)

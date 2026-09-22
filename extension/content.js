@@ -29,8 +29,17 @@ function isOnResultsPage() {
   return window.location.href.includes("/v3/search");
 }
 
+function isOnPreviewPage() {
+  // Candidate detail/preview page (e.g. /v3/preview?tabKey=profile&sid=...).
+  // Not the search form and not the results list — the extension must not
+  // try to fill a form here (there isn't one), which is what caused
+  // "Form not detected within timeout" while HR was just viewing a profile.
+  const href = window.location.href;
+  return href.includes("/v3/preview") || href.includes("tabKey=profile");
+}
+
 function isOnFormPage() {
-  return !isOnResultsPage();
+  return !isOnResultsPage() && !isOnPreviewPage();
 }
 
 async function fetchFromBackend(path) {
@@ -866,16 +875,43 @@ async function setActiveIn(value) {
       want = `${n} ${unit}${n === 1 ? "" : "s"}`;
     }
     const norm2 = (t) => (t || "").replace(/\s+/g, " ").trim().toLowerCase();
+    // The real interactive element is div.naukri-suggestor-wrapper[role=button]
+    // [aria-haspopup=listbox] — dropdown-head/selected-value are just display
+    // children inside it. Try that as the primary opener; keep the old
+    // children as fallbacks in case markup varies.
     const openers = () => [
+      wrap.querySelector("div.naukri-suggestor-wrapper[role='button']"),
+      wrap.querySelector("div.naukri-suggestor-wrapper"),
       wrap.querySelector("span.selected-value"),
       wrap.querySelector("span.dropdown-head-value"),
       wrap.querySelector("div.dropdown-head"),
       wrap.querySelector("i.ico-expand"),
       wrap,
     ].filter(Boolean);
-    const findOpt = () => Array.from(document.querySelectorAll("li span.pre-wrap, li div.dropdown-tuple"))
-      .filter((sp) => sp.offsetParent !== null)
-      .filter((sp) => norm2(sp.textContent) === want)[0];
+    const findOpt = () => {
+      // Prefer options inside a listbox the opener now points to via aria-owns
+      // /aria-controls, if React set one after opening.
+      const owner = wrap.querySelector("[aria-owns], [aria-controls]");
+      const owned = owner ? getComboboxListbox(owner) : null;
+      const scopes = [owned, document].filter(Boolean);
+      for (const scope of scopes) {
+        const candidates = Array.from(scope.querySelectorAll(
+          "li span.pre-wrap, li div.dropdown-tuple, li, div[role='option'], span.suggestor-tag, div.suggestor-tag"
+        )).filter((sp) => sp.offsetParent !== null);
+        const exact = candidates.find((sp) => norm2(sp.textContent) === want);
+        if (exact) return exact;
+      }
+      return null;
+    };
+    const dispatchFullClick = (el) => {
+      for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
+        try {
+          el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+        } catch (e) {
+          el.dispatchEvent(new Event(type, { bubbles: true, cancelable: true }));
+        }
+      }
+    };
     // Drop focus/suggestions left over from the keyword field first.
     document.activeElement && document.activeElement.blur && document.activeElement.blur();
     for (const opener of openers()) {
@@ -883,13 +919,13 @@ async function setActiveIn(value) {
       if (!opt) {
         opener.scrollIntoView({ block: "center" });
         opener.click();
+        dispatchFullClick(opener);
         await sleep(500);
         opt = findOpt();
         if (!opt) {
-          for (const type of ["mousedown", "mouseup", "click"]) {
-            opener.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
-          }
-          await sleep(500);
+          // Give React one more tick, then look at whether the wrapper actually
+          // flipped open before giving up on this opener.
+          await sleep(400);
           opt = findOpt();
         }
       }
@@ -897,13 +933,18 @@ async function setActiveIn(value) {
         const li = opt.closest("li") || opt;
         li.scrollIntoView({ block: "nearest" });
         li.click();
+        dispatchFullClick(li);
         await sleep(400);
         const shown = norm2(wrap.querySelector("span.selected-value")?.textContent);
         console.log(`[Snypar Bot] Active-in "${value}" -> option "${want}", now showing "${shown}"`);
         if (shown.includes(want)) return true;
       }
     }
-    console.warn(`[Snypar Bot] active-in "${want}" could not be selected; wrap html:`, wrap.outerHTML.slice(0, 1500));
+    const wrapperEl = wrap.querySelector("div.naukri-suggestor-wrapper");
+    console.warn(
+      `[Snypar Bot] active-in "${want}" could not be selected; aria-expanded=${wrapperEl?.getAttribute("aria-expanded")} wrap html:`,
+      wrap.outerHTML.slice(0, 2500)
+    );
   }
 
   // Try React custom dropdown
@@ -1840,6 +1881,73 @@ async function waitForFormReady(timeoutMs = 20000) {
   return false;
 }
 
+// ─── Dynamic mandatory-keyword refinement ───────────────────────────────────
+// HR toggles which of the already-generated keywords are mandatory on the
+// profile-bot website (moving a keyword between plan.keywords.required and
+// .preferred). The backend marks that update `_keyword_sync_only: true` —
+// rather than re-running the full fillResdexForm (which would retype every
+// keyword into a form that already has chips for them, risking duplicates),
+// this only flips the star on each EXISTING chip to match the new mandatory
+// set, then re-clicks Search Candidates.
+async function syncKeywordStarsOnForm(plan) {
+  const requiredKws = (plan.keywords && plan.keywords.required) || [];
+  const preferredKws = (plan.keywords && plan.keywords.preferred) || [];
+  const mandatoryNorm = requiredKws.map((k) => k.toLowerCase().trim().replace(/[^a-z0-9]/g, ""));
+  const optionalNorm = preferredKws.map((k) => k.toLowerCase().trim().replace(/[^a-z0-9]/g, ""));
+
+  const chips = document.querySelectorAll(
+    "div[class*='chip'], span[class*='chip'], div[class*='tag'], span[class*='tag'], li[class*='chip'], li[class*='tag'], div[class*='pill'], span[class*='pill'], [class*='tuple']"
+  );
+  let toggled = 0;
+  for (const chip of chips) {
+    const chipNorm = chip.textContent.toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (!chipNorm) continue;
+
+    let want = null;
+    if (mandatoryNorm.some((kw) => kw && chipNorm.includes(kw))) want = true;
+    else if (optionalNorm.some((kw) => kw && chipNorm.includes(kw))) want = false;
+    if (want === null) continue; // chip isn't one of our tracked keywords — leave it
+
+    const star = chip.querySelector(
+      "[class*='star'], [class*='Star'], [title*='Mandatory'], [title*='mandatory'], [title*='Must have'], svg, button"
+    );
+    if (!star) continue;
+    const cls = (star.className && star.className.toString()) || "";
+    const pressed = star.getAttribute("aria-pressed");
+    const isActive = cls.includes("active") || cls.includes("selected") || cls.includes("starred") || pressed === "true";
+    if (isActive !== want) {
+      star.click();
+      toggled++;
+      await sleep(200);
+    }
+  }
+  console.log(`[Snypar Bot] Keyword mandatory sync: ${toggled} star(s) toggled.`);
+  return toggled;
+}
+
+async function clickSearchButtonAndVerify() {
+  updateWidgetStatus("Re-running search with updated keywords...", "busy");
+  await sleep(300);
+  const allBtns = Array.from(document.querySelectorAll(
+    "button#adv-search-btn, button, a[role='button'], input[type='submit'], input[type='button']"
+  ));
+  const searchBtn = allBtns.find((b) => {
+    const txt = (b.value || b.textContent || "").trim().toLowerCase();
+    return b.id === "adv-search-btn" ||
+      ((txt.includes("search candidate") || txt === "search" || txt === "search candidates") && b.offsetParent !== null);
+  });
+  if (!searchBtn) {
+    updateWidgetStatus("⚠ Search button not found", "offline");
+    return false;
+  }
+  searchBtn.scrollIntoView({ behavior: "smooth", block: "center" });
+  await sleep(300);
+  searchBtn.click();
+  const verified = await waitForResultsPageVerified(10000);
+  updateWidgetStatus(verified ? "✓ Search re-run with updated keywords" : "⚠ Search click unconfirmed", verified ? "online" : "offline");
+  return verified;
+}
+
 async function ensureOnFormPage() {
   if (isOnResultsPage()) {
     updateWidgetStatus("Navigating to Search Form...", "busy");
@@ -2161,6 +2269,30 @@ let lastExtractedResultsUrl = null;
 const SUBMIT_CHUNK_SIZE = 50;       // backend accepts at most 50 candidates per request
 const AUTOPAGE_KEY = "snypar_autopage_active";
 const AUTOPAGE_MAX_PAGES = 200;      // safety cap on pages walked per search
+const COMPLETED_SIDS_KEY = "snypar_completed_sids";
+const COMPLETED_SIDS_MAX = 50; // bounded ring buffer, oldest dropped first
+
+function isSidCompleted(sid) {
+  try {
+    const list = JSON.parse(localStorage.getItem(COMPLETED_SIDS_KEY) || "[]");
+    return list.includes(sid);
+  } catch (e) {
+    return false;
+  }
+}
+
+function markSidCompleted(sid) {
+  try {
+    let list = JSON.parse(localStorage.getItem(COMPLETED_SIDS_KEY) || "[]");
+    list = list.filter((s) => s !== sid);
+    list.push(sid);
+    if (list.length > COMPLETED_SIDS_MAX) list = list.slice(list.length - COMPLETED_SIDS_MAX);
+    localStorage.setItem(COMPLETED_SIDS_KEY, JSON.stringify(list));
+  } catch (e) {
+    // localStorage unavailable — non-fatal, just means the anti-repagination
+    // guard won't persist across reloads for this session.
+  }
+}
 
 function currentResultsPageNo() {
   const n = parseInt(new URL(window.location.href).searchParams.get("pageNo") || "1", 10);
@@ -2216,14 +2348,25 @@ async function extractAndSubmitCandidatesIfNeeded(forced = false) {
 
 async function extractAndSubmitOnce(currentUrl) {
   // A different search id (user pressed Modify / ran a new search) means fresh results:
-  // collect every page of it too.
+  // collect every page of it too — UNLESS this sid was already walked to completion
+  // before (e.g. HR paged back to page 1 of the same search). localStorage (not
+  // sessionStorage) so it survives a full page reload / new tab, since that's exactly
+  // when this matters: without it, revisiting page 1 of an already-fully-collected
+  // search re-triggers the whole auto-pagination walk and re-posts every page.
   const sid = currentSearchId();
+  const alreadyCompleted = sid && isSidCompleted(sid);
   if (sid && sessionStorage.getItem("snypar_last_sid") !== sid) {
     sessionStorage.setItem("snypar_last_sid", sid);
-    if (sessionStorage.getItem(AUTOPAGE_KEY) !== "1") {
+    if (!alreadyCompleted && sessionStorage.getItem(AUTOPAGE_KEY) !== "1") {
       sessionStorage.setItem(AUTOPAGE_KEY, "1");
       sessionStorage.removeItem("snypar_autopage_total");
     }
+  }
+  if (alreadyCompleted) {
+    // Still extract+submit the currently visible page (keeps a manual re-search or a
+    // page revisit in sync — dedup on the backend makes this idempotent), but never
+    // resume the multi-page walk for a search we already finished collecting.
+    sessionStorage.removeItem(AUTOPAGE_KEY);
   }
 
   // SPA pagination swaps cards after the URL changes; wait for the card count to settle.
@@ -2265,6 +2408,7 @@ async function extractAndSubmitOnce(currentUrl) {
     console.log(`[Snypar Bot] Auto-pagination finished at page ${pageNo} (${total} candidates stored).`);
     sessionStorage.removeItem(AUTOPAGE_KEY);
     sessionStorage.removeItem("snypar_autopage_total");
+    if (sid) markSidCompleted(sid);
     updateWidgetStatus(`✓ Done: ${total} candidates from ${pageNo} page(s)`, "online");
     return;
   }
@@ -2279,9 +2423,24 @@ async function extractAndSubmitOnce(currentUrl) {
 async function fetchAndFill(forced = false) {
   if (isFilling) return;
 
+  if (isOnPreviewPage()) {
+    updateWidgetStatus("Viewing candidate profile", "online");
+    return;
+  }
+
   if (isOnResultsPage()) {
     updateWidgetStatus("✓ Search Results Active", "online");
     await extractAndSubmitCandidatesIfNeeded(forced);
+    // A keyword-mandatory change made on the website while HR is looking at
+    // results won't be picked up by the plan-fetch branch below (that branch
+    // is skipped whenever we're on the results page) — check for it here and
+    // hop back to the form so the next poll (now on the form) can apply it.
+    const pending = await fetchFromBackend("/search/active-plan");
+    if (pending && pending.has_plan && pending.plan?._keyword_sync_only &&
+        pending.timestamp > lastProcessedTimestamp) {
+      updateWidgetStatus("Applying updated mandatory keywords...", "busy");
+      await ensureOnFormPage();
+    }
     return;
   }
 
@@ -2324,6 +2483,22 @@ async function fetchAndFill(forced = false) {
 
       lastProcessedTimestamp = fetchedData.timestamp;
       const shouldSubmit = fetchedData.plan?._submit_search === true;
+
+      if (fetchedData.plan?._keyword_sync_only) {
+        // HR only changed which keywords are mandatory — flip stars on the
+        // existing chips instead of retyping the whole form.
+        await syncKeywordStarsOnForm(fetchedData.plan);
+        const verified = await clickSearchButtonAndVerify();
+        if (verified) {
+          sessionStorage.setItem(AUTOPAGE_KEY, "1");
+          sessionStorage.removeItem("snypar_autopage_total");
+          sessionStorage.setItem(FILL_CACHE_KEY, planTs);
+        } else {
+          console.warn("[Snypar Bot] Keyword sync search re-run not verified — will retry on next eligible poll.");
+        }
+        return;
+      }
+
       if (shouldSubmit) {
         sessionStorage.setItem(AUTOPAGE_KEY, "1");
         sessionStorage.removeItem("snypar_autopage_total");

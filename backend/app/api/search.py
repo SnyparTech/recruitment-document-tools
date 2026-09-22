@@ -20,6 +20,7 @@ from app.schemas.candidate_result import CandidateResult, SubmitCandidateResults
 from app.services.requirement_service import RequirementService
 from app.services.candidate_store_service import merge_candidates
 from app.services.candidate_ranking_service import rank_candidates
+from app.services import state_persistence
 
 logger = logging.getLogger(__name__)
 
@@ -31,15 +32,29 @@ ALLOWED_DOC_EXTENSIONS = {".pdf", ".docx", ".doc", ".txt"}
 MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
 
 
-_latest_search_plan = None
-_latest_plan_timestamp = 0.0
+# NOTE: same single-tenant, process-global storage pattern documented below —
+# known limitation (see audit P0/P1 follow-up on session isolation), not
+# addressed in this change. What IS addressed: these globals are now backed
+# by a JSON file (state_persistence) so a backend restart no longer silently
+# loses the recruiter's in-progress plan/candidates.
+_persisted = state_persistence.load_state()
+_latest_search_plan = _persisted.get("search_plan")
+_latest_plan_timestamp = _persisted.get("plan_timestamp") or 0.0
+_latest_candidates: List[CandidateResult] = [
+    CandidateResult(**c) for c in (_persisted.get("candidates") or [])
+]
+_latest_candidates_timestamp = _persisted.get("candidates_timestamp") or 0.0
+_latest_search_id: Optional[str] = _persisted.get("search_id")
 
-# NOTE: same single-tenant, process-global storage pattern as _latest_search_plan
-# above — documented, known limitation (see audit P0/P1 follow-up on session
-# isolation), not addressed in this change.
-_latest_candidates: List[CandidateResult] = []
-_latest_candidates_timestamp = 0.0
-_latest_search_id: Optional[str] = None
+
+def _persist_now() -> None:
+    state_persistence.save_state(
+        search_plan=_latest_search_plan,
+        plan_timestamp=_latest_plan_timestamp,
+        candidates=[c.model_dump() for c in _latest_candidates],
+        candidates_timestamp=_latest_candidates_timestamp,
+        search_id=_latest_search_id,
+    )
 
 
 @router.get(
@@ -102,6 +117,7 @@ async def search_candidates(
     plan_dict["_submit_search"] = request.submit_search
     _latest_search_plan = plan_dict
     _latest_plan_timestamp = time.time()
+    _persist_now()
 
     msg = "SearchPlan generated. Extension will auto-fill the form."
     if request.submit_search:
@@ -158,6 +174,7 @@ async def store_search_plan(
     plan_dict["_submit_search"] = request.submit_search
     _latest_search_plan = plan_dict
     _latest_plan_timestamp = time.time()
+    _persist_now()
 
     msg = "SearchPlan stored. Extension will auto-fill the form."
     if request.submit_search:
@@ -213,6 +230,7 @@ async def submit_candidate_results(request: SubmitCandidateResultsRequest):
         )
 
     if not request.candidates:
+        _persist_now()  # search_id/reset above may have changed state even with an empty batch
         return {
             "status": "success",
             "message": "No candidates in this batch (nothing to merge).",
@@ -221,6 +239,7 @@ async def submit_candidate_results(request: SubmitCandidateResultsRequest):
 
     _latest_candidates = merge_candidates(_latest_candidates, request.candidates)
     _latest_candidates_timestamp = time.time()
+    _persist_now()
 
     return {
         "status": "success",
@@ -260,7 +279,51 @@ async def clear_candidate_results():
     global _latest_candidates, _latest_candidates_timestamp
     _latest_candidates = []
     _latest_candidates_timestamp = 0.0
+    _persist_now()
     return {"status": "success", "message": "Candidate results cleared."}
+
+
+class UpdateKeywordMandatoryRequest(BaseModel):
+    required: List[str] = Field(..., description="Keywords HR wants marked mandatory (starred) in Resdex")
+    preferred: List[str] = Field(default_factory=list, description="Remaining tracked keywords, not mandatory")
+
+
+@router.patch(
+    "/plan/keywords",
+    status_code=status.HTTP_200_OK,
+    summary="Update which keywords are mandatory on the active SearchPlan, and re-apply live on Resdex",
+)
+async def update_plan_keyword_mandatory(request: UpdateKeywordMandatoryRequest):
+    """
+    Lets HR interactively pick a SUBSET of the plan's keywords as mandatory
+    (rather than all-or-nothing) after a plan already exists. Moves keywords
+    between keywords.required/preferred on the active plan, bumps the plan
+    timestamp, and flags `_keyword_sync_only` so the extension re-applies
+    just the star toggles on the live Resdex tab (via "Modify" + a fresh
+    search) instead of re-typing the whole form.
+    """
+    global _latest_search_plan, _latest_plan_timestamp
+
+    if not _latest_search_plan:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No active SearchPlan to update. Generate a search first.",
+        )
+
+    kw = _latest_search_plan.get("keywords") or {}
+    kw["required"] = request.required
+    kw["preferred"] = request.preferred
+    _latest_search_plan["keywords"] = kw
+    _latest_search_plan["_submit_search"] = True
+    _latest_search_plan["_keyword_sync_only"] = True
+    _latest_plan_timestamp = time.time()
+    _persist_now()
+
+    return {
+        "status": "success",
+        "message": f"{len(request.required)} keyword(s) marked mandatory. Extension will re-apply on Resdex.",
+        "plan": _latest_search_plan,
+    }
 
 
 @router.post(

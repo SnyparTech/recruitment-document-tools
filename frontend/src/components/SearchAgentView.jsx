@@ -41,6 +41,14 @@ export default function SearchAgentView({ onCompileCandidate }) {
   // setState-in-effect render just to mirror a value we already have.
   const isPollingResults = Boolean(searchResponse) && executeMode !== 'dry_run';
 
+  // Which keywords HR currently wants marked mandatory (starred) in Resdex —
+  // a subset, not the old all-or-nothing checkbox. Seeded from the plan's
+  // keywords.required whenever a new plan arrives (new execute, or restored
+  // on mount).
+  const [mandatoryKeywords, setMandatoryKeywords] = useState(new Set());
+  const [isApplyingKeywords, setIsApplyingKeywords] = useState(false);
+  const [keywordApplyMsg, setKeywordApplyMsg] = useState(null);
+
   // Document Upload & Format Preservation State
   const [uploadedDoc, setUploadedDoc] = useState(null);
   const [isExtractingDoc, setIsExtractingDoc] = useState(false);
@@ -332,6 +340,81 @@ export default function SearchAgentView({ onCompileCandidate }) {
     const intervalId = setInterval(pollCandidateResults, RESULTS_POLL_INTERVAL_MS);
     return () => clearInterval(intervalId);
   }, [isPollingResults, pollCandidateResults]);
+
+  // Restore state on mount/refresh. The backend keeps the latest SearchPlan
+  // and extracted candidates (now persisted to disk too — survives a backend
+  // restart, not just a page refresh), but React state doesn't: a plain
+  // refresh used to lose the whole results view even though the data was
+  // still sitting server-side. Re-hydrate from /search/active-plan so the
+  // candidate-results poll below picks back up automatically.
+  useEffect(() => {
+    (async () => {
+      try {
+        const resp = await fetch(`${API_BASE}/search/active-plan`);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (data.has_plan && data.plan) {
+          setSearchResponse({
+            validation: { valid: true, errors: [], warnings: [] },
+            search_plan: data.plan,
+            execution: {
+              executed: false,
+              message: 'Restored from a previous session.',
+              fields_interacted: [],
+            },
+          });
+          setExecuteMode((prev) => (prev === 'dry_run' ? 'inspection' : prev));
+        }
+      } catch (err) {
+        console.warn('Failed to restore active plan on load:', err);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Re-seed the mandatory-keyword selection whenever a (new or restored) plan
+  // arrives, from its keywords.required.
+  useEffect(() => {
+    const kw = searchResponse?.search_plan?.keywords;
+    if (!kw) return;
+    setMandatoryKeywords(new Set(kw.required || []));
+  }, [searchResponse?.search_plan?.keywords]);
+
+  const toggleMandatoryKeyword = (keyword) => {
+    setMandatoryKeywords((prev) => {
+      const next = new Set(prev);
+      if (next.has(keyword)) next.delete(keyword);
+      else next.add(keyword);
+      return next;
+    });
+  };
+
+  const applyMandatoryKeywords = async () => {
+    const kw = searchResponse?.search_plan?.keywords;
+    if (!kw) return;
+    const allKeywords = [...new Set([...(kw.required || []), ...(kw.preferred || [])])];
+    const required = allKeywords.filter((k) => mandatoryKeywords.has(k));
+    const preferred = allKeywords.filter((k) => !mandatoryKeywords.has(k));
+
+    setIsApplyingKeywords(true);
+    setKeywordApplyMsg(null);
+    try {
+      const resp = await fetch(`${API_BASE}/search/plan/keywords`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ required, preferred }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail?.message || data.detail || 'Failed to update keywords.');
+
+      setSearchResponse((prev) => prev && { ...prev, search_plan: data.plan });
+      setKeywordApplyMsg({ ok: true, text: 'Applied — extension will click Modify and re-run the search on Resdex.' });
+    } catch (err) {
+      setKeywordApplyMsg({ ok: false, text: err.message || 'Failed to apply keyword changes.' });
+    } finally {
+      setIsApplyingKeywords(false);
+    }
+  };
 
   const handleCompile = (candidate) => {
     if (!onCompileCandidate) return;
@@ -636,6 +719,67 @@ export default function SearchAgentView({ onCompileCandidate }) {
             </div>
           )}
 
+
+          {searchResponse.search_plan.keywords &&
+            (searchResponse.search_plan.keywords.required?.length > 0 ||
+              searchResponse.search_plan.keywords.preferred?.length > 0) && (
+            <div style={{
+              background: 'rgba(255,255,255,0.03)',
+              border: '1px solid rgba(255,255,255,0.08)',
+              padding: '14px',
+              borderRadius: '8px',
+              marginBottom: '16px',
+            }}>
+              <div style={{ fontWeight: 700, marginBottom: 4 }}>Mandatory keywords</div>
+              <p className="card-subtitle" style={{ marginTop: 0, marginBottom: 10 }}>
+                Star the keywords Resdex must require. Unstarred ones stay in the search as optional. Changing this
+                re-runs the search live on the open Resdex tab (clicks Modify, updates stars, searches again).
+              </p>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {[...new Set([
+                  ...(searchResponse.search_plan.keywords.required || []),
+                  ...(searchResponse.search_plan.keywords.preferred || []),
+                ])].map((kw) => {
+                  const isMandatory = mandatoryKeywords.has(kw);
+                  return (
+                    <button
+                      key={kw}
+                      type="button"
+                      onClick={() => toggleMandatoryKeyword(kw)}
+                      className="skill-pill"
+                      style={{
+                        cursor: 'pointer',
+                        border: isMandatory ? '1px solid #F59E0B' : '1px solid rgba(255,255,255,0.15)',
+                        background: isMandatory ? 'rgba(245, 158, 11, 0.12)' : 'transparent',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 5,
+                      }}
+                      title={isMandatory ? 'Mandatory — click to make optional' : 'Optional — click to make mandatory'}
+                    >
+                      <span>{isMandatory ? '★' : '☆'}</span>
+                      {kw}
+                    </button>
+                  );
+                })}
+              </div>
+              <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 10 }}>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={applyMandatoryKeywords}
+                  disabled={isApplyingKeywords}
+                >
+                  {isApplyingKeywords ? 'Applying...' : 'Apply to Resdex'}
+                </button>
+                {keywordApplyMsg && (
+                  <span style={{ fontSize: '0.8rem', color: keywordApplyMsg.ok ? '#10B981' : '#F43F5E' }}>
+                    {keywordApplyMsg.text}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
 
           <div className="code-box">
             {JSON.stringify(searchResponse.search_plan, null, 2)}
