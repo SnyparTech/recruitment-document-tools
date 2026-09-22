@@ -46,6 +46,15 @@ _latest_candidates: List[CandidateResult] = [
 _latest_candidates_timestamp = _persisted.get("candidates_timestamp") or 0.0
 _latest_search_id: Optional[str] = _persisted.get("search_id")
 
+# Requirement-chat draft state: a SEPARATE plan from _latest_search_plan
+# above. The chat edits this one turn-by-turn; nothing here reaches the
+# extension until the recruiter clicks "Apply to Resdex" on the frontend,
+# which POSTs this draft to /search/plan (store_search_plan) like any other
+# pre-built plan. Keeps "still drafting" cleanly separate from "live on Resdex".
+_draft_plan: Optional[dict] = _persisted.get("draft_plan")
+_draft_timestamp: float = _persisted.get("draft_timestamp") or 0.0
+_chat_history: List[dict] = _persisted.get("chat_history") or []
+
 
 def _persist_now() -> None:
     state_persistence.save_state(
@@ -54,6 +63,9 @@ def _persist_now() -> None:
         candidates=[c.model_dump() for c in _latest_candidates],
         candidates_timestamp=_latest_candidates_timestamp,
         search_id=_latest_search_id,
+        draft_plan=_draft_plan,
+        draft_timestamp=_draft_timestamp,
+        chat_history=_chat_history,
     )
 
 
@@ -324,6 +336,72 @@ async def update_plan_keyword_mandatory(request: UpdateKeywordMandatoryRequest):
         "message": f"{len(request.required)} keyword(s) marked mandatory. Extension will re-apply on Resdex.",
         "plan": _latest_search_plan,
     }
+
+
+class ChatEditRequest(BaseModel):
+    message: str = Field(..., min_length=1, description="First message = a JD/requirement; later messages = edit instructions")
+
+
+@router.get(
+    "/plan/chat",
+    summary="Get the requirement chat history and current (unapplied) draft SearchPlan",
+)
+async def get_chat_state():
+    """Restores the chat thread + draft plan on page refresh. The draft is
+    separate from the applied plan (/active-plan) — this never reflects what's
+    live on Resdex, only what the recruiter has staged so far."""
+    return {
+        "status": "success",
+        "history": _chat_history,
+        "plan": _draft_plan,
+        "timestamp": _draft_timestamp,
+    }
+
+
+@router.post(
+    "/plan/chat",
+    summary="Chat-edit the draft SearchPlan (paste a JD to start, or send follow-up edit instructions)",
+)
+async def chat_edit_plan(request: ChatEditRequest):
+    """
+    Requirement chat, staged: nothing here touches the live Resdex tab. The
+    first message (no draft yet) is parsed as a full JD; every message after
+    is applied as an edit on top of the existing draft. The recruiter reviews
+    the resulting plan + keyword pills on the frontend and explicitly clicks
+    "Apply to Resdex" (POST /search/plan) to actually push it to the extension.
+    """
+    global _draft_plan, _draft_timestamp, _chat_history
+
+    base_plan = SearchPlan(**_draft_plan) if _draft_plan else None
+    updated_plan, reply = requirement_service.chat_edit(base_plan, request.message, _chat_history)
+
+    _chat_history = _chat_history + [
+        {"role": "user", "content": request.message},
+        {"role": "assistant", "content": reply},
+    ]
+    _draft_plan = updated_plan.model_dump()
+    _draft_timestamp = time.time()
+    _persist_now()
+
+    return {
+        "status": "success",
+        "reply": reply,
+        "plan": _draft_plan,
+        "history": _chat_history,
+    }
+
+
+@router.delete(
+    "/plan/chat",
+    summary="Clear the requirement chat and draft SearchPlan (start over)",
+)
+async def clear_chat_state():
+    global _draft_plan, _draft_timestamp, _chat_history
+    _draft_plan = None
+    _draft_timestamp = 0.0
+    _chat_history = []
+    _persist_now()
+    return {"status": "success", "message": "Chat and draft plan cleared."}
 
 
 @router.post(

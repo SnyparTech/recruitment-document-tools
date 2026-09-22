@@ -867,3 +867,291 @@ Rules:
             plan.keywords.mandatory = True
 
         return plan
+
+    # ── Requirement chat (stage-then-apply) ────────────────────────────────
+    # First chat message (no draft plan yet) is a fresh JD and goes through
+    # the normal generate_search_plan() pipeline above. Every message after
+    # that is an edit instruction applied ON TOP of the existing draft — it
+    # must never silently reset fields the recruiter already set.
+
+    # (?:keywords?|skills?)? as ONE alternation, not a bare trailing "s?" —
+    # a dangling "s?" right after an optional group greedily eats a leading
+    # "S"/"s" off the actual skill name ("add SQL" -> captured "QL"), the same
+    # substring-boundary bug just fixed in candidate_ranking_service.py.
+    _ADD_SKILL_RE = re.compile(r"^(?:add|include)\s+(?:keywords?|skills?)?\s*[:\-]?\s*(.+)$", re.IGNORECASE)
+    _REMOVE_SKILL_RE = re.compile(r"^(?:remove|drop|exclude|delete)\s+(?:keywords?|skills?)?\s*[:\-]?\s*(.+)$", re.IGNORECASE)
+    _MAKE_OPTIONAL_RE = re.compile(r"^(?:make|mark|set)\s+(.+?)\s+(?:as\s+)?(?:optional|preferred|nice.to.have)\s*$", re.IGNORECASE)
+    _MAKE_MANDATORY_RE = re.compile(r"^(?:make|mark|set)\s+(.+?)\s+(?:as\s+)?(?:mandatory|required)\s*$", re.IGNORECASE)
+    _EXP_RANGE_RE = re.compile(r"experience\s*(?:to|:)?\s*(\d+(?:\.\d+)?)\s*(?:to|-)\s*(\d+(?:\.\d+)?)\s*(?:years?|yrs?)?", re.IGNORECASE)
+    _EXP_MIN_RE = re.compile(r"min(?:imum)?\s*experience\s*(?:to|:)?\s*(\d+(?:\.\d+)?)", re.IGNORECASE)
+    _EXP_MAX_RE = re.compile(r"max(?:imum)?\s*experience\s*(?:to|:)?\s*(\d+(?:\.\d+)?)", re.IGNORECASE)
+    _ADD_LOCATION_RE = re.compile(r"^(?:add\s+)?location\s*(?:to|:)?\s*(.+)$", re.IGNORECASE)
+    _REMOVE_LOCATION_RE = re.compile(r"^remove\s+location\s*[:\-]?\s*(.+)$", re.IGNORECASE)
+    _NOTICE_RE = re.compile(r"notice\s*period\s*(?:to|:)?\s*(.+)$", re.IGNORECASE)
+    _SALARY_RE = re.compile(r"salary\s*(?:to|:)?\s*(\d+(?:\.\d+)?)\s*(?:to|-)\s*(\d+(?:\.\d+)?)", re.IGNORECASE)
+    _CLEAR_SKILLS_RE = re.compile(r"^(?:clear|reset)\s+(?:all\s+)?(?:keywords|skills)\s*$", re.IGNORECASE)
+
+    def generate_chat_reply(
+        self,
+        current_plan: Optional[SearchPlan],
+        message: str,
+        history: Optional[List[Dict[str, str]]] = None,
+    ) -> Tuple[SearchPlan, str]:
+        """
+        Single entrypoint for the requirement chat. Returns (updated_plan, reply).
+        Never mutates `current_plan` in place — always returns a new SearchPlan.
+        """
+        message = (message or "").strip()
+        if not message:
+            return current_plan or SearchPlan(), "Didn't catch that — paste a JD or tell me what to change."
+
+        if current_plan is None:
+            plan = self.generate_search_plan(message)
+            return plan, self._summarize_plan_reply(plan, prefix="Plan created")
+
+        if self.groq_api_key or self.gemini_api_key:
+            edited = self._call_llm_chat_edit(current_plan, message, history or [])
+            if edited:
+                return edited
+
+        plan, reply = self._rule_based_chat_edit(current_plan, message)
+        if reply.startswith("Didn't recognize that as an edit") and len(message) > 40:
+            # Not a single-intent "add X"/"remove X" command — long unmatched
+            # text is almost certainly a second/replacement JD (e.g. "actually
+            # we need a frontend dev in Pune instead..."), not a one-liner
+            # edit. Regenerate the whole plan from it rather than leaving the
+            # recruiter stuck on an unhelpful "didn't understand".
+            new_plan = self.generate_search_plan(message)
+            return new_plan, self._summarize_plan_reply(new_plan, prefix="Replaced with new requirement")
+        return plan, reply
+
+    def _summarize_plan_reply(self, plan: SearchPlan, prefix: str = "Updated") -> str:
+        parts = []
+        if plan.keywords and plan.keywords.required:
+            parts.append(f"{len(plan.keywords.required)} required skill(s): {', '.join(plan.keywords.required)}")
+        if plan.keywords and plan.keywords.preferred:
+            parts.append(f"{len(plan.keywords.preferred)} preferred skill(s): {', '.join(plan.keywords.preferred)}")
+        if plan.min_experience is not None or plan.max_experience is not None:
+            lo = plan.min_experience if plan.min_experience is not None else 0
+            hi = plan.max_experience if plan.max_experience is not None else "no max"
+            parts.append(f"experience {lo}-{hi} yrs")
+        if plan.current_location:
+            parts.append(f"location: {', '.join(plan.current_location)}")
+        if plan.designation:
+            parts.append(f"designation: {', '.join(plan.designation)}")
+        if plan.salary and (plan.salary.min is not None or plan.salary.max is not None):
+            parts.append(f"salary {plan.salary.min or 0}-{plan.salary.max or 'no max'} LPA")
+        summary = "; ".join(parts) if parts else "no specific requirements extracted yet"
+        return f"{prefix} — {summary}."
+
+    def _canonical_skill_name(self, raw: str) -> str:
+        raw = raw.strip().strip(".,;")
+        return CANONICAL_SKILLS.get(raw.lower(), raw)
+
+    def _rule_based_chat_edit(
+        self, current_plan: SearchPlan, message: str, dry_check: bool = False
+    ) -> Any:
+        """
+        Deterministic command parser for the chat. `dry_check=True` returns a
+        bool (does this message match ANY known command shape?) instead of
+        performing the edit — used by generate_chat_reply() to decide whether
+        a long message is an edit instruction or a brand-new JD.
+        """
+        plan = current_plan.model_copy(deep=True)
+        msg = message.strip()
+
+        m = self._CLEAR_SKILLS_RE.match(msg)
+        if m:
+            if dry_check:
+                return True
+            if plan.keywords:
+                plan.keywords.required = []
+                plan.keywords.preferred = []
+            return plan, "Cleared all keywords."
+
+        m = self._MAKE_OPTIONAL_RE.match(msg) or self._MAKE_MANDATORY_RE.match(msg)
+        make_optional = bool(self._MAKE_OPTIONAL_RE.match(msg))
+        if m:
+            if dry_check:
+                return True
+            name = self._canonical_skill_name(m.group(1))
+            if not plan.keywords:
+                return plan, f"No keywords set yet — add '{name}' first."
+            req = plan.keywords.required or []
+            pref = plan.keywords.preferred or []
+
+            def _name_matches(lst):
+                return [s for s in lst if s.lower() == name.lower()]
+
+            if make_optional:
+                found = _name_matches(req)
+                if found:
+                    req = [s for s in req if s.lower() != name.lower()]
+                    pref = pref + found
+                    plan.keywords.required, plan.keywords.preferred = req, pref
+                    return plan, f"'{found[0]}' is now optional (preferred, not mandatory)."
+                return plan, f"'{name}' isn't in the required list."
+            else:
+                found = _name_matches(pref)
+                if found:
+                    pref = [s for s in pref if s.lower() != name.lower()]
+                    req = req + found
+                    plan.keywords.required, plan.keywords.preferred = req, pref
+                    return plan, f"'{found[0]}' is now mandatory."
+                return plan, f"'{name}' isn't in the preferred list."
+
+        m = self._ADD_SKILL_RE.match(msg)
+        if m and not re.match(r"^(?:location|notice)", m.group(1).strip(), re.IGNORECASE):
+            if dry_check:
+                return True
+            name = self._canonical_skill_name(m.group(1))
+            if not plan.keywords:
+                plan.keywords = KeywordsPlan(required=[], preferred=[], excluded=[], mandatory=True, search_scope="Entire resume")
+            existing = {s.lower() for s in (plan.keywords.required or []) + (plan.keywords.preferred or [])}
+            if name.lower() in existing:
+                return plan, f"'{name}' is already in the plan."
+            plan.keywords.required = (plan.keywords.required or []) + [name]
+            return plan, f"Added '{name}' as a required keyword."
+
+        m = self._REMOVE_SKILL_RE.match(msg)
+        if m and not re.match(r"^location", m.group(1).strip(), re.IGNORECASE):
+            if dry_check:
+                return True
+            name = m.group(1).strip().strip(".,;").lower()
+            if not plan.keywords:
+                return plan, f"No keywords to remove."
+            before = len(plan.keywords.required or []) + len(plan.keywords.preferred or [])
+            plan.keywords.required = [s for s in (plan.keywords.required or []) if s.lower() != name]
+            plan.keywords.preferred = [s for s in (plan.keywords.preferred or []) if s.lower() != name]
+            after = len(plan.keywords.required) + len(plan.keywords.preferred)
+            if after == before:
+                return plan, f"'{m.group(1).strip()}' wasn't in the plan."
+            return plan, f"Removed '{m.group(1).strip()}'."
+
+        m = self._EXP_RANGE_RE.search(msg)
+        if m:
+            if dry_check:
+                return True
+            plan.min_experience, plan.max_experience = float(m.group(1)), float(m.group(2))
+            return plan, f"Experience set to {m.group(1)}-{m.group(2)} yrs."
+
+        m = self._EXP_MIN_RE.search(msg)
+        if m:
+            if dry_check:
+                return True
+            plan.min_experience = float(m.group(1))
+            return plan, f"Minimum experience set to {m.group(1)} yrs."
+
+        m = self._EXP_MAX_RE.search(msg)
+        if m:
+            if dry_check:
+                return True
+            plan.max_experience = float(m.group(1))
+            return plan, f"Maximum experience set to {m.group(1)} yrs."
+
+        m = self._REMOVE_LOCATION_RE.match(msg)
+        if m:
+            if dry_check:
+                return True
+            name = m.group(1).strip().strip(".,;")
+            canonical = LOCATION_ALIASES.get(name.lower(), name)
+            plan.current_location = [l for l in (plan.current_location or []) if l.lower() != canonical.lower()]
+            return plan, f"Removed location '{canonical}'."
+
+        m = self._ADD_LOCATION_RE.match(msg)
+        if m:
+            if dry_check:
+                return True
+            name = m.group(1).strip().strip(".,;")
+            canonical = LOCATION_ALIASES.get(name.lower(), name)
+            locs = plan.current_location or []
+            if canonical.lower() not in [l.lower() for l in locs]:
+                locs.append(canonical)
+            plan.current_location = locs
+            return plan, f"Location set to include '{canonical}'."
+
+        m = self._SALARY_RE.search(msg)
+        if m:
+            if dry_check:
+                return True
+            plan.salary = SalaryPlan(currency="INR", min=float(m.group(1)), max=float(m.group(2)))
+            return plan, f"Salary set to {m.group(1)}-{m.group(2)} LPA."
+
+        m = self._NOTICE_RE.search(msg)
+        if m:
+            if dry_check:
+                return True
+            raw = m.group(1).strip().strip(".,;").lower()
+            option = NOTICE_PERIOD_MAP.get(raw, m.group(1).strip())
+            plan.notice_period = [option]
+            return plan, f"Notice period set to '{option}'."
+
+        if dry_check:
+            return False
+        return plan, (
+            "Didn't recognize that as an edit. Try: \"add Kubernetes\", \"remove SQL\", "
+            "\"make Python optional\", \"experience 5 to 8 years\", \"location Pune\", "
+            "\"salary 10 to 15\", \"notice period immediate\" — or paste a full JD to replace the plan."
+        )
+
+    def _call_llm_chat_edit(
+        self, current_plan: SearchPlan, message: str, history: List[Dict[str, str]]
+    ) -> Optional[Tuple[SearchPlan, str]]:
+        """LLM-backed free-form chat edit, for when a Groq/Gemini key is configured.
+        Falls back to None (caller uses the rule-based parser) on any failure."""
+        api_url = None
+        api_key = None
+        model = self.model
+        if self.groq_api_key:
+            api_url = settings.GROQ_API_URL
+            api_key = self.groq_api_key
+            model = settings.GROQ_MODEL or "openai/gpt-oss-20b"
+        elif self.gemini_api_key:
+            api_url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+            api_key = self.gemini_api_key
+            model = getattr(settings, "GEMINI_MODEL", "gemini-1.5-flash")
+        else:
+            return None
+
+        system_prompt = (
+            "You are a Senior HR Recruiter chatting with a colleague to refine an existing candidate "
+            "search plan (JSON below). The colleague will send short edit instructions (e.g. \"add "
+            "Kubernetes\", \"remove SQL\", \"experience 5 to 8 years\"), or occasionally a full new job "
+            "description that should replace the plan. Apply ONLY what the instruction asks — never drop "
+            "or change fields the instruction didn't mention. Return ONLY a JSON object: "
+            '{"plan": <the full updated SearchPlan, same shape as the current one>, '
+            '"reply": "<one short sentence telling the colleague what changed>"}. '
+            "No markdown, no explanation outside that JSON."
+        )
+        messages = [{"role": "system", "content": system_prompt}]
+        for h in history[-10:]:
+            role = "assistant" if h.get("role") == "assistant" else "user"
+            messages.append({"role": role, "content": h.get("content", "")})
+        messages.append({
+            "role": "user",
+            "content": f"Current plan:\n{json.dumps(current_plan.model_dump())}\n\nInstruction: {message}",
+        })
+
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        payload = {"model": model, "messages": messages, "temperature": 0.1, "max_tokens": 1200}
+
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                response = client.post(api_url, headers=headers, json=payload)
+                if response.status_code != 200:
+                    logger.warning(f"Chat-edit LLM ({model}) returned {response.status_code}: {response.text[:300]}")
+                    return None
+                data = response.json()
+                content = data["choices"][0]["message"]["content"].strip()
+                if content.startswith("```"):
+                    content = re.sub(r"^```(?:json)?", "", content)
+                    content = re.sub(r"```$", "", content).strip()
+                content = self._repair_json(content)
+                parsed = json.loads(content)
+                plan_dict = self._sanitize_llm_output(parsed.get("plan") or {})
+                reply = parsed.get("reply") or "Updated the plan."
+                plan = SearchPlan(**plan_dict)
+                return plan, reply
+        except Exception as exc:
+            logger.warning(f"Chat-edit LLM parsing failed: {exc}")
+            return None

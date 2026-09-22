@@ -21,9 +21,31 @@ const PRESET_REQUIREMENTS = [
 
 export default function SearchAgentView({ onCompileCandidate }) {
   const API_BASE = getApiBase();
-  const [prompt, setPrompt] = useState(PRESET_REQUIREMENTS[0]);
-  const [executeMode, setExecuteMode] = useState('dry_run'); // 'dry_run', 'inspection', 'submit'
-  const [isLoading, setIsLoading] = useState(false);
+
+  // --- Requirement chat (stage-then-apply) state ---
+  // The chat REPLACES the old JD textarea: first message is treated as a JD
+  // (full plan generation), every message after is an edit instruction on top
+  // of the running draft. Nothing here touches the live Resdex tab — that only
+  // happens when the recruiter clicks "Apply to Resdex" below, which POSTs the
+  // draft to the existing /search/plan endpoint. See backend's /search/plan/chat.
+  const [chatMessages, setChatMessages] = useState([]); // [{role:'user'|'assistant', content}]
+  const [chatInput, setChatInput] = useState('');
+  const [isChatSending, setIsChatSending] = useState(false);
+  const [chatError, setChatError] = useState(null);
+  const [draftPlan, setDraftPlan] = useState(null);
+  const [isChatRestoring, setIsChatRestoring] = useState(true);
+  const chatThreadRef = useRef(null);
+
+  // Which draft keywords HR currently wants marked mandatory (starred) —
+  // staged locally until Apply, seeded from the draft's keywords.required
+  // whenever the draft changes (new chat turn, or restored on mount).
+  const [draftMandatoryKeywords, setDraftMandatoryKeywords] = useState(new Set());
+
+  const [applyMode, setApplyMode] = useState('inspection'); // 'inspection' | 'submit'
+  const [isApplying, setIsApplying] = useState(false);
+  const [applyMsg, setApplyMsg] = useState(null);
+
+  const [executeMode, setExecuteMode] = useState('dry_run'); // 'dry_run', 'inspection', 'submit' — reflects what was last APPLIED
   const [searchResponse, setSearchResponse] = useState(null);
   const [error, setError] = useState(null);
 
@@ -35,16 +57,13 @@ export default function SearchAgentView({ onCompileCandidate }) {
   // NOTE: search_response.execution.executed is ALWAYS false from this API —
   // actual execution happens asynchronously via the extension polling
   // /search/active-plan, not synchronously in this request. So "did we ask
-  // the extension to act" is derived from the execution mode the recruiter
-  // chose (inspection/submit both hand off to the extension), not from
-  // `executed`. Derived, not separate state — avoids a redundant
-  // setState-in-effect render just to mirror a value we already have.
+  // the extension to act" is derived from the execution mode last applied
+  // (inspection/submit both hand off to the extension), not from `executed`.
   const isPollingResults = Boolean(searchResponse) && executeMode !== 'dry_run';
 
-  // Which keywords HR currently wants marked mandatory (starred) in Resdex —
-  // a subset, not the old all-or-nothing checkbox. Seeded from the plan's
-  // keywords.required whenever a new plan arrives (new execute, or restored
-  // on mount).
+  // Mandatory-keyword star toggles for an ALREADY-APPLIED plan (post-Apply
+  // quick tweak, re-applies live on Resdex via PATCH) — distinct from
+  // draftMandatoryKeywords above, which only affects the pre-Apply chat draft.
   const [mandatoryKeywords, setMandatoryKeywords] = useState(new Set());
   const [isApplyingKeywords, setIsApplyingKeywords] = useState(false);
   const [keywordApplyMsg, setKeywordApplyMsg] = useState(null);
@@ -120,7 +139,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
           const text = childrenText.trim();
           if (!text) return '';
           // Ensure every bullet point starts on its own line with a bullet symbol
-          const alreadyHasBullet = /^[•\-\*\u2022\u25aa\u25b6]/.test(text);
+          const alreadyHasBullet = /^[•\-\*•▪▶]/.test(text);
           return `\n${alreadyHasBullet ? '' : '• '}${text}\n`;
         }
 
@@ -164,7 +183,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
   };
 
   /**
-   * Lossless Paste Handler:
+   * Lossless Paste Handler for the chat input:
    * - Inspects both text/html and text/plain
    * - If HTML contains structural elements (headings, list items, paragraphs, divs)
    *   it converts them into structured text with explicit bullets and line breaks,
@@ -211,7 +230,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
       const end = textarea.selectionEnd;
       const currentVal = textarea.value;
       const nextVal = currentVal.substring(0, start) + textToInsert + currentVal.substring(end);
-      setPrompt(nextVal);
+      setChatInput(nextVal);
       requestAnimationFrame(() => {
         textarea.selectionStart = textarea.selectionEnd = start + textToInsert.length;
       });
@@ -220,7 +239,8 @@ export default function SearchAgentView({ onCompileCandidate }) {
 
   /**
    * Handles uploaded requirement document (PDF, DOCX, DOC, TXT):
-   * Extracts text on backend preserving all line breaks, bullets, and sections.
+   * Extracts text on backend preserving all line breaks, bullets, and sections,
+   * and drops it into the chat input (as the first message, or an edit note).
    */
   const handleDocFile = async (file) => {
     if (!file) return;
@@ -261,8 +281,8 @@ export default function SearchAgentView({ onCompileCandidate }) {
         charCount: data.char_count,
       });
 
-      // Populate prompt with the extracted requirement text (preserving exact formatting)
-      setPrompt(data.extracted_text);
+      // Populate chat input with the extracted requirement text (preserving exact formatting)
+      setChatInput(data.extracted_text);
     } catch (err) {
       console.error('Failed to extract document:', err);
       setDocError(err.message || 'Failed to extract requirement text from document.');
@@ -277,46 +297,103 @@ export default function SearchAgentView({ onCompileCandidate }) {
     setDocError(null);
   };
 
-  const executeSearch = async () => {
-    if (!prompt.trim()) return;
+  // --- Chat send / apply / clear ---
 
-    setIsLoading(true);
-    setError(null);
-    setSearchResponse(null);
+  const sendChatMessage = async (textOverride) => {
+    const text = (textOverride !== undefined ? textOverride : chatInput).trim();
+    if (!text || isChatSending) return;
 
-    const payload = {
-      requirement: prompt.trim(),
-      execute: executeMode !== 'dry_run',
-      submit_search: executeMode === 'submit',
-    };
+    setIsChatSending(true);
+    setChatError(null);
+    setChatInput('');
+    setUploadedDoc(null);
+    // Optimistic echo so the thread feels responsive; replaced by the
+    // server's authoritative history once the response lands.
+    setChatMessages((prev) => [...prev, { role: 'user', content: text }]);
 
     try {
-      const resp = await fetch(`${API_BASE}/search/candidates`, {
+      const resp = await fetch(`${API_BASE}/search/plan/chat`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: text }),
       });
-
-      if (!resp.ok) {
-        const errJson = await resp.json().catch(() => ({}));
-        throw new Error(errJson.message || errJson.detail || `HTTP Error ${resp.status}`);
-      }
-
       const data = await resp.json();
-      setSearchResponse(data);
+      if (!resp.ok) throw new Error(data.detail?.message || data.detail || 'Chat request failed.');
+
+      setChatMessages(data.history || []);
+      setDraftPlan(data.plan || null);
     } catch (err) {
-      console.error('Search request failed:', err);
-      setError(err.message || 'Failed to execute search. Check backend connection.');
+      console.error('Chat edit failed:', err);
+      setChatError(err.message || 'Failed to reach the requirement chat.');
     } finally {
-      setIsLoading(false);
+      setIsChatSending(false);
     }
   };
 
-  const handleSearch = (e) => {
+  const handleChatSubmit = (e) => {
     if (e) e.preventDefault();
-    executeSearch();
+    sendChatMessage();
+  };
+
+  const clearChat = async () => {
+    try {
+      await fetch(`${API_BASE}/search/plan/chat`, { method: 'DELETE' });
+    } catch (err) {
+      console.warn('Failed to clear chat on server:', err);
+    }
+    setChatMessages([]);
+    setDraftPlan(null);
+    setChatInput('');
+    setChatError(null);
+    setApplyMsg(null);
+    setDraftMandatoryKeywords(new Set());
+  };
+
+  const toggleDraftMandatoryKeyword = (keyword) => {
+    setDraftMandatoryKeywords((prev) => {
+      const next = new Set(prev);
+      if (next.has(keyword)) next.delete(keyword);
+      else next.add(keyword);
+      return next;
+    });
+  };
+
+  const applyToResdex = async () => {
+    if (!draftPlan) return;
+    setIsApplying(true);
+    setApplyMsg(null);
+
+    const kw = draftPlan.keywords || {};
+    const allKeywords = [...new Set([...(kw.required || []), ...(kw.preferred || [])])];
+    const required = allKeywords.filter((k) => draftMandatoryKeywords.has(k));
+    const preferred = allKeywords.filter((k) => !draftMandatoryKeywords.has(k));
+    const planToApply = { ...draftPlan, keywords: { ...kw, required, preferred } };
+
+    try {
+      const resp = await fetch(`${API_BASE}/search/plan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ plan: planToApply, submit_search: applyMode === 'submit' }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        throw new Error(
+          data.detail?.message ||
+          (Array.isArray(data.detail?.errors) ? data.detail.errors.join('; ') : null) ||
+          data.detail ||
+          `HTTP Error ${resp.status}`
+        );
+      }
+
+      setSearchResponse(data);
+      setExecuteMode(applyMode);
+      setApplyMsg({ ok: true, text: 'Applied — extension will auto-fill' + (applyMode === 'submit' ? ' AND submit the search' : '') + ' on the open Resdex tab.' });
+    } catch (err) {
+      console.error('Apply to Resdex failed:', err);
+      setApplyMsg({ ok: false, text: err.message || 'Failed to apply the draft plan.' });
+    } finally {
+      setIsApplying(false);
+    }
   };
 
   const pollCandidateResults = useCallback(async () => {
@@ -331,8 +408,8 @@ export default function SearchAgentView({ onCompileCandidate }) {
   }, [API_BASE]);
 
   // Only poll once the recruiter has actually asked the extension to act on
-  // Resdex (inspection/submit) — a dry-run plan has no candidates to fetch,
-  // and polling unconditionally would be wasted network traffic.
+  // Resdex (inspection/submit) — a dry-run/unapplied plan has no candidates to
+  // fetch, and polling unconditionally would be wasted network traffic.
   useEffect(() => {
     if (!isPollingResults) return;
 
@@ -341,12 +418,11 @@ export default function SearchAgentView({ onCompileCandidate }) {
     return () => clearInterval(intervalId);
   }, [isPollingResults, pollCandidateResults]);
 
-  // Restore state on mount/refresh. The backend keeps the latest SearchPlan
-  // and extracted candidates (now persisted to disk too — survives a backend
-  // restart, not just a page refresh), but React state doesn't: a plain
-  // refresh used to lose the whole results view even though the data was
-  // still sitting server-side. Re-hydrate from /search/active-plan so the
-  // candidate-results poll below picks back up automatically.
+  // Restore the last APPLIED plan on mount/refresh. The backend keeps the
+  // latest SearchPlan and extracted candidates (persisted to disk too —
+  // survives a backend restart, not just a page refresh), but React state
+  // doesn't: a plain refresh used to lose the whole results view even though
+  // the data was still sitting server-side.
   useEffect(() => {
     (async () => {
       try {
@@ -372,8 +448,42 @@ export default function SearchAgentView({ onCompileCandidate }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Re-seed the mandatory-keyword selection whenever a (new or restored) plan
-  // arrives, from its keywords.required.
+  // Restore the chat thread + draft plan on mount/refresh — separate from the
+  // applied-plan restore above, since the draft may still be mid-conversation
+  // and not yet applied to Resdex at all.
+  useEffect(() => {
+    (async () => {
+      try {
+        const resp = await fetch(`${API_BASE}/search/plan/chat`);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        setChatMessages(data.history || []);
+        setDraftPlan(data.plan || null);
+      } catch (err) {
+        console.warn('Failed to restore requirement chat on load:', err);
+      } finally {
+        setIsChatRestoring(false);
+      }
+    })();
+  }, [API_BASE]);
+
+  // Auto-scroll the chat thread to the latest message.
+  useEffect(() => {
+    if (chatThreadRef.current) {
+      chatThreadRef.current.scrollTop = chatThreadRef.current.scrollHeight;
+    }
+  }, [chatMessages]);
+
+  // Re-seed the draft mandatory-keyword selection whenever a (new or
+  // restored) draft plan arrives, from its keywords.required.
+  useEffect(() => {
+    const kw = draftPlan?.keywords;
+    if (!kw) return;
+    setDraftMandatoryKeywords(new Set(kw.required || []));
+  }, [draftPlan?.keywords]);
+
+  // Re-seed the applied-plan mandatory-keyword selection whenever a (new or
+  // restored) applied plan arrives, from its keywords.required.
   useEffect(() => {
     const kw = searchResponse?.search_plan?.keywords;
     if (!kw) return;
@@ -430,39 +540,107 @@ export default function SearchAgentView({ onCompileCandidate }) {
     });
   };
 
+  const draftKeywordPills = draftPlan?.keywords
+    ? [...new Set([...(draftPlan.keywords.required || []), ...(draftPlan.keywords.preferred || [])])]
+    : [];
+
   return (
     <div>
       <div className="hero-section">
         <h1 className="hero-title">Candidate Search Agent</h1>
         <p className="hero-desc">
-          Schema-driven autonomous recruitment intelligence. Type your natural-language candidate criteria
-          below. The agent validates against the live portal schema and deterministically fills the search form.
+          Schema-driven autonomous recruitment intelligence. Chat your requirement below — paste a JD to start,
+          then ask for changes in plain language. Review the staged plan and keywords, then apply to Resdex.
         </p>
       </div>
 
       <div className="card">
         <h2 className="card-title">
           <IconSearch size={22} color="var(--primary)" />
-          <span>Recruiter Requirement Criteria</span>
+          <span>Requirement Chat</span>
         </h2>
-        <p className="card-subtitle">Select a preset or enter custom hiring requirements.</p>
+        <p className="card-subtitle">
+          First message: paste a JD or describe the role. After that, just tell the assistant what to change
+          — e.g. "remove SQL", "make React optional", "experience 3 to 6 years", "add Pune".
+        </p>
 
         {/* Preset Chips */}
-        <div className="preset-chips">
-          {PRESET_REQUIREMENTS.map((req, i) => (
-            <button
-              key={i}
-              type="button"
-              className="preset-chip"
-              onClick={() => setPrompt(req)}
-            >
-              Preset {i + 1}: {req.slice(0, 48)}...
-            </button>
-          ))}
+        {chatMessages.length === 0 && (
+          <div className="preset-chips">
+            {PRESET_REQUIREMENTS.map((req, i) => (
+              <button
+                key={i}
+                type="button"
+                className="preset-chip"
+                onClick={() => setChatInput(req)}
+              >
+                Preset {i + 1}: {req.slice(0, 48)}...
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Chat thread */}
+        <div
+          ref={chatThreadRef}
+          className="chat-thread"
+          style={{
+            maxHeight: 360,
+            overflowY: 'auto',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 10,
+            padding: chatMessages.length ? '14px' : '0',
+            border: chatMessages.length ? '1px solid rgba(255,255,255,0.08)' : 'none',
+            borderRadius: 8,
+            background: chatMessages.length ? 'rgba(255,255,255,0.02)' : 'transparent',
+            marginBottom: 14,
+          }}
+        >
+          {isChatRestoring ? (
+            <p className="card-subtitle" style={{ margin: 0 }}>Restoring chat...</p>
+          ) : chatMessages.length === 0 ? (
+            <p className="card-subtitle" style={{ margin: 0 }}>
+              No conversation yet. Paste a job description below to generate the first draft plan.
+            </p>
+          ) : (
+            chatMessages.map((m, i) => (
+              <div
+                key={i}
+                style={{
+                  alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start',
+                  maxWidth: '85%',
+                  background: m.role === 'user' ? 'rgba(79, 70, 229, 0.18)' : 'rgba(255,255,255,0.05)',
+                  border: `1px solid ${m.role === 'user' ? 'rgba(79, 70, 229, 0.35)' : 'rgba(255,255,255,0.1)'}`,
+                  borderRadius: 10,
+                  padding: '8px 12px',
+                  fontSize: '0.88rem',
+                  whiteSpace: 'pre-wrap',
+                }}
+              >
+                <div style={{ fontSize: '0.68rem', fontWeight: 700, opacity: 0.6, marginBottom: 3 }}>
+                  {m.role === 'user' ? 'You' : 'Assistant'}
+                </div>
+                {m.content}
+              </div>
+            ))
+          )}
+          {isChatSending && (
+            <div style={{ alignSelf: 'flex-start', fontSize: '0.8rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span className="spinner-light-sm"></span> Thinking...
+            </div>
+          )}
         </div>
 
-        <form onSubmit={handleSearch}>
-          <div className="form-group" style={{ marginBottom: '20px' }}>
+        {chatError && (
+          <div className="inline-error" style={{ marginBottom: '10px' }}>
+            <IconAlert size={16} color="#DC2626" />
+            <span>{chatError}</span>
+          </div>
+        )}
+
+        <form onSubmit={handleChatSubmit}>
+          <div className="form-group" style={{ marginBottom: '16px' }}>
             {/* Hidden Document Input */}
             <input
               ref={docInputRef}
@@ -476,9 +654,10 @@ export default function SearchAgentView({ onCompileCandidate }) {
               }}
             />
 
-            {/* Prompt Header with Upload Button */}
             <div className="prompt-header-row">
-              <label htmlFor="jd-prompt-textarea" className="form-label">Requirement Prompt &amp; Job Criteria</label>
+              <label htmlFor="chat-input-textarea" className="form-label">
+                {chatMessages.length === 0 ? 'Paste Job Description / Requirement' : 'Your message'}
+              </label>
               <div className="prompt-actions">
                 <button
                   type="button"
@@ -495,28 +674,24 @@ export default function SearchAgentView({ onCompileCandidate }) {
                   ) : (
                     <>
                       <IconDocument size={14} />
-                      <span>Upload Requirement Doc / PDF</span>
+                      <span>Upload Doc / PDF</span>
                     </>
                   )}
                 </button>
 
-                {prompt && (
+                {chatMessages.length > 0 && (
                   <button
                     type="button"
                     className="btn-clear-prompt"
-                    onClick={() => {
-                      setPrompt('');
-                      setUploadedDoc(null);
-                    }}
-                    title="Clear prompt text"
+                    onClick={clearChat}
+                    title="Clear conversation and start a new requirement"
                   >
-                    Clear
+                    Start Over
                   </button>
                 )}
               </div>
             </div>
 
-            {/* Attached Document Banner */}
             {uploadedDoc && (
               <div className="doc-requirement-banner">
                 <div className="doc-info-left">
@@ -528,17 +703,12 @@ export default function SearchAgentView({ onCompileCandidate }) {
                     </span>
                   </div>
                 </div>
-                <button
-                  type="button"
-                  className="btn-remove-doc"
-                  onClick={handleRemoveDoc}
-                >
+                <button type="button" className="btn-remove-doc" onClick={handleRemoveDoc}>
                   ✕ Remove
                 </button>
               </div>
             )}
 
-            {/* Error banner if doc extraction failed */}
             {docError && (
               <div className="inline-error" style={{ marginBottom: '10px' }}>
                 <IconAlert size={16} color="#DC2626" />
@@ -546,15 +716,20 @@ export default function SearchAgentView({ onCompileCandidate }) {
               </div>
             )}
 
-            {/* Exact-Format-Preserving Textarea */}
             <textarea
-              id="jd-prompt-textarea"
-              name="jdPrompt"
+              id="chat-input-textarea"
+              name="chatInput"
               className={`form-textarea ${isDraggingDoc ? 'prompt-drag-active' : ''}`}
-              rows={8}
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
+              rows={4}
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value)}
               onPaste={handlePaste}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  sendChatMessage();
+                }
+              }}
               onDragOver={(e) => {
                 e.preventDefault();
                 setIsDraggingDoc(true);
@@ -565,120 +740,176 @@ export default function SearchAgentView({ onCompileCandidate }) {
                 setIsDraggingDoc(false);
                 if (e.dataTransfer.files?.[0]) handleDocFile(e.dataTransfer.files[0]);
               }}
-              placeholder="Type your recruitment criteria, paste formatted text without changes, or drop/upload a Job Description (PDF, DOCX, DOC, TXT) to automate search in Naukri Resdex..."
+              placeholder={
+                chatMessages.length === 0
+                  ? "Paste a Job Description, or describe the role/candidate criteria..."
+                  : "e.g. \"remove SQL\", \"make React optional\", \"experience 3 to 6 years\", \"add Pune\"..."
+              }
             />
 
-            {/* Prompt Helper / Format preservation indicator & counters */}
             <div className="prompt-meta-row">
               <span className="prompt-meta-hint">
                 <IconCheck size={13} color="#10B981" />
-                <span>100% exact format preserved on paste &amp; upload (newlines, tabs, indentations, bullets).</span>
+                <span>100% exact format preserved on paste &amp; upload. Enter to send, Shift+Enter for a new line.</span>
               </span>
               <span className="prompt-meta-counts">
-                {prompt ? prompt.split(/\r\n|\r|\n/).length : 0} lines • {prompt.length.toLocaleString()} chars
+                {chatInput ? chatInput.split(/\r\n|\r|\n/).length : 0} lines • {chatInput.length.toLocaleString()} chars
               </span>
             </div>
           </div>
-
-          {/* Execution Mode Selector */}
-          <div className="form-row" style={{ marginBottom: '24px' }}>
-            <div className="form-group">
-              <label htmlFor="execution-mode-dry-run" className="form-label">Execution Mode</label>
-              <div className="execution-mode-selector">
-                <label className={`mode-option-card ${executeMode === 'dry_run' ? 'active-dry' : ''}`}>
-                  <input
-                    id="execution-mode-dry-run"
-                    type="radio"
-                    name="mode"
-                    value="dry_run"
-                    checked={executeMode === 'dry_run'}
-                    onChange={() => setExecuteMode('dry_run')}
-                  />
-                  <span className="mode-option-content">
-                    <IconBolt size={15} color="var(--primary)" />
-                    <span>Dry-Run Plan Only</span>
-                  </span>
-                </label>
-
-                <label className={`mode-option-card ${executeMode === 'inspection' ? 'active-inspection' : ''}`}>
-                  <input
-                    type="radio"
-                    name="mode"
-                    value="inspection"
-                    checked={executeMode === 'inspection'}
-                    onChange={() => setExecuteMode('inspection')}
-                  />
-                  <span className="mode-option-content">
-                    <IconEye size={15} color="var(--accent-emerald)" />
-                    <span>Visual Form Fill (Inspection)</span>
-                  </span>
-                </label>
-
-                <label className={`mode-option-card ${executeMode === 'submit' ? 'active-submit' : ''}`}>
-                  <input
-                    type="radio"
-                    name="mode"
-                    value="submit"
-                    checked={executeMode === 'submit'}
-                    onChange={() => setExecuteMode('submit')}
-                  />
-                  <span className="mode-option-content">
-                    <IconRocket size={15} color="var(--accent-amber)" />
-                    <span>Live Submit Search</span>
-                  </span>
-                </label>
-              </div>
-            </div>
-          </div>
-
-          {error && (
-            <div style={{
-              background: 'rgba(244, 63, 94, 0.12)',
-              border: '1px solid rgba(244, 63, 94, 0.3)',
-              color: '#FDA4AF',
-              padding: '12px 16px',
-              borderRadius: '8px',
-              marginBottom: '20px',
-              fontSize: '0.9rem',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px'
-            }}>
-              <IconAlert size={18} color="#FDA4AF" />
-              <span>{error}</span>
-            </div>
-          )}
 
           <button
             type="submit"
             className="btn-primary-action"
-            disabled={isLoading || !prompt.trim()}
+            disabled={isChatSending || !chatInput.trim()}
           >
-            {isLoading ? (
+            {isChatSending ? (
               <>
                 <div className="spinner"></div>
-                <span>Executing Agent Strategy...</span>
+                <span>Sending...</span>
               </>
             ) : (
               <>
                 <IconBolt size={18} color="#FFFFFF" />
-                <span>
-                  {executeMode === 'dry_run' && 'Generate & Validate SearchPlan'}
-                  {executeMode === 'inspection' && 'Auto-Fill Open Resdex Tab (Inspection)'}
-                  {executeMode === 'submit' && 'Execute Live Resdex Candidate Search'}
-                </span>
+                <span>{chatMessages.length === 0 ? 'Generate Draft Plan' : 'Send'}</span>
               </>
             )}
           </button>
         </form>
+
+        {/* Draft plan keyword pills + Apply-to-Resdex */}
+        {draftPlan && (
+          <div style={{
+            marginTop: 20,
+            background: 'rgba(255,255,255,0.03)',
+            border: '1px solid rgba(255,255,255,0.08)',
+            padding: '14px',
+            borderRadius: '8px',
+          }}>
+            <div style={{ fontWeight: 700, marginBottom: 4 }}>Draft keywords</div>
+            <p className="card-subtitle" style={{ marginTop: 0, marginBottom: 10 }}>
+              Star the keywords that must be mandatory on Resdex. Unstarred ones apply as optional. This only
+              affects the staged draft — nothing goes live until you click Apply to Resdex below.
+            </p>
+
+            {draftKeywordPills.length > 0 ? (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 14 }}>
+                {draftKeywordPills.map((kw) => {
+                  const isMandatory = draftMandatoryKeywords.has(kw);
+                  return (
+                    <button
+                      key={kw}
+                      type="button"
+                      onClick={() => toggleDraftMandatoryKeyword(kw)}
+                      className="skill-pill"
+                      style={{
+                        cursor: 'pointer',
+                        border: isMandatory ? '1px solid #F59E0B' : '1px solid rgba(255,255,255,0.15)',
+                        background: isMandatory ? 'rgba(245, 158, 11, 0.12)' : 'transparent',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 5,
+                      }}
+                      title={isMandatory ? 'Mandatory — click to make optional' : 'Optional — click to make mandatory'}
+                    >
+                      <span>{isMandatory ? '★' : '☆'}</span>
+                      {kw}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="card-subtitle" style={{ marginBottom: 14 }}>No keywords in the draft yet.</p>
+            )}
+
+            <div className="execution-mode-selector" style={{ marginBottom: 12 }}>
+              <label className={`mode-option-card ${applyMode === 'inspection' ? 'active-inspection' : ''}`}>
+                <input
+                  type="radio"
+                  name="applyMode"
+                  value="inspection"
+                  checked={applyMode === 'inspection'}
+                  onChange={() => setApplyMode('inspection')}
+                />
+                <span className="mode-option-content">
+                  <IconEye size={15} color="var(--accent-emerald)" />
+                  <span>Fill Form Only (Inspection)</span>
+                </span>
+              </label>
+
+              <label className={`mode-option-card ${applyMode === 'submit' ? 'active-submit' : ''}`}>
+                <input
+                  type="radio"
+                  name="applyMode"
+                  value="submit"
+                  checked={applyMode === 'submit'}
+                  onChange={() => setApplyMode('submit')}
+                />
+                <span className="mode-option-content">
+                  <IconRocket size={15} color="var(--accent-amber)" />
+                  <span>Fill &amp; Submit Search</span>
+                </span>
+              </label>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <button
+                type="button"
+                className="btn-primary-action"
+                onClick={applyToResdex}
+                disabled={isApplying}
+                style={{ width: 'auto', padding: '10px 20px' }}
+              >
+                {isApplying ? (
+                  <>
+                    <div className="spinner"></div>
+                    <span>Applying...</span>
+                  </>
+                ) : (
+                  <>
+                    <IconRocket size={16} color="#FFFFFF" />
+                    <span>Apply to Resdex</span>
+                  </>
+                )}
+              </button>
+              {applyMsg && (
+                <span style={{ fontSize: '0.8rem', color: applyMsg.ok ? '#10B981' : '#F43F5E' }}>
+                  {applyMsg.text}
+                </span>
+              )}
+            </div>
+
+            <div className="code-box" style={{ marginTop: 14 }}>
+              {JSON.stringify(draftPlan, null, 2)}
+            </div>
+          </div>
+        )}
+
+        {error && (
+          <div style={{
+            background: 'rgba(244, 63, 94, 0.12)',
+            border: '1px solid rgba(244, 63, 94, 0.3)',
+            color: '#FDA4AF',
+            padding: '12px 16px',
+            borderRadius: '8px',
+            marginTop: '20px',
+            fontSize: '0.9rem',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px'
+          }}>
+            <IconAlert size={18} color="#FDA4AF" />
+            <span>{error}</span>
+          </div>
+        )}
       </div>
 
-      {/* Results View */}
+      {/* Results View (last APPLIED plan) */}
       {searchResponse && (
         <div className="card">
           <h3 className="card-title">
             <IconClipboard size={20} color="var(--primary)" />
-            <span>Generated SearchPlan & Execution Status</span>
+            <span>Applied SearchPlan & Execution Status</span>
             <span style={{
               fontSize: '0.75rem',
               fontWeight: 700,
