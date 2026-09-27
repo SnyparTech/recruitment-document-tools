@@ -41,6 +41,10 @@ yarn-error.log*
 *.local
 *.log
 
+# Gmail OAuth (recruitment-whatsapp pipeline) — never commit credentials/tokens
+backend/gmail_credentials.json
+backend/gmail_token.json
+
 # IDE & Editors
 .vscode/
 .idea/

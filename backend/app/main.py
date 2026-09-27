@@ -17,6 +17,10 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.api.dossier import router as dossier_router
 from app.api.resume_converter import router as resume_converter_router
 from app.api.search import router as search_router
+from app.api.gmail import router as gmail_router
+from app.api.jobs import router as jobs_router
+from app.api.whatsapp import router as whatsapp_router
+from app.api.webhooks import router as webhooks_router
 from app.core.config import settings
 from app.core.exceptions import ProfileBotException
 from app.core.security import (
@@ -178,6 +182,10 @@ async def generic_exception_handler(request: Request, exc: Exception):
 app.include_router(search_router)
 app.include_router(dossier_router)
 app.include_router(resume_converter_router)
+app.include_router(gmail_router)
+app.include_router(jobs_router)
+app.include_router(whatsapp_router)
+app.include_router(webhooks_router)
 
 
 # ------------------------------------------------------------------------------
