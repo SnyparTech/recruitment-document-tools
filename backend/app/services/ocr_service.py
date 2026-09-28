@@ -44,11 +44,14 @@ def _ocr_image_to_pdf_page(image: "Image.Image") -> Tuple[bytes, str]:
 
     try:
         pdf_bytes = pytesseract.image_to_pdf_or_hocr(image, extension="pdf")
-        text = pytesseract.image_to_string(image)
     except pytesseract.TesseractNotFoundError as exc:
         raise OCRUnavailableError(
             "OCR engine (Tesseract) is not installed on the server."
         ) from exc
+
+    with fitz.open("pdf", pdf_bytes) as page_doc:
+        text = page_doc[0].get_text()
+
     return pdf_bytes, text
 
 

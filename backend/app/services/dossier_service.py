@@ -1132,21 +1132,30 @@ class DossierService:
                 text = p.text.strip()
                 pPr = p._p.find(qn("w:pPr"))
                 has_sectPr = pPr is not None and pPr.find(qn("w:sectPr")) is not None
+                has_drawing = p._p.find(qn("w:r") + "/" + qn("w:drawing")) is not None or bool(
+                    p._p.findall(".//" + qn("w:drawing"))
+                )
 
-                # Remove consecutive redundant empty paragraphs (ONLY if they don't contain a section break)
-                if not text and len(p.runs) == 0 and not has_sectPr:
+                # Remove consecutive redundant empty paragraphs (ONLY if they don't contain a
+                # section break or an embedded image/drawing)
+                if not text and not has_sectPr and not has_drawing:
                     consecutive_empty += 1
                     if consecutive_empty > 1:
                         empty_paragraphs_to_remove.append(p)
                 else:
                     consecutive_empty = 0
 
-                # Clamp only excessively large blank spaces (> 24pt) to 12pt; preserve natural font styling and paragraph formatting
+                # Clamp blank spacing in the embedded-resume section down to a tight, consistent
+                # size. Source documents (and docxcompose merges of them) often carry large or
+                # inconsistent space_before/space_after and line_spacing values per paragraph;
+                # left as-is these stack up visually into growing gaps across pages/sections.
                 if resume_start_idx is not None and idx > resume_start_idx:
-                    if p.paragraph_format.space_before and p.paragraph_format.space_before.pt > 24.0:
-                        p.paragraph_format.space_before = Pt(12.0)
-                    if p.paragraph_format.space_after and p.paragraph_format.space_after.pt > 24.0:
-                        p.paragraph_format.space_after = Pt(12.0)
+                    if p.paragraph_format.space_before and p.paragraph_format.space_before.pt > 8.0:
+                        p.paragraph_format.space_before = Pt(4.0)
+                    if p.paragraph_format.space_after and p.paragraph_format.space_after.pt > 8.0:
+                        p.paragraph_format.space_after = Pt(4.0)
+                    if p.paragraph_format.line_spacing and isinstance(p.paragraph_format.line_spacing, (int, float)) and p.paragraph_format.line_spacing > 1.5:
+                        p.paragraph_format.line_spacing = 1.15
 
             # Remove marked empty paragraphs safely from DOM
             for p in empty_paragraphs_to_remove:
