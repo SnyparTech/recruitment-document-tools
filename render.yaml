@@ -2,5 +2,5 @@ services:
   - type: web
     name: profile-bot
     env: docker
-    dockerfilePath: ./backend/Dockerfile
-    dockerContext: .
+    dockerfilePath: ./Dockerfile
+    dockerContext: ./backend
