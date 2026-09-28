@@ -2202,6 +2202,21 @@ function findCandidateContainers() {
   };
 }
 
+// Naukri's AI-generated candidate summary (the text shown when hovering the
+// three-dots/info icon) lives statically in the DOM already — no hover
+// simulation needed. It's on the anchor `a.candidate-profile-summary`
+// (a more specific subclass of `.link.ext`, which is reused elsewhere on the
+// page e.g. the nav "go to advance search form" icon — must scope to this
+// class, not `.link.ext`), both as a `title` attribute and as visible
+// (highlighted) span text. Confirmed via live DOM capture 2026-09-22.
+// Not every candidate has one — Naukri only generates it for some profiles.
+function extractAiSummary(container) {
+  const el = container.querySelector("a.candidate-profile-summary");
+  if (!el) return null;
+  const text = (el.getAttribute("title") || el.textContent || "").trim();
+  return text || null;
+}
+
 function extractOneCandidate(container, anchor) {
   const name = anchor ? safeText(anchor, 100) : (
     findChildTextByClassHints(container, ["name", "candidatename"]) ||
@@ -2222,6 +2237,7 @@ function extractOneCandidate(container, anchor) {
     notice_period: txt.notice_period || findChildTextByClassHints(container, FIELD_CLASS_HINTS.notice_period),
     profile_url: anchor && anchor.href ? anchor.href : null,
     resdex_candidate_id: extractResdexCandidateId(anchor),
+    ai_summary: extractAiSummary(container),
   };
   // One-time calibration dump: if the key fields are still empty, log the real
   // card markup/text so selectors can be written from it instead of guessed.
@@ -2233,8 +2249,31 @@ function extractOneCandidate(container, anchor) {
   return result;
 }
 
-function extractCandidatesFromResultsPage() {
+async function extractCandidatesFromResultsPage() {
   const { pairs, strategy, warnings } = findCandidateContainers();
+
+  // Cards truncate long skill/tag lists behind a "+N more" toggle
+  // (button.more.naukri-btn-empty, confirmed via live trace: click on it
+  // opens the hidden chips). parseCardText/findSkillsInContainer both read
+  // off container.innerText, which excludes CSS-hidden content, so without
+  // this click every card's skill list silently stops at whatever fit before
+  // "+N more" — real data, just incomplete. Scoped to each card's own
+  // container (not document-wide) so this can't hit an unrelated "more" link
+  // elsewhere on the page (e.g. a sidebar filter).
+  let expandedAny = false;
+  for (const { container } of pairs) {
+    const moreBtn = container.querySelector("button.more.naukri-btn-empty");
+    if (moreBtn && moreBtn.offsetParent !== null) {
+      try {
+        moreBtn.click();
+        expandedAny = true;
+      } catch (err) {
+        // Non-fatal — that card just keeps its truncated skill list.
+      }
+    }
+  }
+  if (expandedAny) await sleep(300); // let React re-render the expanded chips before reading
+
   const candidates = [];
   const fieldHitCounts = {};
   const extractionWarnings = [...warnings];
@@ -2385,7 +2424,7 @@ async function extractAndSubmitOnce(currentUrl) {
     await sleep(700);
   }
 
-  const { candidates, diagnostics } = extractCandidatesFromResultsPage();
+  const { candidates, diagnostics } = await extractCandidatesFromResultsPage();
 
   if (candidates.length === 0) {
     updateWidgetStatus("⚠ No candidates detected on results page", "offline");

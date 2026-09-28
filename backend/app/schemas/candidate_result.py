@@ -30,6 +30,12 @@ class CandidateResult(BaseModel):
         description="Resdex's own candidate/profile identifier if it could be extracted (from a data-id "
         "attribute or the profile URL) — the strongest available dedup key after profile_url",
     )
+    ai_summary: Optional[str] = Field(
+        default=None,
+        description="Naukri's own AI-generated candidate summary, when Resdex has one for this profile "
+        "(scraped from the `title` attribute / text of a.candidate-profile-summary — static DOM, not "
+        "hover-triggered). Not present for every candidate.",
+    )
 
 
 class CandidateExtractionDiagnostics(BaseModel):
