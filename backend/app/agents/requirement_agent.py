@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
@@ -13,6 +14,49 @@ from app.schemas.search_plan import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Same Groq fallback chain as jd_extraction_agent.py — Groq periodically
+# decommissions models (404/400), and even live ones occasionally 429/5xx.
+# Without a retry+fallback chain here, a single transient failure silently
+# returns None and the caller falls through to a much weaker rule-based
+# parser (see generate_chat_reply's guard against overwriting a good plan).
+GROQ_FALLBACK_MODELS = [
+    "openai/gpt-oss-120b",
+    "qwen/qwen3.8-27b",
+]
+_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+
+
+def _chat_completion_with_retry(
+    client: httpx.Client,
+    api_url: str,
+    headers: Dict[str, str],
+    payload: Dict[str, Any],
+    models_to_try: List[str],
+) -> Optional[str]:
+    """
+    Posts `payload` to `api_url`, trying each model in `models_to_try` in
+    order. Each model gets one retry (after a short backoff) if the failure
+    looks transient (429/5xx). Returns the raw message content string, or
+    None if every model/attempt failed.
+    """
+    for model_id in models_to_try:
+        attempt_payload = {**payload, "model": model_id}
+        for attempt in range(2):
+            try:
+                response = client.post(api_url, headers=headers, json=attempt_payload)
+            except Exception as exc:
+                logger.warning(f"LLM request error with model {model_id}: {exc}")
+                break
+            if response.status_code == 200:
+                data = response.json()
+                return data["choices"][0]["message"]["content"].strip()
+            logger.warning(f"LLM ({model_id}) returned {response.status_code}: {response.text[:300]}")
+            if response.status_code in _RETRYABLE_STATUS and attempt == 0:
+                time.sleep(1.5)
+                continue
+            break
+    return None
 
 # Normalization taxonomies
 CANONICAL_SKILLS: Dict[str, str] = {
@@ -314,30 +358,29 @@ Rules:
             "max_tokens": 1200,
         }
 
+        models_to_try = [model] + ([m for m in GROQ_FALLBACK_MODELS if m != model] if self.groq_api_key else [])
+
         try:
             with httpx.Client(timeout=30.0) as client:
-                response = client.post(api_url, headers=headers, json=payload)
-                if response.status_code == 200:
-                    data = response.json()
-                    content = data["choices"][0]["message"]["content"].strip()
+                content = _chat_completion_with_retry(client, api_url, headers, payload, models_to_try)
+                if content is None:
+                    return None
 
-                    # Strip markdown code fences if present
-                    if content.startswith("```"):
-                        content = re.sub(r"^```(?:json)?", "", content)
-                        content = re.sub(r"```$", "", content).strip()
+                # Strip markdown code fences if present
+                if content.startswith("```"):
+                    content = re.sub(r"^```(?:json)?", "", content)
+                    content = re.sub(r"```$", "", content).strip()
 
-                    # Attempt to repair truncated/unterminated JSON
-                    content = self._repair_json(content)
+                # Attempt to repair truncated/unterminated JSON
+                content = self._repair_json(content)
 
-                    parsed = json.loads(content)
+                parsed = json.loads(content)
 
-                    # Sanitize common LLM output mistakes before Pydantic validation
-                    parsed = self._sanitize_llm_output(parsed)
+                # Sanitize common LLM output mistakes before Pydantic validation
+                parsed = self._sanitize_llm_output(parsed)
 
-                    logger.info(f"LLM HR Agent successfully parsed SearchPlan using {model}")
-                    return SearchPlan(**parsed)
-                else:
-                    logger.warning(f"LLM API ({model}) returned {response.status_code}: {response.text[:300]}")
+                logger.info("LLM HR Agent successfully parsed SearchPlan")
+                return SearchPlan(**parsed)
         except Exception as exc:
             logger.warning(f"LLM HR parsing failed: {exc}")
 
@@ -907,12 +950,36 @@ Rules:
 
         if current_plan is None:
             plan = self.generate_search_plan(message)
+            if not self._plan_has_signal(plan) and len(message) > 40 and (self.groq_api_key or self.gemini_api_key):
+                # A real JD is long; if a long message produced an empty plan
+                # while an LLM key IS configured, that's much more likely a
+                # transient extraction failure (rate limit/decommissioned
+                # model) than a genuinely empty JD — say so honestly instead
+                # of implying the JD had nothing in it.
+                return plan, (
+                    "I couldn't extract structured requirements from that message — the extraction "
+                    "service may be temporarily rate-limited or unavailable. Nothing was saved yet; "
+                    "please resend the job description in a moment and I'll parse it fully."
+                )
             return plan, self._summarize_plan_reply(plan, prefix="Plan created")
 
         if self.groq_api_key or self.gemini_api_key:
             edited = self._call_llm_chat_edit(current_plan, message, history or [])
             if edited:
                 return edited
+            if len(message) > 40:
+                # The free-form LLM edit failed (rate limit/transient error).
+                # Do NOT fall through to a full regenerate here — that path
+                # can silently produce an empty plan (weak rule-based parsing
+                # on unstructured prose) and overwrite a perfectly good
+                # existing draft. This was the exact bug: pasting the same
+                # long JD twice wiped a correct plan because the second call
+                # failed silently and the fallback regenerate returned empty.
+                return current_plan, (
+                    "I couldn't process that edit just now — the extraction service may be temporarily "
+                    "rate-limited or unavailable. Your current plan is unchanged (nothing was lost); "
+                    "please resend that message in a moment and I'll apply it."
+                )
 
         plan, reply = self._rule_based_chat_edit(current_plan, message)
         if reply.startswith("Didn't recognize that as an edit") and len(message) > 40:
@@ -922,27 +989,88 @@ Rules:
             # edit. Regenerate the whole plan from it rather than leaving the
             # recruiter stuck on an unhelpful "didn't understand".
             new_plan = self.generate_search_plan(message)
-            return new_plan, self._summarize_plan_reply(new_plan, prefix="Replaced with new requirement")
+            if not self._plan_has_signal(new_plan):
+                # Regenerate produced nothing useful — almost certainly a
+                # failed/rate-limited extraction, not an intentionally empty
+                # JD. Never let this silently destroy the existing good plan.
+                return current_plan, (
+                    "I couldn't extract anything from that message, so I've left your current plan "
+                    "unchanged rather than replacing it with an empty one. This can happen if the "
+                    "extraction service is temporarily rate-limited, or if the message wasn't "
+                    "recognized as either an edit instruction or a full job description — please "
+                    "try rephrasing or resend it in a moment."
+                )
+            return new_plan, self._summarize_plan_reply(new_plan, prefix="Replaced the plan with this new requirement")
         return plan, reply
 
+    @staticmethod
+    def _plan_has_signal(plan: SearchPlan) -> bool:
+        """
+        True if `plan` captured anything worth keeping. Used to distinguish a
+        genuinely low-content message (e.g. "hi") from a failed/rate-limited
+        extraction on real JD text, so a failure never silently overwrites a
+        good existing plan with an empty one.
+        """
+        if plan.keywords and (plan.keywords.required or plan.keywords.preferred):
+            return True
+        if plan.min_experience is not None or plan.max_experience is not None:
+            return True
+        if plan.current_location:
+            return True
+        if plan.designation or plan.department_role:
+            return True
+        if plan.salary and (plan.salary.min is not None or plan.salary.max is not None):
+            return True
+        if plan.notice_period:
+            return True
+        return False
+
     def _summarize_plan_reply(self, plan: SearchPlan, prefix: str = "Updated") -> str:
-        parts = []
+        """
+        Builds a detailed, field-by-field explanation of the current plan
+        state (not just a terse fragment list) so the recruiter can see
+        exactly what was captured without opening the form.
+        """
+        sentences = []
+        if plan.designation or plan.department_role:
+            role_bits = plan.designation or plan.department_role
+            sentences.append(f"Role/designation set to {', '.join(role_bits)}.")
         if plan.keywords and plan.keywords.required:
-            parts.append(f"{len(plan.keywords.required)} required skill(s): {', '.join(plan.keywords.required)}")
+            sentences.append(
+                f"{len(plan.keywords.required)} required skill(s) captured: {', '.join(plan.keywords.required)}."
+            )
         if plan.keywords and plan.keywords.preferred:
-            parts.append(f"{len(plan.keywords.preferred)} preferred skill(s): {', '.join(plan.keywords.preferred)}")
+            sentences.append(
+                f"{len(plan.keywords.preferred)} preferred/nice-to-have skill(s): {', '.join(plan.keywords.preferred)}."
+            )
         if plan.min_experience is not None or plan.max_experience is not None:
             lo = plan.min_experience if plan.min_experience is not None else 0
-            hi = plan.max_experience if plan.max_experience is not None else "no max"
-            parts.append(f"experience {lo}-{hi} yrs")
+            hi = f"{plan.max_experience} years" if plan.max_experience is not None else "no upper limit"
+            sentences.append(f"Experience range set to {lo}-{hi}.")
         if plan.current_location:
-            parts.append(f"location: {', '.join(plan.current_location)}")
-        if plan.designation:
-            parts.append(f"designation: {', '.join(plan.designation)}")
+            sentences.append(f"Location(s) set to {', '.join(plan.current_location)}.")
         if plan.salary and (plan.salary.min is not None or plan.salary.max is not None):
-            parts.append(f"salary {plan.salary.min or 0}-{plan.salary.max or 'no max'} LPA")
-        summary = "; ".join(parts) if parts else "no specific requirements extracted yet"
-        return f"{prefix} — {summary}."
+            lo = plan.salary.min if plan.salary.min is not None else 0
+            hi = plan.salary.max if plan.salary.max is not None else "no max"
+            sentences.append(f"Salary budget set to {lo}-{hi} LPA.")
+        if plan.notice_period:
+            sentences.append(f"Notice period requirement(s): {', '.join(plan.notice_period)}.")
+        if plan.employment_type:
+            sentences.append(f"Employment type: {plan.employment_type}.")
+        if plan.job_type:
+            sentences.append(f"Job type: {plan.job_type}.")
+        if plan.ug_qualification:
+            sentences.append(f"UG qualification: {plan.ug_qualification}.")
+        if plan.pg_qualification:
+            sentences.append(f"PG qualification: {plan.pg_qualification}.")
+
+        if not sentences:
+            return (
+                f"{prefix} — but no specific requirements (skills, experience, location, salary, etc.) "
+                "were found in that message, so the plan is currently empty. Add details or paste a "
+                "fuller job description and I'll fill them in."
+            )
+        return f"{prefix}. " + " ".join(sentences)
 
     def _canonical_skill_name(self, raw: str) -> str:
         raw = raw.strip().strip(".,;")
@@ -1120,7 +1248,11 @@ Rules:
             "description that should replace the plan. Apply ONLY what the instruction asks — never drop "
             "or change fields the instruction didn't mention. Return ONLY a JSON object: "
             '{"plan": <the full updated SearchPlan, same shape as the current one>, '
-            '"reply": "<one short sentence telling the colleague what changed>"}. '
+            '"reply": "<2-4 full sentences explaining in detail exactly what you changed and why — name the '
+            "specific fields/values added, removed, or modified (e.g. 'Added Kubernetes and Docker as "
+            "required skills since the JD lists them under core requirements. Left experience and location "
+            "unchanged as the instruction didn't mention them.'). Never use a generic one-liner like 'Updated "
+            'the plan.\'"}. '
             "No markdown, no explanation outside that JSON."
         )
         messages = [{"role": "system", "content": system_prompt}]
@@ -1135,22 +1267,21 @@ Rules:
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
         payload = {"model": model, "messages": messages, "temperature": 0.1, "max_tokens": 1200}
 
+        models_to_try = [model] + ([m for m in GROQ_FALLBACK_MODELS if m != model] if self.groq_api_key else [])
+
         try:
             with httpx.Client(timeout=30.0) as client:
-                response = client.post(api_url, headers=headers, json=payload)
-                if response.status_code != 200:
-                    logger.warning(f"Chat-edit LLM ({model}) returned {response.status_code}: {response.text[:300]}")
+                content = _chat_completion_with_retry(client, api_url, headers, payload, models_to_try)
+                if content is None:
                     return None
-                data = response.json()
-                content = data["choices"][0]["message"]["content"].strip()
                 if content.startswith("```"):
                     content = re.sub(r"^```(?:json)?", "", content)
                     content = re.sub(r"```$", "", content).strip()
                 content = self._repair_json(content)
                 parsed = json.loads(content)
                 plan_dict = self._sanitize_llm_output(parsed.get("plan") or {})
-                reply = parsed.get("reply") or "Updated the plan."
                 plan = SearchPlan(**plan_dict)
+                reply = parsed.get("reply") or self._summarize_plan_reply(plan, prefix="Updated the plan")
                 return plan, reply
         except Exception as exc:
             logger.warning(f"Chat-edit LLM parsing failed: {exc}")
