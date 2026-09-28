@@ -59,7 +59,7 @@ def parse_experience_years(raw: Optional[str]) -> Optional[float]:
     if not raw:
         return None
     if re.search(r"\bfresher\b", raw, re.IGNORECASE):
-        return 0.0
+        return None
     match = re.search(r"(\d{1,2}(?:\.\d{1,2})?)\s*(?:yrs?|years?)", raw, re.IGNORECASE)
     if not match:
         return None

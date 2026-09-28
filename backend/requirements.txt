@@ -11,3 +11,4 @@ python-dotenv>=1.0.1
 httpx>=0.27.0
 pdf2docx>=0.5.8
 docxcompose>=1.4.0
+pytesseract>=0.3.10

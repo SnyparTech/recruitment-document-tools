@@ -31,6 +31,8 @@ DOCX_ZIP_MAGIC = b"PK\x03\x04"
 DOCX_ZIP_EMPTY_MAGIC = b"PK\x05\x06"
 DOCX_ZIP_SPANNED_MAGIC = b"PK\x07\x08"
 DOC_OLE_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+JPEG_MAGIC = b"\xff\xd8\xff"
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 # Executable / dangerous headers to explicitly flag
 DISGUISED_EXECUTABLE_SIGNATURES = [
@@ -44,7 +46,7 @@ DISGUISED_EXECUTABLE_SIGNATURES = [
     (b"<script", "HTML/JS payload"),
 ]
 
-ALLOWED_EXTENSIONS = {".pdf", ".doc", ".docx"}
+ALLOWED_EXTENSIONS = {".pdf", ".doc", ".docx", ".jpg", ".jpeg", ".png"}
 
 MIME_TYPE_MAPPING = {
     ".pdf": [
@@ -66,6 +68,9 @@ MIME_TYPE_MAPPING = {
         "application/vnd.ms-word",
         "application/octet-stream",
     ],
+    ".jpg": ["image/jpeg", "application/octet-stream"],
+    ".jpeg": ["image/jpeg", "application/octet-stream"],
+    ".png": ["image/png", "application/octet-stream"],
 }
 
 
@@ -117,7 +122,7 @@ class FileValidator:
         _, raw_ext = os.path.splitext(filename.strip().lower())
         if raw_ext not in ALLOWED_EXTENSIONS:
             raise FileValidationError(
-                f"Unsupported file format '{raw_ext}'. Allowed formats: PDF, DOC, DOCX.",
+                f"Unsupported file format '{raw_ext}'. Allowed formats: PDF, DOC, DOCX, JPG, PNG.",
                 code="UNSUPPORTED_EXTENSION",
             )
 
@@ -180,6 +185,24 @@ class FileValidator:
                     code="MAGIC_BYTE_MISMATCH",
                 )
             return "doc"
+
+        elif ext in (".jpg", ".jpeg"):
+            if not content.startswith(JPEG_MAGIC):
+                logger.warning("JPEG magic byte check failed.")
+                raise FileValidationError(
+                    "Invalid file. The file content does not match the selected file type.",
+                    code="MAGIC_BYTE_MISMATCH",
+                )
+            return "image"
+
+        elif ext == ".png":
+            if not content.startswith(PNG_MAGIC):
+                logger.warning("PNG magic byte check failed.")
+                raise FileValidationError(
+                    "Invalid file. The file content does not match the selected file type.",
+                    code="MAGIC_BYTE_MISMATCH",
+                )
+            return "image"
 
         raise FileValidationError(
             "Invalid file. The file content does not match the selected file type.",

@@ -30,6 +30,7 @@ from app.services.dlp_service import DLPService
 from app.services.docx_resume_generator import DocxResumeGenerator
 from app.services.latex_generator import LatexResumeGenerator
 from app.services.resume_extractor import ResumeExtractor
+from app.services import ocr_service
 
 logger = logging.getLogger(__name__)
 
@@ -118,27 +119,39 @@ async def upload_resume(file: UploadFile = File(...)):
     with open(file_path, "wb") as f:
         f.write(content_bytes)
 
-    # 3. Deterministic Content Extraction
-    try:
-        canonical_content = ResumeExtractor.extract(file_path, detected_type)
-    except Exception as exc:
-        logger.error(f"Resume extraction failure: {exc}")
-        if os.path.exists(file_path):
-            try:
-                os.remove(file_path)
-            except Exception:
-                pass
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={
-                "error": "EXTRACTION_FAILED",
-                "message": "Failed to extract readable content from the document.",
-            },
-        )
+    # 3. Deterministic Content Extraction (images have no text layer to extract yet —
+    #    that only happens once the user opts into OCR via /api/resume/ocr)
+    if detected_type == "image":
+        canonical_content: Dict[str, Any] = {
+            "raw_text": "",
+            "sections": [],
+            "metadata": {"source_type": "image"},
+            "tables": [],
+            "bullets": [],
+        }
+    else:
+        try:
+            canonical_content = ResumeExtractor.extract(file_path, detected_type)
+        except Exception as exc:
+            logger.error(f"Resume extraction failure: {exc}")
+            if os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                except Exception:
+                    pass
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "error": "EXTRACTION_FAILED",
+                    "message": "Failed to extract readable content from the document.",
+                },
+            )
 
     # 4. DLP and Sensitive Data Masking (Aadhaar, PAN, Cards, Passports, Bank Accounts)
     raw_text = canonical_content.get("raw_text", "")
     dlp_result = DLPService.sanitize_resume_text(raw_text)
+
+    requires_ocr = ocr_service.needs_ocr(detected_type, canonical_content)
 
     # Save session state
     upload_sessions[upload_id] = {
@@ -150,6 +163,9 @@ async def upload_resume(file: UploadFile = File(...)):
         "canonical_content": canonical_content,
         "sanitized_text": dlp_result.sanitized_text,
         "dlp_result": dlp_result,
+        "needs_ocr": requires_ocr,
+        "ocr_applied": False,
+        "ocr_pdf_path": None,
         "timestamp": time.time(),
     }
 
@@ -167,8 +183,109 @@ async def upload_resume(file: UploadFile = File(...)):
         "dlp_summary": dlp_result.to_dict(),
         "preview_snippet": snippet,
         "sections_detected": section_titles,
-        "message": "File validated and sanitized successfully. Ready for AI conversion.",
+        "needs_ocr": requires_ocr,
+        "is_image": detected_type == "image",
+        "message": (
+            "This looks like a scanned/photographed resume with no readable text layer. "
+            "Run OCR to extract text before converting."
+            if requires_ocr
+            else "File validated and sanitized successfully. Ready for AI conversion."
+        ),
     }
+
+
+@router.post("/ocr", summary="OCR an Image or Scanned-PDF Resume into a Searchable PDF")
+async def ocr_resume(req: ConvertResumeRequest):
+    """
+    Runs Tesseract OCR on an uploaded image or scanned PDF, producing a
+    text-searchable PDF and extracted text. Updates the upload session's
+    canonical content so a subsequent /convert call uses the OCR'd text.
+    The user decides whether to call this before /convert, or skip straight
+    to /convert (e.g. for a native-text PDF that was flagged unnecessarily).
+    """
+    cleanup_expired_sessions()
+
+    session = upload_sessions.get(req.upload_id)
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "SESSION_EXPIRED", "message": "Upload session expired or not found. Please upload again."},
+        )
+
+    detected_type = session["detected_type"]
+    if detected_type not in ("image", "pdf"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "OCR_NOT_APPLICABLE", "message": "OCR only applies to image or PDF uploads."},
+        )
+
+    try:
+        ocr_result = ocr_service.run_ocr(session["file_path"], detected_type)
+    except ocr_service.OCRUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error": "OCR_UNAVAILABLE", "message": str(exc)},
+        )
+    except Exception as exc:
+        logger.error(f"OCR failed for upload {req.upload_id}: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error": "OCR_FAILED", "message": "Failed to OCR the document."},
+        )
+
+    ocr_pdf_path = os.path.join(UPLOADS_DIR, f"{req.upload_id}_ocr.pdf")
+    with open(ocr_pdf_path, "wb") as f:
+        f.write(ocr_result["searchable_pdf_bytes"])
+
+    ocr_raw_text = ocr_result["raw_text"]
+    sections = ResumeExtractor._partition_sections(ocr_raw_text)
+    canonical_content = {
+        "raw_text": ocr_raw_text,
+        "sections": sections,
+        "metadata": {**session["canonical_content"].get("metadata", {}), "ocr_applied": True},
+        "tables": [],
+        "bullets": [],
+    }
+    dlp_result = DLPService.sanitize_resume_text(ocr_raw_text)
+
+    session["canonical_content"] = canonical_content
+    session["sanitized_text"] = dlp_result.sanitized_text
+    session["dlp_result"] = dlp_result
+    session["ocr_applied"] = True
+    session["ocr_pdf_path"] = ocr_pdf_path
+    session["needs_ocr"] = False
+
+    lines = [l.strip() for l in dlp_result.sanitized_text.splitlines() if l.strip()]
+    snippet = "\n".join(lines[:12]) if lines else "No readable text found by OCR."
+
+    return {
+        "status": "success",
+        "upload_id": req.upload_id,
+        "ocr_applied": True,
+        "extracted_text_length": len(ocr_raw_text),
+        "preview_snippet": snippet,
+        "sections_detected": [s.get("title", "") for s in sections],
+        "dlp_summary": dlp_result.to_dict(),
+        "searchable_pdf_url": f"/api/resume/download-ocr/{req.upload_id}",
+        "message": (
+            "OCR complete. Review the extracted text, then continue to AI conversion or "
+            "download the searchable PDF."
+            if ocr_raw_text
+            else "OCR ran but found no readable text. The image quality may be too low."
+        ),
+    }
+
+
+@router.get("/download-ocr/{upload_id}", summary="Download OCR'd Searchable PDF")
+async def download_ocr_pdf(upload_id: str):
+    session = upload_sessions.get(upload_id)
+    if not session or not session.get("ocr_pdf_path") or not os.path.exists(session["ocr_pdf_path"]):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "OCR_PDF_NOT_FOUND", "message": "No OCR'd PDF found for this upload. Run OCR first."},
+        )
+    filename = os.path.splitext(session["original_filename"])[0] + "_searchable.pdf"
+    return FileResponse(session["ocr_pdf_path"], media_type="application/pdf", filename=filename)
 
 
 @router.post("/convert", summary="Structure Resume with LLM & Generate LaTeX/DOCX")

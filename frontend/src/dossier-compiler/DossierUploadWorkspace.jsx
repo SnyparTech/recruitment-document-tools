@@ -20,6 +20,11 @@ export default function DossierUploadWorkspace({ initialCandidate, onBack }) {
   const [showAiPreviewModal, setShowAiPreviewModal] = useState(false);
   const [autoConvertOnSelect, setAutoConvertOnSelect] = useState(false);
 
+  // OCR flow: scanned/photographed resumes need OCR before the AI can read them.
+  const [ocrPrompt, setOcrPrompt] = useState(null); // { uploadId, filename }
+  const [isRunningOcr, setIsRunningOcr] = useState(false);
+  const [ocrResult, setOcrResult] = useState(null);
+
   const [candidateName, setCandidateName] = useState(initialCandidate?.name || '');
   const [recruiterNotes, setRecruiterNotes] = useState(initialCandidate?.notes || '');
 
@@ -91,6 +96,8 @@ export default function DossierUploadWorkspace({ initialCandidate, onBack }) {
 
     setIsAiConverting(true);
     setErrorMessage(null);
+    setOcrPrompt(null);
+    setOcrResult(null);
 
     const formData = new FormData();
     formData.append('file', targetFile);
@@ -109,11 +116,31 @@ export default function DossierUploadWorkspace({ initialCandidate, onBack }) {
 
       const uploadData = await uploadRes.json();
 
-      // 2. Convert resume into standard LaTeX template format
+      // If this is a photo/scanned resume with no readable text layer, pause
+      // and let the user decide: run OCR first, or continue anyway.
+      if (uploadData.needs_ocr) {
+        setOcrPrompt({ uploadId: uploadData.upload_id, filename: targetFile.name, isImage: uploadData.is_image });
+        setIsAiConverting(false);
+        return;
+      }
+
+      await continueConversion(uploadData.upload_id);
+    } catch (err) {
+      console.error('AI conversion failed:', err);
+      setErrorMessage(`AI Resume Conversion failed: ${err.message}`);
+      setIsAiConverting(false);
+    }
+  };
+
+  const continueConversion = async (uploadId) => {
+    setIsAiConverting(true);
+    setErrorMessage(null);
+
+    try {
       const convertRes = await fetch(`${API_BASE}/api/resume/convert`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ upload_id: uploadData.upload_id }),
+        body: JSON.stringify({ upload_id: uploadId }),
       });
 
       if (!convertRes.ok) {
@@ -123,14 +150,14 @@ export default function DossierUploadWorkspace({ initialCandidate, onBack }) {
 
       const convertData = await convertRes.json();
 
-      // 3. Fetch full preview details
+      // Fetch full preview details
       const previewRes = await fetch(`${API_BASE}/api/resume/preview/${convertData.task_id}`);
       const previewData = previewRes.ok ? await previewRes.json() : convertData;
 
       const combinedData = {
         ...convertData,
         ...previewData,
-        upload_id: uploadData.upload_id,
+        upload_id: uploadId,
       };
 
       setAiConversionData(combinedData);
@@ -139,7 +166,7 @@ export default function DossierUploadWorkspace({ initialCandidate, onBack }) {
         setCandidateName(combinedData.candidate_name || previewData.candidate_name);
       }
 
-      // Display preview modal for confirmation
+      setOcrPrompt(null);
       setShowAiPreviewModal(true);
     } catch (err) {
       console.error('AI conversion failed:', err);
@@ -147,6 +174,49 @@ export default function DossierUploadWorkspace({ initialCandidate, onBack }) {
     } finally {
       setIsAiConverting(false);
     }
+  };
+
+  const handleRunOcr = async () => {
+    if (!ocrPrompt?.uploadId) return;
+    setIsRunningOcr(true);
+    setErrorMessage(null);
+
+    try {
+      const ocrRes = await fetch(`${API_BASE}/api/resume/ocr`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ upload_id: ocrPrompt.uploadId }),
+      });
+
+      const ocrData = await ocrRes.json().catch(() => ({}));
+
+      if (!ocrRes.ok) {
+        throw new Error(ocrData?.detail?.message || ocrData?.message || 'OCR failed to extract text from this document.');
+      }
+
+      setOcrResult(ocrData);
+    } catch (err) {
+      console.error('OCR failed:', err);
+      setErrorMessage(`OCR failed: ${err.message}`);
+    } finally {
+      setIsRunningOcr(false);
+    }
+  };
+
+  const handleContinueAfterOcr = () => {
+    if (!ocrPrompt?.uploadId) return;
+    continueConversion(ocrPrompt.uploadId);
+  };
+
+  const handleSkipOcr = () => {
+    if (!ocrPrompt?.uploadId) return;
+    continueConversion(ocrPrompt.uploadId);
+  };
+
+  const handleCancelOcrPrompt = () => {
+    setOcrPrompt(null);
+    setOcrResult(null);
+    setIsAiConverting(false);
   };
 
   const handleRegenerateAiConversion = async () => {
@@ -552,13 +622,13 @@ export default function DossierUploadWorkspace({ initialCandidate, onBack }) {
                 <h3 className="slot-title">Resume</h3>
                 <p className="slot-desc">Latest resume</p>
                 <div className="slot-specs">
-                  PDF (Auto-converts to DOCX)<br />DOCX / DOC (Max 10 MB)
+                  PDF (Auto-converts to DOCX)<br />DOCX / DOC / JPG / PNG (Max 10 MB)
                 </div>
 
                 <input
                   ref={resumeInputRef}
                   type="file"
-                  accept=".pdf,.docx,.doc,.txt"
+                  accept=".pdf,.docx,.doc,.txt,.jpg,.jpeg,.png"
                   style={{ display: 'none' }}
                   onChange={(e) => handleResumeFile(e.target.files[0])}
                 />
@@ -875,6 +945,87 @@ export default function DossierUploadWorkspace({ initialCandidate, onBack }) {
         onRegenerate={handleRegenerateAiConversion}
         onCancel={handleCancelAiConversion}
       />
+
+      {/* Scanned/Image Resume -> OCR Decision Modal */}
+      {ocrPrompt && (
+        <div className="converter-modal-backdrop" onClick={handleCancelOcrPrompt}>
+          <div className="converter-modal-content" style={{ maxWidth: 560 }} onClick={(e) => e.stopPropagation()}>
+            <div className="converter-modal-header">
+              <div className="modal-title-wrap">
+                <IconSparkles size={20} color="#4F46E5" />
+                <h3>{ocrPrompt.isImage ? 'Image Resume Detected' : 'Scanned PDF Detected'}</h3>
+              </div>
+              <button type="button" className="btn-modal-close" onClick={handleCancelOcrPrompt}>✕</button>
+            </div>
+
+            <div className="converter-modal-body" style={{ padding: '20px 24px' }}>
+              <p style={{ marginBottom: 12 }}>
+                <strong>{ocrPrompt.filename}</strong> {ocrPrompt.isImage
+                  ? 'is a photo, not a text document, so it has no readable text yet.'
+                  : 'appears to be a scanned PDF with no text layer.'} Run OCR to
+                extract the words into a text-searchable PDF, or skip straight to the AI
+                converter (results may be poor without OCR).
+              </p>
+
+              {!ocrResult && (
+                <div style={{ display: 'flex', gap: 12 }}>
+                  <button
+                    type="button"
+                    className="btn-primary-convert"
+                    disabled={isRunningOcr}
+                    onClick={handleRunOcr}
+                  >
+                    <IconSparkles size={16} color="#FFFFFF" />
+                    <span>{isRunningOcr ? 'Running OCR...' : 'Run OCR & Extract Text'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-download-secondary"
+                    disabled={isRunningOcr}
+                    onClick={handleSkipOcr}
+                  >
+                    Skip OCR, Continue Anyway
+                  </button>
+                </div>
+              )}
+
+              {ocrResult && (
+                <div style={{ marginTop: 8 }}>
+                  <div className="upload-inspection-card" style={{ marginBottom: 16 }}>
+                    <div className="inspection-header">
+                      <span className="inspection-status-pill">
+                        <IconCheck size={14} color="#10B981" /> OCR Complete
+                      </span>
+                      <span className="inspection-format-tag">
+                        {ocrResult.extracted_text_length || 0} characters extracted
+                      </span>
+                    </div>
+                    <div className="dossier-preview-snippet" style={{ whiteSpace: 'pre-wrap', fontSize: 13, maxHeight: 180, overflowY: 'auto', marginTop: 8 }}>
+                      {ocrResult.preview_snippet}
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                    <button type="button" className="btn-primary-convert" onClick={handleContinueAfterOcr}>
+                      <IconSparkles size={16} color="#FFFFFF" />
+                      <span>Continue to AI Converter</span>
+                    </button>
+                    <a
+                      className="btn-download-secondary"
+                      href={`${API_BASE}${ocrResult.searchable_pdf_url}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, textDecoration: 'none' }}
+                    >
+                      Download Searchable PDF
+                    </a>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

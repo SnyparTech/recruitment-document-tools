@@ -42,13 +42,33 @@ def test_upload_rejects_oversized_file():
     assert "File is too large" in body.get("message", "")
 
 
+def _build_sample_resume_docx() -> bytes:
+    """Build a minimal but realistic resume .docx in-memory so this test
+    doesn't depend on a pre-generated file in the gitignored storage/ dir."""
+    import io
+    from docx import Document
+
+    doc = Document()
+    doc.add_heading("Gaurav Pratap", level=1)
+    doc.add_paragraph("Email: gaurav.pratap@example.com | Phone: +91-9876543210")
+    doc.add_heading("Summary", level=2)
+    doc.add_paragraph("Cloud engineer with 5 years of experience in Azure DevOps and CI/CD pipelines.")
+    doc.add_heading("Experience", level=2)
+    doc.add_paragraph("Senior DevOps Engineer, TechCorp (2021-Present)")
+    doc.add_paragraph("Led migration of build pipelines to Azure DevOps, reducing deployment time by 40%.")
+    doc.add_heading("Skills", level=2)
+    doc.add_paragraph("Azure DevOps, Kubernetes, Terraform, Python, CI/CD")
+    doc.add_heading("Education", level=2)
+    doc.add_paragraph("B.Tech in Computer Science, XYZ University (2017)")
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
 def test_upload_and_convert_flow_with_docx():
     """Verify full end-to-end upload, DLP detection, AI structuring, LaTeX, and DOCX generation."""
-    sample_resume = "backend/storage/dossiers/Gaurav_Pratap_DOSSIER-5628A155_RESUME.docx"
-    assert os.path.exists(sample_resume), f"Sample resume not found at: {sample_resume}"
-
-    with open(sample_resume, "rb") as f:
-        file_bytes = f.read()
+    file_bytes = _build_sample_resume_docx()
 
     # 1. Upload
     files = {"file": ("Gaurav_Resume.docx", file_bytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")}
