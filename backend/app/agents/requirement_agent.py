@@ -322,9 +322,10 @@ Read the job description and return ONLY a JSON object with these exact fields:
 
 Rules:
 - Read the ENTIRE requirement first and synthesize the actual hiring intent before picking keywords — do not just grab the first list of tools mentioned. Long, narrative JDs often describe one role using several *equivalent or alternative* technology stacks (e.g. "Varonis, or if hard to find, Purview/BigID/Securiti") — these are OR-alternatives for the same underlying need (e.g. Data Security/Governance platform experience), not all mandatory together.
-- keywords.required = the small set of skills/tools/domains that are core to EVERY acceptable candidate profile, regardless of which specific tool/platform they used. Prefer broader domain terms (e.g. "Data Security", "Data Governance", "Microsoft Purview") over cramming in every named tool as individually mandatory, unless the JD says a specific tool is truly non-negotiable.
-- keywords.preferred = the named specific tools/platforms mentioned as options, nice-to-haves, or "adjacent/similar" alternatives (e.g. Varonis, Purview, BigID, Securiti, Netwrix), plus secondary infra skills (AD, Azure, M365, AKS, PowerShell, etc).
-- keywords.excluded = anything the requirement explicitly says to AVOID or de-prioritize (e.g. "avoid focusing primarily on pure Data Engineer/Databricks profiles" -> excluded should include those role/profile terms). Read for negative/avoid/don't/instead-of language throughout the whole text, not just the first paragraph.
+- Every keyword (required, preferred, and excluded) MUST be copied VERBATIM from the requirement text — the exact skill/tool/platform/role name as the recruiter typed it, same wording and casing where reasonable. Do NOT rename, translate, expand abbreviations, merge synonyms, or substitute your own terminology/taxonomy for what the recruiter wrote. If the recruiter wrote "Microsoft Purview/MIP", use that phrase (or split into "Microsoft Purview" and "MIP" if listed as separate items) — do not invent a different label for it.
+- keywords.required = the small set of skills/tools/domains, copied verbatim, that are core to EVERY acceptable candidate profile, regardless of which specific tool/platform they used. Prefer the broader terms the recruiter themselves used for the overall need (e.g. if they wrote "Data Security/Governance", use that exact phrase) over cramming in every named tool as individually mandatory, unless the JD says a specific tool is truly non-negotiable.
+- keywords.preferred = the specific tools/platforms named as options, nice-to-haves, or "adjacent/similar" alternatives, copied verbatim as written, plus secondary skills mentioned by name (also verbatim).
+- keywords.excluded = anything the requirement explicitly says to AVOID or de-prioritize, using the recruiter's own wording (e.g. "avoid focusing primarily on pure Data Engineer/Databricks profiles" -> excluded should include "Data Engineer" and "Databricks" as written). Read for negative/avoid/don't/instead-of language throughout the whole text, not just the first paragraph.
 - If the requirement gives an experience range preference (e.g. "4-5 years is on the lower side, we ideally need 6+ years"), use the IDEAL/target stated minimum (6, in that example) as min_experience — not the lower number being described as insufficient. A one-off mention of an already-in-pipeline candidate's specific experience (e.g. "the current candidate has ~4 years, evaluate them anyway") is about a single individual, not the sourcing criteria — do not let it override min_experience.
 - notice_period must be a flat list of strings like ["0-15 days"], never a dict
 - ug_qualification: ONLY set if the JD explicitly states a degree requirement. Allowed values: __UG_OPTIONS__. Otherwise null.
@@ -1076,8 +1077,9 @@ Rules:
         return f"{prefix}. " + " ".join(sentences)
 
     def _canonical_skill_name(self, raw: str) -> str:
-        raw = raw.strip().strip(".,;")
-        return CANONICAL_SKILLS.get(raw.lower(), raw)
+        # Verbatim: use exactly what the recruiter typed, not a taxonomy
+        # substitution — the recruiter's own wording is the source of truth.
+        return raw.strip().strip(".,;")
 
     def _rule_based_chat_edit(
         self, current_plan: SearchPlan, message: str, dry_check: bool = False
