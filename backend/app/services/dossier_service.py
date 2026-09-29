@@ -80,11 +80,17 @@ class DossierService:
 
         try:
             if lower_name.endswith(".pdf"):
-                with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-                    for page in pdf.pages:
-                        extracted = page.extract_text()
+                # PyMuPDF (fitz), not pdfplumber: pdfplumber's extract_text() glues
+                # words together with no space on some PDF fonts/encoders (tight
+                # kerning with no explicit space glyph), which fitz handles correctly.
+                pdf_doc = fitz.open(stream=file_bytes, filetype="pdf")
+                try:
+                    for page in pdf_doc:
+                        extracted = page.get_text()
                         if extracted:
                             text += extracted + "\n"
+                finally:
+                    pdf_doc.close()
             elif lower_name.endswith(".docx"):
                 doc = docx.Document(io.BytesIO(file_bytes))
                 for p in doc.paragraphs:

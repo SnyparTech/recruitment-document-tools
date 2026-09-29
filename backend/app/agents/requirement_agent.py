@@ -321,8 +321,11 @@ Read the job description and return ONLY a JSON object with these exact fields:
 }
 
 Rules:
-- keywords.required = must-have technical skills and tools explicitly stated in the JD
-- keywords.preferred = nice-to-have or secondary skills mentioned in the JD
+- Read the ENTIRE requirement first and synthesize the actual hiring intent before picking keywords — do not just grab the first list of tools mentioned. Long, narrative JDs often describe one role using several *equivalent or alternative* technology stacks (e.g. "Varonis, or if hard to find, Purview/BigID/Securiti") — these are OR-alternatives for the same underlying need (e.g. Data Security/Governance platform experience), not all mandatory together.
+- keywords.required = the small set of skills/tools/domains that are core to EVERY acceptable candidate profile, regardless of which specific tool/platform they used. Prefer broader domain terms (e.g. "Data Security", "Data Governance", "Microsoft Purview") over cramming in every named tool as individually mandatory, unless the JD says a specific tool is truly non-negotiable.
+- keywords.preferred = the named specific tools/platforms mentioned as options, nice-to-haves, or "adjacent/similar" alternatives (e.g. Varonis, Purview, BigID, Securiti, Netwrix), plus secondary infra skills (AD, Azure, M365, AKS, PowerShell, etc).
+- keywords.excluded = anything the requirement explicitly says to AVOID or de-prioritize (e.g. "avoid focusing primarily on pure Data Engineer/Databricks profiles" -> excluded should include those role/profile terms). Read for negative/avoid/don't/instead-of language throughout the whole text, not just the first paragraph.
+- If the requirement gives an experience range preference (e.g. "4-5 years is on the lower side, we ideally need 6+ years"), use the IDEAL/target stated minimum (6, in that example) as min_experience — not the lower number being described as insufficient. A one-off mention of an already-in-pipeline candidate's specific experience (e.g. "the current candidate has ~4 years, evaluate them anyway") is about a single individual, not the sourcing criteria — do not let it override min_experience.
 - notice_period must be a flat list of strings like ["0-15 days"], never a dict
 - ug_qualification: ONLY set if the JD explicitly states a degree requirement. Allowed values: __UG_OPTIONS__. Otherwise null.
 - pg_qualification: ONLY set if the JD explicitly states a postgraduate requirement. Allowed values: __PG_OPTIONS__. Otherwise null.
@@ -355,7 +358,7 @@ Rules:
                 },
             ],
             "temperature": 0.1,
-            "max_tokens": 1200,
+            "max_tokens": 1600,
         }
 
         models_to_try = [model] + ([m for m in GROQ_FALLBACK_MODELS if m != model] if self.groq_api_key else [])
