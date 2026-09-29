@@ -25,21 +25,7 @@ export default function ConvertedResumePreviewModal({
   const sr = conversionData.structured_resume || {};
   const pi = sr.personal_information || sr.personal_info || {};
   const candidateName = conversionData.candidate_name || pi.name || 'Candidate Name';
-  const objective = sr.objective || '';
-  const education = sr.education || [];
-  const experience = sr.experience || [];
-  const projects = sr.projects || [];
-  const additionalSections = sr.additional_sections || [];
-  const skills = sr.skills || {};
-
-  // Extract skills dictionary or list
-  const skillsDict = skills.skills_dict || {};
-  const skillsCategories = Object.keys(skillsDict).length > 0
-    ? Object.entries(skillsDict)
-    : [
-        skills.technical_skills?.length ? ['Technical Skills', skills.technical_skills.join(', ')] : null,
-        skills.soft_skills?.length ? ['Soft Skills', skills.soft_skills.join(', ')] : null,
-      ].filter(Boolean);
+  const sections = sr.sections || [];
 
   const handleCopyLatex = () => {
     if (conversionData.latex_code || conversionData.latex_source) {
@@ -127,128 +113,124 @@ export default function ConvertedResumePreviewModal({
                   ))}
                 </div>
 
-                {/* 3. Objective */}
-                {objective && (
-                  <div className="latex-sim-section">
-                    <div className="latex-sim-sec-title">OBJECTIVE</div>
-                    <div className="latex-sim-hrule" />
-                    <p className="latex-sim-objective-text">{objective}</p>
-                  </div>
-                )}
+                {/* 3+. Dynamic sections — titles, order, and type come entirely
+                     from what the LLM read in the source resume. */}
+                {sections.map((sec, idx) => {
+                  const title = (sec.title || 'SECTION').toUpperCase();
+                  const type = sec.type;
+                  const content = sec.content;
 
-                {/* 4. Education */}
-                {education.length > 0 && (
-                  <div className="latex-sim-section">
-                    <div className="latex-sim-sec-title">EDUCATION</div>
-                    <div className="latex-sim-hrule" />
-                    {education.map((edu, idx) => (
-                      <div key={idx} className="latex-sim-entry">
-                        <div className="latex-sim-row">
-                          <strong className="latex-sim-primary">{edu.institution || 'University'}</strong>
-                          <span className="latex-sim-date">{edu.date || ''}</span>
-                        </div>
-                        <div className="latex-sim-subrow">
-                          <em className="latex-sim-secondary">{edu.degree || ''}</em>
-                          {edu.location && <span className="latex-sim-location">{edu.location}</span>}
-                        </div>
-                        {edu.details?.length > 0 && (
-                          <ul className="latex-sim-bullets">
-                            {edu.details.map((d, dIdx) => (
-                              <li key={dIdx}>{d}</li>
-                            ))}
-                          </ul>
-                        )}
+                  if (type === 'text') {
+                    const text = (content || '').toString().trim();
+                    if (!text) return null;
+                    return (
+                      <div key={idx} className="latex-sim-section">
+                        <div className="latex-sim-sec-title">{title}</div>
+                        <div className="latex-sim-hrule" />
+                        <p className="latex-sim-objective-text">{text}</p>
                       </div>
-                    ))}
-                  </div>
-                )}
+                    );
+                  }
 
-                {/* 5. Skills */}
-                {skillsCategories.length > 0 && (
-                  <div className="latex-sim-section">
-                    <div className="latex-sim-sec-title">SKILLS</div>
-                    <div className="latex-sim-hrule" />
-                    <div className="latex-sim-skills-grid">
-                      {skillsCategories.map(([cat, val], idx) => (
-                        <div key={idx} className="latex-sim-skill-row">
-                          <span className="latex-sim-skill-label">{cat}:</span>
-                          <span className="latex-sim-skill-val">{val}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* 6. Experience */}
-                {experience.length > 0 && (
-                  <div className="latex-sim-section">
-                    <div className="latex-sim-sec-title">EXPERIENCE</div>
-                    <div className="latex-sim-hrule" />
-                    {experience.map((exp, idx) => (
-                      <div key={idx} className="latex-sim-entry">
-                        <div className="latex-sim-row">
-                          <strong className="latex-sim-primary">{exp.role || exp.title || 'Role'}</strong>
-                          <span className="latex-sim-date">
-                            {[exp.start_date, exp.end_date].filter(Boolean).join(' - ') || exp.date || ''}
-                          </span>
-                        </div>
-                        <div className="latex-sim-subrow">
-                          <em className="latex-sim-secondary">{exp.company || 'Company'}</em>
-                          {exp.location && <span className="latex-sim-location">{exp.location}</span>}
-                        </div>
-                        {exp.bullets?.length > 0 && (
-                          <ul className="latex-sim-bullets">
-                            {exp.bullets.map((bullet, bIdx) => (
-                              <li key={bIdx}>{bullet}</li>
-                            ))}
-                          </ul>
-                        )}
+                  if (type === 'list') {
+                    const items = content || [];
+                    if (!items.length) return null;
+                    return (
+                      <div key={idx} className="latex-sim-section">
+                        <div className="latex-sim-sec-title">{title}</div>
+                        <div className="latex-sim-hrule" />
+                        <ul className="latex-sim-bullets">
+                          {items.map((item, iIdx) => (
+                            <li key={iIdx}>{item}</li>
+                          ))}
+                        </ul>
                       </div>
-                    ))}
-                  </div>
-                )}
+                    );
+                  }
 
-                {/* 7. Projects */}
-                {projects.length > 0 && (
-                  <div className="latex-sim-section">
-                    <div className="latex-sim-sec-title">PROJECTS</div>
-                    <div className="latex-sim-hrule" />
-                    {projects.map((proj, idx) => (
-                      <div key={idx} className="latex-sim-entry">
-                        <div className="latex-sim-row">
-                          <strong className="latex-sim-primary">{proj.title}</strong>
-                          {proj.url && <span className="latex-sim-link">{proj.url}</span>}
-                        </div>
-                        {proj.description && (
-                          <p className="latex-sim-proj-desc">{proj.description}</p>
-                        )}
-                        {proj.bullets?.length > 0 && (
-                          <ul className="latex-sim-bullets">
-                            {proj.bullets.map((b, bIdx) => (
-                              <li key={bIdx}>{b}</li>
-                            ))}
-                          </ul>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {/* 8. Additional Sections */}
-                {additionalSections.map((sec, idx) => (
-                  <div key={idx} className="latex-sim-section">
-                    <div className="latex-sim-sec-title">{(sec.title || 'ADDITIONAL').toUpperCase()}</div>
-                    <div className="latex-sim-hrule" />
-                    {sec.content && <p className="latex-sim-proj-desc">{sec.content}</p>}
-                    {sec.bullets?.length > 0 && (
-                      <ul className="latex-sim-bullets">
-                        {sec.bullets.map((b, bIdx) => (
-                          <li key={bIdx}>{b}</li>
+                  if (type === 'education') {
+                    const entries = content || [];
+                    if (!entries.length) return null;
+                    return (
+                      <div key={idx} className="latex-sim-section">
+                        <div className="latex-sim-sec-title">{title}</div>
+                        <div className="latex-sim-hrule" />
+                        {entries.map((edu, eIdx) => (
+                          <div key={eIdx} className="latex-sim-entry">
+                            <div className="latex-sim-row">
+                              <strong className="latex-sim-primary">{edu.institution || 'University'}</strong>
+                              <span className="latex-sim-date">{edu.date || ''}</span>
+                            </div>
+                            <div className="latex-sim-subrow">
+                              <em className="latex-sim-secondary">{edu.degree || ''}</em>
+                              {edu.location && <span className="latex-sim-location">{edu.location}</span>}
+                            </div>
+                            {edu.details?.length > 0 && (
+                              <ul className="latex-sim-bullets">
+                                {edu.details.map((d, dIdx) => (
+                                  <li key={dIdx}>{d}</li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
                         ))}
-                      </ul>
-                    )}
-                  </div>
-                ))}
+                      </div>
+                    );
+                  }
+
+                  if (type === 'experience') {
+                    const entries = content || [];
+                    if (!entries.length) return null;
+                    return (
+                      <div key={idx} className="latex-sim-section">
+                        <div className="latex-sim-sec-title">{title}</div>
+                        <div className="latex-sim-hrule" />
+                        {entries.map((exp, eIdx) => (
+                          <div key={eIdx} className="latex-sim-entry">
+                            <div className="latex-sim-row">
+                              <strong className="latex-sim-primary">{exp.role || 'Role'}</strong>
+                              <span className="latex-sim-date">
+                                {[exp.start_date, exp.end_date].filter(Boolean).join(' - ')}
+                              </span>
+                            </div>
+                            <div className="latex-sim-subrow">
+                              <em className="latex-sim-secondary">{exp.company || 'Company'}</em>
+                              {exp.location && <span className="latex-sim-location">{exp.location}</span>}
+                            </div>
+                            {exp.bullets?.length > 0 && (
+                              <ul className="latex-sim-bullets">
+                                {exp.bullets.map((bullet, bIdx) => (
+                                  <li key={bIdx}>{bullet}</li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  }
+
+                  if (type === 'skills_table') {
+                    const rows = content || [];
+                    if (!rows.length) return null;
+                    return (
+                      <div key={idx} className="latex-sim-section">
+                        <div className="latex-sim-sec-title">{title}</div>
+                        <div className="latex-sim-hrule" />
+                        <div className="latex-sim-skills-grid">
+                          {rows.map((row, rIdx) => (
+                            <div key={rIdx} className="latex-sim-skill-row">
+                              <span className="latex-sim-skill-label">{row.category || 'Skills'}:</span>
+                              <span className="latex-sim-skill-val">{(row.items || []).join(', ')}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  return null;
+                })}
               </div>
             </div>
           )}

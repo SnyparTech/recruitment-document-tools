@@ -52,7 +52,7 @@ STRICT RULES:
 
 Your output must be valid JSON only.
 
-If information cannot be confidently mapped to one of the predefined template sections, place it into an additional section while preserving the original section title and content.
+Sections in the output must mirror the ACTUAL sections present in the source resume — their titles, their order, and how many there are. Do not force the content into a fixed template's section list; the source resume's own structure is the structure.
 
 Before returning the result, internally verify that all meaningful source information has been represented in the output.
 """
@@ -68,58 +68,92 @@ Return ONLY a valid JSON object with the following exact structure:
     "linkedin": "LinkedIn URL or handle or null",
     "website": "Personal website or portfolio or null"
   },
-  "objective": "Career objective or professional summary text or null",
-  "education": [
+  "sections": [
     {
-      "degree": "Degree and major",
-      "institution": "University / College name",
-      "location": "City, Country or null",
-      "date": "Graduation year or date range",
-      "details": ["GPA, honors, coursework, or other bullet points"]
-    }
-  ],
-  "skills": {
-    "technical_skills": ["List of technical skills, languages, frameworks"],
-    "soft_skills": ["List of soft skills if present"],
-    "additional_skills": ["Tools, databases, platforms, etc."]
-  },
-  "experience": [
-    {
-      "role": "Job Title / Role",
-      "company": "Company Name",
-      "location": "Location or null",
-      "start_date": "Start date",
-      "end_date": "End date or Present",
-      "bullets": [
-        "Exact bullet point from resume with all metrics, numbers, and technologies preserved verbatim"
-      ]
-    }
-  ],
-  "projects": [
-    {
-      "title": "Project Title",
-      "description": "Full description and achievements",
-      "url": "Project URL or null"
-    }
-  ],
-  "extra_curricular_activities": [
-    "Activity or achievement description"
-  ],
-  "leadership": [
-    "Leadership role or responsibility description"
-  ],
-  "additional_sections": [
-    {
-      "title": "CERTIFICATIONS / AWARDS / PUBLICATIONS / etc.",
-      "items": [
-        "Every item, bullet, or sentence from this section preserved verbatim"
-      ]
+      "title": "Exact section heading as it appears in the source resume (e.g. 'PROFESSIONAL SUMMARY', 'CORE COMPETENCIES', 'WORK EXPERIENCE', 'CERTIFICATIONS', 'PUBLICATIONS', 'LANGUAGES', 'AWARDS', 'VOLUNTEER EXPERIENCE', 'PROJECTS', etc.) — preserve the resume's own wording. Do not rename it to a generic template label.",
+      "type": "text | list | education | experience | skills_table",
+      "content": "shape depends on type, see rules below"
     }
   ]
 }
 
+Section type rules — pick whichever type matches the section's actual content:
+- "text": a single block of prose (e.g. a summary/objective/profile section). content = the paragraph as one string, verbatim.
+- "list": a flat list of standalone items (e.g. certifications, publications, awards, languages, extra-curricular activities, leadership, hobbies, patents, or anything else that doesn't fit the other types). content = array of strings, one per item, verbatim.
+- "education": content = array of objects: {"institution": ..., "degree": ..., "location": ... or null, "date": ..., "details": [array of bullet strings, or empty array]}.
+- "experience": content = array of objects: {"role": ..., "company": ..., "location": ... or null, "start_date": ..., "end_date": ... or "Present", "bullets": [every bullet point verbatim, none dropped]}.
+- "skills_table": content = array of objects: {"category": "e.g. Programming Languages" or null if the resume lists skills without categories, "items": [array of skill strings]}.
+
+CRITICAL:
+- Output sections in the SAME ORDER they appear in the source resume.
+- Use the SAME section titles as the source resume (verbatim) — not a fixed template's names.
+- Do NOT invent sections that aren't in the source resume. Do NOT omit any section that IS in the source resume.
+- If a section's content doesn't cleanly fit one type, use "list" and put each meaningful piece of information as its own string item — never drop information because it doesn't fit a type.
+
 DO NOT wrap in markdown fences like ```json. Output raw valid JSON only.
 """
+
+
+def _legacy_fixed_schema_to_dynamic_sections(legacy: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Adapts DeterministicFallbackParser's fixed-schema output (objective/education/
+    skills/experience/projects/extra_curricular_activities/leadership/additional_sections)
+    into the {"personal_information", "sections": [...]} dynamic shape the rest of
+    the pipeline (LatexResumeGenerator, DocxResumeGenerator, CompletenessValidator)
+    now expects — without touching the deterministic parser's internal logic.
+    """
+    sections: List[Dict[str, Any]] = []
+
+    if legacy.get("objective"):
+        sections.append({"title": "SUMMARY", "type": "text", "content": legacy["objective"]})
+
+    if legacy.get("education"):
+        sections.append({"title": "EDUCATION", "type": "education", "content": legacy["education"]})
+
+    skills = legacy.get("skills") or {}
+    skills_content = []
+    if skills.get("technical_skills"):
+        skills_content.append({"category": "Technical Skills", "items": skills["technical_skills"]})
+    if skills.get("soft_skills"):
+        skills_content.append({"category": "Soft Skills", "items": skills["soft_skills"]})
+    if skills.get("additional_skills"):
+        skills_content.append({"category": "Tools & Technologies", "items": skills["additional_skills"]})
+    if skills_content:
+        sections.append({"title": "SKILLS", "type": "skills_table", "content": skills_content})
+
+    if legacy.get("experience"):
+        sections.append({"title": "EXPERIENCE", "type": "experience", "content": legacy["experience"]})
+
+    if legacy.get("projects"):
+        proj_items = []
+        for p in legacy["projects"]:
+            title = p.get("title") or "Project"
+            desc = p.get("description") or ""
+            url = p.get("url")
+            text = f"{title}: {desc}" if desc else title
+            if url:
+                text = f"{text} ({url})"
+            proj_items.append(text)
+        sections.append({"title": "PROJECTS", "type": "list", "content": proj_items})
+
+    if legacy.get("extra_curricular_activities"):
+        sections.append({
+            "title": "EXTRA-CURRICULAR ACTIVITIES",
+            "type": "list",
+            "content": legacy["extra_curricular_activities"],
+        })
+
+    if legacy.get("leadership"):
+        sections.append({"title": "LEADERSHIP", "type": "list", "content": legacy["leadership"]})
+
+    for sec in legacy.get("additional_sections") or []:
+        if sec.get("items"):
+            sections.append({"title": sec.get("title", "ADDITIONAL INFORMATION"), "type": "list", "content": sec["items"]})
+
+    return {
+        "personal_information": legacy.get("personal_information", {}),
+        "sections": sections,
+    }
 
 
 class ResumeAIProvider(abc.ABC):
@@ -620,7 +654,7 @@ class DeterministicFallbackParser:
                 "bullets":    canonical_bullets,
             })
 
-        return {
+        legacy = {
             "personal_information":    personal_information,
             "objective":               objective,
             "education":               education_list,
@@ -631,6 +665,7 @@ class DeterministicFallbackParser:
             "leadership":              leadership,
             "additional_sections":     additional_sections,
         }
+        return _legacy_fixed_schema_to_dynamic_sections(legacy)
 
     # ── Section parsers ───────────────────────────────────────────────
 

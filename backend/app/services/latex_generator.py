@@ -88,169 +88,103 @@ class LatexResumeGenerator:
             r"",
         ])
 
-        # 1. OBJECTIVE
-        objective = data.get("objective")
-        if objective and str(objective).strip():
-            obj_text = cls.escape_latex(str(objective).strip())
-            latex_lines.extend([
-                r"\begin{rSection}{OBJECTIVE}",
-                obj_text,
-                r"\end{rSection}",
-                r"",
-            ])
+        # Dynamic sections — order, titles, and count come entirely from
+        # whatever the source resume (or the LLM's reading of it) produced.
+        # No fixed template section list; each section renders based on its
+        # own declared "type".
+        sections = data.get("sections", []) or []
+        for sec in sections:
+            sec_type = sec.get("type")
+            content = sec.get("content")
+            title = cls.escape_latex((sec.get("title") or "SECTION").strip().upper())
 
-        # 2. Education
-        education = data.get("education", []) or []
-        if education:
-            latex_lines.extend([
-                r"\begin{rSection}{Education}",
-            ])
-            for edu in education:
-                inst = cls.escape_latex(edu.get("institution") or "University")
-                date = cls.escape_latex(edu.get("date") or "")
-                degree = cls.escape_latex(edu.get("degree") or "")
-                loc = cls.escape_latex(edu.get("location") or "")
-                details = edu.get("details") or []
+            if sec_type == "text":
+                text = str(content or "").strip()
+                if not text:
+                    continue
+                latex_lines.extend([
+                    f"\\begin{{rSection}}{{{title}}}",
+                    cls.escape_latex(text),
+                    r"\end{rSection}",
+                    r"",
+                ])
 
-                latex_lines.append(
-                    f"\\begin{{rSubsection}}{{{inst}}}{{{date}}}{{{degree}}}{{{loc}}}"
-                )
-                for det in details:
-                    latex_lines.append(f"\\item {cls.escape_latex(det)}")
-                latex_lines.append(r"\end{rSubsection}")
-            latex_lines.extend([
-                r"\end{rSection}",
-                r"",
-            ])
+            elif sec_type == "list":
+                items = content or []
+                if not items:
+                    continue
+                latex_lines.extend([
+                    f"\\begin{{rSection}}{{{title}}}",
+                    r"\begin{itemize}",
+                    r"\setlength{\itemsep}{-0.5em} \vspace{-0.5em}",
+                ])
+                for item in items:
+                    latex_lines.append(f"\\item {cls.escape_latex(item)}")
+                latex_lines.extend([
+                    r"\end{itemize}",
+                    r"\end{rSection}",
+                    r"",
+                ])
 
-        # 3. SKILLS
-        skills = data.get("skills", {}) or {}
-        has_skills = any(skills.get(k) for k in ["technical_skills", "soft_skills", "additional_skills"])
-        if has_skills:
-            latex_lines.extend([
-                r"\begin{rSection}{SKILLS}",
-                r"\begin{tabular}{ @{} >{\bfseries}l @{\hspace{6ex}} l }",
-            ])
-            if skills.get("technical_skills"):
-                tech_str = ", ".join(cls.escape_latex(s) for s in skills["technical_skills"])
-                latex_lines.append(f"Technical Skills & {tech_str} \\\\")
-            if skills.get("soft_skills"):
-                soft_str = ", ".join(cls.escape_latex(s) for s in skills["soft_skills"])
-                latex_lines.append(f"Soft Skills & {soft_str} \\\\")
-            if skills.get("additional_skills"):
-                add_str = ", ".join(cls.escape_latex(s) for s in skills["additional_skills"])
-                latex_lines.append(f"Tools \\& Technologies & {add_str} \\\\")
-            latex_lines.extend([
-                r"\end{tabular}",
-                r"\end{rSection}",
-                r"",
-            ])
+            elif sec_type == "education":
+                entries = content or []
+                if not entries:
+                    continue
+                latex_lines.append(f"\\begin{{rSection}}{{{title}}}")
+                for edu in entries:
+                    inst = cls.escape_latex(edu.get("institution") or "University")
+                    date = cls.escape_latex(edu.get("date") or "")
+                    degree = cls.escape_latex(edu.get("degree") or "")
+                    loc = cls.escape_latex(edu.get("location") or "")
+                    details = edu.get("details") or []
 
-        # 4. EXPERIENCE
-        experience = data.get("experience", []) or []
-        if experience:
-            latex_lines.extend([
-                r"\begin{rSection}{EXPERIENCE}",
-            ])
-            for exp in experience:
-                comp = cls.escape_latex(exp.get("company") or "Company")
-                start = exp.get("start_date") or ""
-                end = exp.get("end_date") or ""
-                date_str = cls.escape_latex(f"{start} - {end}".strip(" -")) if (start or end) else ""
-                role = cls.escape_latex(exp.get("role") or "Role")
-                loc = cls.escape_latex(exp.get("location") or "")
-                bullets = exp.get("bullets") or []
+                    latex_lines.append(
+                        f"\\begin{{rSubsection}}{{{inst}}}{{{date}}}{{{degree}}}{{{loc}}}"
+                    )
+                    for det in details:
+                        latex_lines.append(f"\\item {cls.escape_latex(det)}")
+                    latex_lines.append(r"\end{rSubsection}")
+                latex_lines.extend([r"\end{rSection}", r""])
 
-                latex_lines.append(
-                    f"\\begin{{rSubsection}}{{{comp}}}{{{date_str}}}{{{role}}}{{{loc}}}"
-                )
-                for b in bullets:
-                    latex_lines.append(f"\\item {cls.escape_latex(b)}")
-                latex_lines.append(r"\end{rSubsection}")
-            latex_lines.extend([
-                r"\end{rSection}",
-                r"",
-            ])
+            elif sec_type == "experience":
+                entries = content or []
+                if not entries:
+                    continue
+                latex_lines.append(f"\\begin{{rSection}}{{{title}}}")
+                for exp in entries:
+                    comp = cls.escape_latex(exp.get("company") or "Company")
+                    start = exp.get("start_date") or ""
+                    end = exp.get("end_date") or ""
+                    date_str = cls.escape_latex(f"{start} - {end}".strip(" -")) if (start or end) else ""
+                    role = cls.escape_latex(exp.get("role") or "Role")
+                    loc = cls.escape_latex(exp.get("location") or "")
+                    bullets = exp.get("bullets") or []
 
-        # 5. PROJECTS
-        projects = data.get("projects", []) or []
-        if projects:
-            latex_lines.extend([
-                r"\begin{rSection}{PROJECTS}",
-            ])
-            for proj in projects:
-                title = cls.escape_latex(proj.get("title") or "Project")
-                url = proj.get("url")
-                url_str = f" ({cls.escape_latex(url)})" if url else ""
-                desc = cls.escape_latex(proj.get("description") or "")
+                    latex_lines.append(
+                        f"\\begin{{rSubsection}}{{{comp}}}{{{date_str}}}{{{role}}}{{{loc}}}"
+                    )
+                    for b in bullets:
+                        latex_lines.append(f"\\item {cls.escape_latex(b)}")
+                    latex_lines.append(r"\end{rSubsection}")
+                latex_lines.extend([r"\end{rSection}", r""])
 
-                latex_lines.append(f"\\textbf{{{title}}}{url_str}")
-                if desc:
-                    # Break into itemize if multi-line or paragraph
-                    latex_lines.append(r"\begin{itemize}")
-                    latex_lines.append(r"\setlength{\itemsep}{-0.5em} \vspace{-0.5em}")
-                    for d_line in desc.splitlines():
-                        clean_d = d_line.strip()
-                        if clean_d:
-                            latex_lines.append(f"\\item {clean_d}")
-                    latex_lines.append(r"\end{itemize}")
-            latex_lines.extend([
-                r"\end{rSection}",
-                r"",
-            ])
-
-        # 6. Extra-Curricular Activities
-        extra = data.get("extra_curricular_activities", []) or []
-        if extra:
-            latex_lines.extend([
-                r"\begin{rSection}{Extra-Curricular Activities}",
-                r"\begin{itemize}",
-                r"\setlength{\itemsep}{-0.5em} \vspace{-0.5em}",
-            ])
-            for item in extra:
-                latex_lines.append(f"\\item {cls.escape_latex(item)}")
-            latex_lines.extend([
-                r"\end{itemize}",
-                r"\end{rSection}",
-                r"",
-            ])
-
-        # 7. Leadership
-        leadership = data.get("leadership", []) or []
-        if leadership:
-            latex_lines.extend([
-                r"\begin{rSection}{Leadership}",
-                r"\begin{itemize}",
-                r"\setlength{\itemsep}{-0.5em} \vspace{-0.5em}",
-            ])
-            for item in leadership:
-                latex_lines.append(f"\\item {cls.escape_latex(item)}")
-            latex_lines.extend([
-                r"\end{itemize}",
-                r"\end{rSection}",
-                r"",
-            ])
-
-        # 8. Dynamic Additional Sections (e.g. Certifications, Publications, Awards, etc.)
-        additional = data.get("additional_sections", []) or []
-        for sec in additional:
-            title = cls.escape_latex(sec.get("title", "ADDITIONAL INFORMATION").strip().upper())
-            items = sec.get("items", []) or []
-            if not items:
-                continue
-
-            latex_lines.extend([
-                f"\\begin{{rSection}}{{{title}}}",
-                r"\begin{itemize}",
-                r"\setlength{\itemsep}{-0.5em} \vspace{-0.5em}",
-            ])
-            for itm in items:
-                latex_lines.append(f"\\item {cls.escape_latex(itm)}")
-            latex_lines.extend([
-                r"\end{itemize}",
-                f"\\end{{rSection}}",
-                r"",
-            ])
+            elif sec_type == "skills_table":
+                rows = content or []
+                if not rows:
+                    continue
+                latex_lines.extend([
+                    f"\\begin{{rSection}}{{{title}}}",
+                    r"\begin{tabular}{ @{} >{\bfseries}l @{\hspace{6ex}} l }",
+                ])
+                for row in rows:
+                    category = cls.escape_latex(row.get("category") or "Skills")
+                    items_str = ", ".join(cls.escape_latex(s) for s in (row.get("items") or []))
+                    latex_lines.append(f"{category} & {items_str} \\\\")
+                latex_lines.extend([
+                    r"\end{tabular}",
+                    r"\end{rSection}",
+                    r"",
+                ])
 
         latex_lines.extend([
             r"\end{document}",

@@ -145,18 +145,19 @@ class CompletenessValidator:
                 recovered_items.append(item)
 
         if recovered_items:
-            additional = repaired.setdefault("additional_sections", [])
-            # Check if an 'ADDITIONAL DETAILS' section exists
+            sections = repaired.setdefault("sections", [])
+            # Check if an 'ADDITIONAL DETAILS' list section already exists
             found = False
-            for sec in additional:
-                if "ADDITIONAL" in sec.get("title", "").upper():
-                    sec.setdefault("items", []).extend(recovered_items)
+            for sec in sections:
+                if sec.get("type") == "list" and "ADDITIONAL" in (sec.get("title") or "").upper():
+                    sec["content"] = (sec.get("content") or []) + recovered_items
                     found = True
                     break
             if not found:
-                additional.append({
+                sections.append({
                     "title": "ADDITIONAL ACCOMPLISHMENTS & DETAILS",
-                    "items": recovered_items,
+                    "type": "list",
+                    "content": recovered_items,
                 })
 
         return repaired

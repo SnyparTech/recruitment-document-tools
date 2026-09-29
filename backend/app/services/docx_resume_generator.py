@@ -123,125 +123,86 @@ class DocxResumeGenerator:
         # Spacer below header before first section
         cls._add_thin_spacer(doc)
 
-        # ── 3. OBJECTIVE ───────────────────────────────────────────────
-        objective = data.get("objective")
-        if objective and str(objective).strip():
-            cls._add_section_heading(doc, "OBJECTIVE")
-            p_obj = doc.add_paragraph()
-            p_obj.paragraph_format.space_before = Pt(2)
-            p_obj.paragraph_format.space_after  = Pt(3)
-            p_obj.paragraph_format.line_spacing_rule = None
-            p_obj.paragraph_format.line_spacing = 1.08
-            run_obj = p_obj.add_run(str(objective).strip())
-            run_obj.font.name = FONT_NAME
-            run_obj.font.size = Pt(10)
+        # ── 3. Dynamic sections ──────────────────────────────────────────
+        # Order, titles, and count come entirely from whatever the source
+        # resume (or the LLM's reading of it) produced — no fixed template
+        # section list; each section renders based on its own "type".
+        sections = data.get("sections", []) or []
+        for sec in sections:
+            sec_type = sec.get("type")
+            content = sec.get("content")
+            title = (sec.get("title") or "SECTION").strip().upper()
 
-        # ── 4. EDUCATION ───────────────────────────────────────────────
-        education = data.get("education", []) or []
-        if education:
-            cls._add_section_heading(doc, "Education")
-            for edu in education:
-                inst   = edu.get("institution") or "University"
-                date   = edu.get("date") or ""
-                degree = edu.get("degree") or ""
-                loc    = edu.get("location") or ""
-                details= edu.get("details") or []
+            if sec_type == "text":
+                text = str(content or "").strip()
+                if not text:
+                    continue
+                cls._add_section_heading(doc, title)
+                p_obj = doc.add_paragraph()
+                p_obj.paragraph_format.space_before = Pt(2)
+                p_obj.paragraph_format.space_after = Pt(3)
+                p_obj.paragraph_format.line_spacing_rule = None
+                p_obj.paragraph_format.line_spacing = 1.08
+                run_obj = p_obj.add_run(text)
+                run_obj.font.name = FONT_NAME
+                run_obj.font.size = Pt(10)
 
-                # LaTeX rSubsection: Line 1 = institution (bold) \hfill date
-                cls._add_rsubsection_line1(doc, inst, date, space_before=Pt(4))
-                # Line 2 = degree (italic) \hfill location (italic)
-                if degree or loc:
-                    cls._add_rsubsection_line2(doc, degree, loc)
-                for det in details:
-                    cls._add_bullet(doc, det)
+            elif sec_type == "list":
+                items = content or []
+                if not items:
+                    continue
+                cls._add_section_heading(doc, title)
+                for itm in items:
+                    cls._add_bullet(doc, itm)
 
-        # ── 5. SKILLS ──────────────────────────────────────────────────
-        skills = data.get("skills", {}) or {}
-        rows: List[tuple] = []
-        if skills.get("technical_skills"):
-            rows.append(("Technical Skills", ", ".join(skills["technical_skills"])))
-        if skills.get("soft_skills"):
-            rows.append(("Soft Skills", ", ".join(skills["soft_skills"])))
-        if skills.get("additional_skills"):
-            rows.append(("Tools & Technologies", ", ".join(skills["additional_skills"])))
+            elif sec_type == "education":
+                entries = content or []
+                if not entries:
+                    continue
+                cls._add_section_heading(doc, title)
+                for edu in entries:
+                    inst = edu.get("institution") or "University"
+                    date = edu.get("date") or ""
+                    degree = edu.get("degree") or ""
+                    loc = edu.get("location") or ""
+                    details = edu.get("details") or []
 
-        if rows:
-            cls._add_section_heading(doc, "SKILLS")
-            for label, value in rows:
-                cls._add_skills_row(doc, label, value)
+                    cls._add_rsubsection_line1(doc, inst, date, space_before=Pt(4))
+                    if degree or loc:
+                        cls._add_rsubsection_line2(doc, degree, loc)
+                    for det in details:
+                        cls._add_bullet(doc, det)
 
-        # ── 6. EXPERIENCE ──────────────────────────────────────────────
-        experience = data.get("experience", []) or []
-        if experience:
-            cls._add_section_heading(doc, "EXPERIENCE")
-            for exp in experience:
-                role    = exp.get("role") or "Role"
-                company = exp.get("company") or "Company"
-                loc     = exp.get("location") or ""
-                start   = exp.get("start_date") or ""
-                end     = exp.get("end_date") or ""
-                date_str = f"{start} - {end}".strip(" -") if (start or end) else ""
-                bullets = exp.get("bullets") or []
+            elif sec_type == "experience":
+                entries = content or []
+                if not entries:
+                    continue
+                cls._add_section_heading(doc, title)
+                for exp in entries:
+                    role = exp.get("role") or "Role"
+                    company = exp.get("company") or "Company"
+                    loc = exp.get("location") or ""
+                    start = exp.get("start_date") or ""
+                    end = exp.get("end_date") or ""
+                    date_str = f"{start} - {end}".strip(" -") if (start or end) else ""
+                    bullets = exp.get("bullets") or []
 
-                # LaTeX template: \textbf{Role} \hfill Date
-                cls._add_rsubsection_line1(doc, role, date_str, space_before=Pt(5))
-                # Company \hfill \textit{location}
-                if company or loc:
-                    cls._add_rsubsection_line2(doc, company, loc)
-                for b in bullets:
-                    cls._add_bullet(doc, b)
+                    cls._add_rsubsection_line1(doc, role, date_str, space_before=Pt(5))
+                    if company or loc:
+                        cls._add_rsubsection_line2(doc, company, loc)
+                    for b in bullets:
+                        cls._add_bullet(doc, b)
 
-        # ── 7. PROJECTS ────────────────────────────────────────────────
-        projects = data.get("projects", []) or []
-        if projects:
-            cls._add_section_heading(doc, "PROJECTS")
-            for proj in projects:
-                title = proj.get("title") or "Project"
-                url   = proj.get("url")
-                desc  = proj.get("description") or ""
-
-                p_proj = doc.add_paragraph()
-                p_proj.paragraph_format.space_before = Pt(3)
-                p_proj.paragraph_format.space_after  = Pt(1)
-                run_t = p_proj.add_run(title + ".")
-                run_t.bold       = True
-                run_t.font.name  = FONT_NAME
-                run_t.font.size  = Pt(10)
-                if url:
-                    run_u = p_proj.add_run(f"  {url}")
-                    run_u.font.size  = Pt(9.5)
-                    run_u.font.name  = FONT_NAME
-                    run_u.font.color.rgb = COLOR_MUTED
-
-                if desc:
-                    lines = [l.strip() for l in desc.splitlines() if l.strip()]
-                    for l in lines:
-                        cls._add_bullet(doc, l)
-
-        # ── 8. EXTRA-CURRICULAR ────────────────────────────────────────
-        extra = data.get("extra_curricular_activities", []) or []
-        if extra:
-            cls._add_section_heading(doc, "Extra-Curricular Activities")
-            for itm in extra:
-                cls._add_bullet(doc, itm)
-
-        # ── 9. LEADERSHIP ──────────────────────────────────────────────
-        leadership = data.get("leadership", []) or []
-        if leadership:
-            cls._add_section_heading(doc, "Leadership")
-            for itm in leadership:
-                cls._add_bullet(doc, itm)
-
-        # ── 10. ADDITIONAL DYNAMIC SECTIONS ────────────────────────────
-        additional = data.get("additional_sections", []) or []
-        for sec in additional:
-            title = (sec.get("title") or "ADDITIONAL INFORMATION").strip()
-            items = sec.get("items", []) or []
-            if not items:
-                continue
-            cls._add_section_heading(doc, title.upper())
-            for itm in items:
-                cls._add_bullet(doc, itm)
+            elif sec_type == "skills_table":
+                rows = content or []
+                if not rows:
+                    continue
+                cls._add_section_heading(doc, title)
+                for row in rows:
+                    label = row.get("category") or "Skills"
+                    value = ", ".join(row.get("items") or [])
+                    if value:
+                        cls._add_skills_row(doc, label, value)
 
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
         doc.save(output_path)
