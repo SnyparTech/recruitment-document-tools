@@ -58,6 +58,9 @@ class FakeEl {
   querySelector(selector) {
     return this.querySelectorAll(selector)[0] || null;
   }
+  getAttribute() {
+    return null;
+  }
 }
 
 function loadContentJsSandbox(documentQuerySelectorAllBySelector) {
@@ -142,7 +145,7 @@ test("extractOneCandidate returns null (fail-soft, not throw) when no name can b
   assert.equal(sandbox.extractOneCandidate(emptyCard, null), null);
 });
 
-test("extractCandidatesFromResultsPage isolates a per-container error: one bad card doesn't stop the others", () => {
+test("extractCandidatesFromResultsPage isolates a per-container error: one bad card doesn't stop the others", async () => {
   const good1 = buildCandidateCard({ name: "Ravi Kumar", title: "Dev" });
   const good2 = buildCandidateCard({ name: "Priya Singh", company: "Acme" });
 
@@ -168,7 +171,7 @@ test("extractCandidatesFromResultsPage isolates a per-container error: one bad c
     return [];
   };
 
-  const { candidates, diagnostics } = sandbox.extractCandidatesFromResultsPage();
+  const { candidates, diagnostics } = await sandbox.extractCandidatesFromResultsPage();
 
   assert.equal(diagnostics.containers_detected, 3);
   assert.equal(candidates.length, 2, "the poisoned container must be skipped, not abort the whole batch");

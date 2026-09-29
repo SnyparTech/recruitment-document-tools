@@ -2244,7 +2244,7 @@ function extractOneCandidate(container, anchor) {
   if (!window.__snyCardDumped && (!result.experience || !result.notice_period || result.skills.length < 2)) {
     window.__snyCardDumped = true;
     console.log("[Snypar Bot] Card is missing experience/notice/skills. Card innerText:",
-      (container.innerText || "").slice(0, 1200), "\nCard outerHTML:", container.outerHTML.slice(0, 3000));
+      (container.innerText || "").slice(0, 1200), "\nCard outerHTML:", (container.outerHTML || "").slice(0, 3000));
   }
   return result;
 }
@@ -2262,14 +2262,15 @@ async function extractCandidatesFromResultsPage() {
   // elsewhere on the page (e.g. a sidebar filter).
   let expandedAny = false;
   for (const { container } of pairs) {
-    const moreBtn = container.querySelector("button.more.naukri-btn-empty");
-    if (moreBtn && moreBtn.offsetParent !== null) {
-      try {
+    try {
+      const moreBtn = container.querySelector("button.more.naukri-btn-empty");
+      if (moreBtn && moreBtn.offsetParent !== null) {
         moreBtn.click();
         expandedAny = true;
-      } catch (err) {
-        // Non-fatal — that card just keeps its truncated skill list.
       }
+    } catch (err) {
+      // Non-fatal — a malformed container just keeps its truncated skill list;
+      // must not abort expansion (or extraction) of the other cards.
     }
   }
   if (expandedAny) await sleep(300); // let React re-render the expanded chips before reading

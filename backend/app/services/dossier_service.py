@@ -604,8 +604,34 @@ class DossierService:
                     total += len(cell.text.strip())
         return total
 
+    @staticmethod
+    def _docx_avg_word_length(source) -> Optional[float]:
+        """
+        Average whitespace-split token length across the document. Real prose
+        averages ~4-7 characters per word. pdf2docx has a known failure mode on
+        some PDFs (confirmed live on a LaTeX-generated resume) where it drops
+        inter-word spaces entirely — the text survives, but "Senior Security
+        Analyst" becomes "SeniorSecurityAnalyst", a single ~20+ character
+        "word". Total character count barely changes in this failure mode (only
+        the space characters themselves are lost), so a pure length-based check
+        does not catch it — this is a second, independent signal for the same
+        corruption check.
+        """
+        d = docx.Document(source)
+        words: List[str] = []
+        for p in d.paragraphs:
+            words.extend(p.text.split())
+        for t in d.tables:
+            for row in t.rows:
+                for cell in row.cells:
+                    words.extend(cell.text.split())
+        if len(words) < 15:
+            return None  # not enough data to judge confidently
+        return sum(len(w) for w in words) / len(words)
+
     def _resume_embedded_ok(self, file_path: str, pdf_bytes: bytes, snapshot: bytes) -> bool:
-        """True if the dossier gained roughly as much text as the source PDF holds."""
+        """True if the dossier gained roughly as much text as the source PDF holds,
+        AND that text isn't missing its inter-word spaces (see _docx_avg_word_length)."""
         try:
             with fitz.open(stream=pdf_bytes, filetype="pdf") as pdf_doc:
                 src_len = sum(len(pg.get_text().strip()) for pg in pdf_doc)
@@ -613,8 +639,20 @@ class DossierService:
             return True
         if src_len < 200:
             return True  # scanned/image PDF: text check is meaningless
+
         gained = self._docx_text_len(file_path) - self._docx_text_len(io.BytesIO(snapshot))
-        return gained >= 0.4 * src_len
+        if gained < 0.4 * src_len:
+            return False
+
+        avg_word_len = self._docx_avg_word_length(file_path)
+        if avg_word_len is not None and avg_word_len > 18:
+            logger.warning(
+                f"Embedded resume text looks space-corrupted (avg word length "
+                f"{avg_word_len:.1f} chars) — likely a pdf2docx conversion defect."
+            )
+            return False
+
+        return True
 
     def _render_pdf_to_images(
         self, pdf_bytes: bytes, max_pages: int = 25, dpi: int = 150

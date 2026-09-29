@@ -58,6 +58,9 @@ SECTION_MARKERS = [
     r"volunteer\s+experience",
     r"volunteer\s+work",
     r"achievements",
+    r"key\s+achievements",
+    r"notable\s+achievements",
+    r"major\s+achievements",
     r"languages",
     r"interests",
     r"hobbies",
@@ -126,16 +129,37 @@ class ResumeExtractor:
                     continue
 
                 # ── Multi-column detection ──────────────────────────────────
-                # Check if blocks are clustered in both halves of the page.
+                # Only treat a page as two-column if there's a genuine full-height
+                # side-by-side layout (e.g. a sidebar spanning most of the page next
+                # to a main column) — NOT just because a few blocks happen to sit
+                # right of the midpoint (e.g. a small 2-cell skills table, or a
+                # right-aligned date like "Feb 2022 – Present"). The old thresholds
+                # (>=2 blocks/side, >15% balance) misfired on exactly that shape on
+                # a real resume, reordering blocks into "all left column, then all
+                # right column" and scrambling reading order badly (name/contact
+                # info ended up placed after the Experience section). Require both
+                # a much stronger left/right balance AND that both sides actually
+                # span most of the page's vertical extent.
+                page_height = page.rect.height
                 page_mid = page_width / 2.0
                 x_mids = [(b[0] + b[2]) / 2.0 for b in text_blocks]
-                left_count  = sum(1 for x in x_mids if x < page_mid)
-                right_count = sum(1 for x in x_mids if x >= page_mid)
+                left_blocks_probe  = [b for b, x in zip(text_blocks, x_mids) if x < page_mid]
+                right_blocks_probe = [b for b, x in zip(text_blocks, x_mids) if x >= page_mid]
+                left_count, right_count = len(left_blocks_probe), len(right_blocks_probe)
+
+                def _spans_most_of_page_height(blocks_subset: list) -> bool:
+                    if not blocks_subset:
+                        return False
+                    tops = [b[1] for b in blocks_subset]
+                    bottoms = [b[3] for b in blocks_subset]
+                    return min(tops) < page_height * 0.35 and max(bottoms) > page_height * 0.55
 
                 is_two_col = (
-                    left_count >= 2
-                    and right_count >= 2
-                    and min(left_count, right_count) / max(left_count, right_count) > 0.15
+                    left_count >= 4
+                    and right_count >= 4
+                    and min(left_count, right_count) / max(left_count, right_count) > 0.4
+                    and _spans_most_of_page_height(left_blocks_probe)
+                    and _spans_most_of_page_height(right_blocks_probe)
                 )
 
                 if is_two_col:

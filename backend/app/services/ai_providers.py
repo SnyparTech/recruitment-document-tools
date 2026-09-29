@@ -172,15 +172,19 @@ class ResumeAIProvider(abc.ABC):
 class GroqResumeAIProvider(ResumeAIProvider):
     """Groq Cloud implementation with automatic model fallback and offline parser."""
 
+    # Verified live against the real Groq API: "llama-3.1-8b-instant" 404s (model
+    # doesn't exist), "mixtral-8x7b-32768" and "gemma2-9b-it" are decommissioned
+    # (Groq's own error explicitly says so). Every attempt on a dead model wastes
+    # a full request round-trip before falling through, and previously meant a
+    # rate-limited primary model fell all the way to the deterministic parser
+    # instead of a second real model. Only list models confirmed to actually work.
     FALLBACK_MODELS = [
-        "llama-3.1-8b-instant",
-        "mixtral-8x7b-32768",
-        "gemma2-9b-it",
+        "openai/gpt-oss-20b",
     ]
 
     def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
         self.api_key = api_key or settings.GROQ_API_KEY
-        self.model = model or getattr(settings, "GROQ_MODEL", "llama-3.1-8b-instant")
+        self.model = model or getattr(settings, "GROQ_MODEL", "openai/gpt-oss-20b")
         self.api_url = getattr(
             settings, "GROQ_API_URL", "https://api.groq.com/openai/v1/chat/completions"
         )
@@ -350,12 +354,21 @@ class DeterministicFallbackParser:
     @classmethod
     def _extract_skills_from_lines(cls, lines: List[str], skills_dict: Dict) -> List[str]:
         """
-        Parse 'Category: value(s)' skill lines into skills_dict.
+        Parse skill lines into skills_dict. Handles two real layouts:
+          1. Single-line "Category: value(s)" (SKILL_LINE_RE).
+          2. A category label on its own line immediately followed by a
+             comma-separated value line, with no colon at all — this is how a
+             2-column "label | values" skills table (common in resume PDFs)
+             comes out once block-extracted as plain text. Without this
+             fallback, resumes using that layout lose their entire Skills
+             section (every line fails SKILL_LINE_RE and is silently dropped).
         Returns unconsumed lines.
         """
         remaining: List[str] = []
         lines = cls._join_continuation_lines(lines)
-        for line in lines:
+        i, n = 0, len(lines)
+        while i < n:
+            line = lines[i]
             m = cls.SKILL_LINE_RE.match(line)
             if m:
                 category = m.group(1).strip().rstrip()
@@ -365,8 +378,24 @@ class DeterministicFallbackParser:
                     entry = f"{category}: {', '.join(values)}"
                     if entry not in skills_dict["additional_skills"]:
                         skills_dict["additional_skills"].append(entry)
-            else:
-                remaining.append(line)
+                i += 1
+                continue
+
+            is_short_label = "," not in line and len(line) < 40 and 1 <= len(line.split()) <= 5
+            next_line_is_value_list = i + 1 < n and "," in lines[i + 1]
+            if is_short_label and next_line_is_value_list:
+                category = line.strip()
+                raw_val = lines[i + 1].strip()
+                values = [v.strip() for v in re.split(r"[,]", raw_val) if v.strip()]
+                if values:
+                    entry = f"{category}: {', '.join(values)}"
+                    if entry not in skills_dict["additional_skills"]:
+                        skills_dict["additional_skills"].append(entry)
+                i += 2
+                continue
+
+            remaining.append(line)
+            i += 1
         return remaining
 
     @classmethod

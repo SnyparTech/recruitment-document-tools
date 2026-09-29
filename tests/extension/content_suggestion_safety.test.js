@@ -68,6 +68,9 @@ function fakeEl(text) {
     textContent: text,
     className: "",
     getAttribute() { return null; },
+    querySelector() { return null; },
+    querySelectorAll() { return []; },
+    classList: { contains() { return false; } },
     click() { this.clicked = true; },
   };
 }
@@ -117,7 +120,7 @@ test("clickPill never clicks an oversized candidate-card element even if it cont
   // ensureSectionExpanded queries a separate, unrelated selector list — give it nothing to expand.
   const originalQuerySelectorAll = sandbox.document.querySelectorAll;
   sandbox.document.querySelectorAll = (selector) => {
-    if (selector.includes("accordion") || selector.includes("h2")) return [];
+    if (selector.includes("accordion") || selector.includes("h2") || selector.includes("naukri-collapser")) return [];
     return originalQuerySelectorAll(selector);
   };
 
@@ -132,7 +135,7 @@ test("clickPill still clicks a real, short pill element", async () => {
   const sandbox = loadContentJsSandbox([realPill]);
   const originalQuerySelectorAll = sandbox.document.querySelectorAll;
   sandbox.document.querySelectorAll = (selector) => {
-    if (selector.includes("accordion") || selector.includes("h2")) return [];
+    if (selector.includes("accordion") || selector.includes("h2") || selector.includes("naukri-collapser")) return [];
     return originalQuerySelectorAll(selector);
   };
 
