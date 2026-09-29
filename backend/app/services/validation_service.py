@@ -1,8 +1,9 @@
 import json
 import logging
 import os
+import re
 from typing import Any, Dict, List
-from app.agents.requirement_agent import load_resdex_schema
+from app.agents.requirement_agent import RequirementAgent, load_resdex_schema
 from app.schemas.requirement import ValidationResult
 from app.schemas.search_plan import SearchPlan
 
@@ -147,6 +148,37 @@ class ValidationService:
                 errors.append(
                     f"Invalid keyword search_scope '{plan.keywords.search_scope}'. Allowed options are: {sorted(list(self.allowed_keyword_scopes))}"
                 )
+
+        # 6b. Validate keyword length (Resdex's own per-keyword input limit),
+        # duplicates (case-insensitive, across required/preferred/excluded),
+        # and filler/glue words ("or", "similar", "certified" on their own,
+        # etc.) — see RequirementAgent._normalize_keywords for why. Catches
+        # plans submitted directly via /search/plan that bypass the agent's
+        # own normalization.
+        if plan.keywords:
+            MAX_KEYWORD_LENGTH = 200
+            seen_norm: Dict[str, str] = {}
+            for list_name in ("required", "preferred", "excluded"):
+                for kw in getattr(plan.keywords, list_name) or []:
+                    if len(kw) > MAX_KEYWORD_LENGTH:
+                        errors.append(
+                            f"Keyword in {list_name} exceeds Resdex's {MAX_KEYWORD_LENGTH}-character limit "
+                            f"({len(kw)} chars): '{kw[:50]}...'"
+                        )
+                    if RequirementAgent._is_filler_keyword(kw):
+                        errors.append(
+                            f"Keyword '{kw}' in {list_name} is a filler/connector word, not a skill/tool name."
+                        )
+                    norm = re.sub(r"[^a-z0-9]", "", kw.lower())
+                    if norm:
+                        if norm in seen_norm:
+                            errors.append(
+                                f"Duplicate keyword '{kw}' in {list_name} (already present as "
+                                f"'{seen_norm[norm]}') — each keyword must appear only once across "
+                                f"required/preferred/excluded."
+                            )
+                        else:
+                            seen_norm[norm] = kw
 
         # 7. Validate Experience Bounds
         if plan.min_experience is not None and plan.max_experience is not None:

@@ -82,14 +82,32 @@ function createFloatingWidget() {
   document.body.appendChild(badge);
 
   document.getElementById("snypar-pause-btn").addEventListener("click", () => {
+    // Pagination walks results pages via full page navigation (window.location.href),
+    // which wipes any in-memory flag — so pausing it needs sessionStorage, not `isPaused`
+    // (which only works within a single page's JS lifetime, as used for form-filling).
+    if (isOnResultsPage() && sessionStorage.getItem(AUTOPAGE_KEY) === "1") {
+      sessionStorage.setItem(PAGINATION_PAUSE_KEY, "1");
+      updateWidgetStatus("⏸ Pagination paused — click Resume to continue", "busy", "paused");
+      showToast("⏸ Pagination paused. Click Resume to continue from where it left off.");
+      return;
+    }
     isPaused = true;
-    updateWidgetStatus("⏸ Paused — click Resume to continue", "busy");
+    updateWidgetStatus("⏸ Paused — click Resume to continue", "busy", "paused");
     showToast("⏸ Auto-fill paused. Click Resume to continue.");
   });
 
   document.getElementById("snypar-resume-btn").addEventListener("click", () => {
+    if (sessionStorage.getItem(PAGINATION_PAUSE_KEY) === "1") {
+      sessionStorage.removeItem(PAGINATION_PAUSE_KEY);
+      const nextUrl = sessionStorage.getItem(PAGINATION_NEXT_URL_KEY);
+      sessionStorage.removeItem(PAGINATION_NEXT_URL_KEY);
+      updateWidgetStatus("▶ Resuming pagination...", "busy", "filling");
+      showToast("▶ Pagination resumed.");
+      if (nextUrl) window.location.href = nextUrl;
+      return;
+    }
     isPaused = false;
-    updateWidgetStatus("▶ Resuming...", "busy");
+    updateWidgetStatus("▶ Resuming...", "busy", "filling");
     showToast("▶ Auto-fill resumed.");
   });
 }
@@ -2316,6 +2334,8 @@ let lastExtractedResultsUrl = null;
 const SUBMIT_CHUNK_SIZE = 50;       // backend accepts at most 50 candidates per request
 const AUTOPAGE_KEY = "snypar_autopage_active";
 const AUTOPAGE_MAX_PAGES = 200;      // safety cap on pages walked per search
+const PAGINATION_PAUSE_KEY = "snypar_pagination_paused";
+const PAGINATION_NEXT_URL_KEY = "snypar_pagination_next_url";
 const COMPLETED_SIDS_KEY = "snypar_completed_sids";
 const COMPLETED_SIDS_MAX = 50; // bounded ring buffer, oldest dropped first
 
@@ -2444,9 +2464,17 @@ async function extractAndSubmitOnce(currentUrl) {
   lastExtractedResultsUrl = currentUrl;
   const total = result.total_stored ?? candidates.length;
   const totalPages = readTotalResultPages();
-  updateWidgetStatus(`✓ Page ${pageNo}${totalPages ? "/" + totalPages : ""}: ${candidates.length} found (${total} total stored)`, "online");
+  const pageStatusMsg = `✓ Page ${pageNo}${totalPages ? "/" + totalPages : ""}: ${candidates.length} found (${total} total stored)`;
 
-  if (sessionStorage.getItem(AUTOPAGE_KEY) !== "1") return;
+  if (sessionStorage.getItem(AUTOPAGE_KEY) !== "1") {
+    updateWidgetStatus(pageStatusMsg, "online");
+    return;
+  }
+
+  // "filling" buttonMode surfaces the Pause button — pagination is an ongoing
+  // multi-page operation, same as form-filling, so the operator needs the
+  // same ability to interrupt it mid-walk.
+  updateWidgetStatus(pageStatusMsg, "online", "filling");
 
   // Last page: known total, else a short page.
   const lastPage = totalPages ? pageNo >= totalPages
@@ -2455,15 +2483,36 @@ async function extractAndSubmitOnce(currentUrl) {
     console.log(`[Snypar Bot] Auto-pagination finished at page ${pageNo} (${total} candidates stored).`);
     sessionStorage.removeItem(AUTOPAGE_KEY);
     sessionStorage.removeItem("snypar_autopage_total");
+    sessionStorage.removeItem(PAGINATION_PAUSE_KEY);
+    sessionStorage.removeItem(PAGINATION_NEXT_URL_KEY);
     if (sid) markSidCompleted(sid);
     updateWidgetStatus(`✓ Done: ${total} candidates from ${pageNo} page(s)`, "online");
     return;
   }
 
-  console.log(`[Snypar Bot] Auto-pagination: going to page ${pageNo + 1}${totalPages ? " of " + totalPages : ""}`);
-  await sleep(1200);
   const nextUrl = new URL(window.location.href);
   nextUrl.searchParams.set("pageNo", String(pageNo + 1));
+
+  if (sessionStorage.getItem(PAGINATION_PAUSE_KEY) === "1") {
+    // Operator paused mid-walk (e.g. right after this page's Pause click).
+    // Save where to resume and stop — do NOT navigate.
+    sessionStorage.setItem(PAGINATION_NEXT_URL_KEY, nextUrl.toString());
+    console.log(`[Snypar Bot] Auto-pagination paused at page ${pageNo}; will resume at page ${pageNo + 1} when clicked.`);
+    updateWidgetStatus(`⏸ Pagination paused at page ${pageNo}${totalPages ? "/" + totalPages : ""} — click Resume to continue`, "busy", "paused");
+    return;
+  }
+
+  console.log(`[Snypar Bot] Auto-pagination: going to page ${pageNo + 1}${totalPages ? " of " + totalPages : ""}`);
+  await sleep(1200);
+
+  // Re-check right before navigating — the operator may have paused during
+  // that 1.2s settle delay.
+  if (sessionStorage.getItem(PAGINATION_PAUSE_KEY) === "1") {
+    sessionStorage.setItem(PAGINATION_NEXT_URL_KEY, nextUrl.toString());
+    updateWidgetStatus(`⏸ Pagination paused at page ${pageNo}${totalPages ? "/" + totalPages : ""} — click Resume to continue`, "busy", "paused");
+    return;
+  }
+
   window.location.href = nextUrl.toString();
 }
 

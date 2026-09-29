@@ -323,9 +323,12 @@ Read the job description and return ONLY a JSON object with these exact fields:
 Rules:
 - Read the ENTIRE requirement first and synthesize the actual hiring intent before picking keywords — do not just grab the first list of tools mentioned. Long, narrative JDs often describe one role using several *equivalent or alternative* technology stacks (e.g. "Varonis, or if hard to find, Purview/BigID/Securiti") — these are OR-alternatives for the same underlying need (e.g. Data Security/Governance platform experience), not all mandatory together.
 - Every keyword (required, preferred, and excluded) MUST be copied VERBATIM from the requirement text — the exact skill/tool/platform/role name as the recruiter typed it, same wording and casing where reasonable. Do NOT rename, translate, expand abbreviations, merge synonyms, or substitute your own terminology/taxonomy for what the recruiter wrote. If the recruiter wrote "Microsoft Purview/MIP", use that phrase (or split into "Microsoft Purview" and "MIP" if listed as separate items) — do not invent a different label for it.
+- "Verbatim" means the SKILL NAME's own wording, not the surrounding sentence. Never emit connector/filler words as their own keyword entry — "or", "and", "similar", "such as", "like", "etc", "experience", "knowledge", "certified" (on its own), "proficient", "hands-on", "exposure to", "familiarity with" are sentence glue, not skills, even though they appear right next to real skill names in the text. Extract only the actual skill/tool/platform/certification/role NAME itself. ("AWS Certified Solutions Architect" is a real credential name and stays intact; "certified" by itself, split off a sentence like "certified in AWS", is not.)
 - keywords.required = the small set of skills/tools/domains, copied verbatim, that are core to EVERY acceptable candidate profile, regardless of which specific tool/platform they used. Prefer the broader terms the recruiter themselves used for the overall need (e.g. if they wrote "Data Security/Governance", use that exact phrase) over cramming in every named tool as individually mandatory, unless the JD says a specific tool is truly non-negotiable.
 - keywords.preferred = the specific tools/platforms named as options, nice-to-haves, or "adjacent/similar" alternatives, copied verbatim as written, plus secondary skills mentioned by name (also verbatim).
 - keywords.excluded = anything the requirement explicitly says to AVOID or de-prioritize, using the recruiter's own wording (e.g. "avoid focusing primarily on pure Data Engineer/Databricks profiles" -> excluded should include "Data Engineer" and "Databricks" as written). Read for negative/avoid/don't/instead-of language throughout the whole text, not just the first paragraph.
+- Each keyword must be a short, atomic skill/tool/platform/role name (Resdex enforces a 200-character limit per keyword) — never a full sentence or long descriptive clause. If the JD's phrasing for one concept is a long clause, extract the core term(s) from it rather than copying the whole clause verbatim.
+- Never list the same keyword (case-insensitively, ignoring minor punctuation) more than once — not twice in the same list, and not in both required and preferred. If a term is both core and optionally reinforced elsewhere in the JD, keep it once in required only.
 - If the requirement gives an experience range preference (e.g. "4-5 years is on the lower side, we ideally need 6+ years"), use the IDEAL/target stated minimum (6, in that example) as min_experience — not the lower number being described as insufficient. A one-off mention of an already-in-pipeline candidate's specific experience (e.g. "the current candidate has ~4 years, evaluate them anyway") is about a single individual, not the sourcing criteria — do not let it override min_experience.
 - notice_period must be a flat list of strings like ["0-15 days"], never a dict
 - ug_qualification: ONLY set if the JD explicitly states a degree requirement. Allowed values: __UG_OPTIONS__. Otherwise null.
@@ -913,7 +916,86 @@ Rules:
         if plan.keywords and plan.keywords.required and plan.keywords.mandatory is None:
             plan.keywords.mandatory = True
 
+        if plan.keywords:
+            self._normalize_keywords(plan.keywords)
+
         return plan
+
+    MAX_KEYWORD_LENGTH = 200  # Resdex's own per-keyword input limit
+
+    # Sentence glue/qualifier words that occasionally get extracted as their own
+    # standalone "keyword" (e.g. from "certified in AWS" or "Purview, or similar
+    # tools") instead of being recognized as surrounding prose. Exact-match only
+    # (after lowercasing/punctuation-stripping) — this must never strip a word
+    # that's part of a longer real skill/credential name, only reject a keyword
+    # whose ENTIRE text is just one of these filler terms.
+    _FILLER_KEYWORDS = {
+        "or", "and", "similar", "such", "such as", "like", "etc", "etc.",
+        "experience", "experienced", "knowledge", "certified", "certification",
+        "certifications", "proficient", "proficiency", "hands-on", "hands on",
+        "exposure", "familiarity", "familiar", "skills", "skill", "good",
+        "strong", "excellent", "understanding", "years", "required",
+        "mandatory", "preferred", "nice to have", "plus", "bonus", "with",
+        "in", "of", "the", "a", "an", "to", "for", "as", "is", "are", "on",
+        "at", "must", "should", "also",
+    }
+
+    @staticmethod
+    def _normalize_filler_text(s: str) -> str:
+        norm = re.sub(r"[^a-z0-9\s]", "", s.lower()).strip()
+        return re.sub(r"\s+", " ", norm)
+
+    @classmethod
+    def _is_filler_keyword(cls, s: str) -> bool:
+        # Blocklist entries need the same normalization as the input (e.g.
+        # "hands-on" and "hands on" must both compare equal) — comparing a
+        # normalized keyword against un-normalized literal set entries would
+        # silently never match anything with punctuation in it.
+        if not hasattr(cls, "_FILLER_KEYWORDS_NORM"):
+            cls._FILLER_KEYWORDS_NORM = {cls._normalize_filler_text(w) for w in cls._FILLER_KEYWORDS}
+        return cls._normalize_filler_text(s) in cls._FILLER_KEYWORDS_NORM
+
+    def _normalize_keywords(self, keywords: KeywordsPlan) -> None:
+        """
+        Enforces things the LLM can be told but not trusted to reliably do on
+        its own (prompt instructions are guidance, not a guarantee — same
+        reasoning as every other schema-validated field in this file):
+          1. No keyword exceeds Resdex's 200-character per-keyword limit —
+             an over-length "keyword" is almost always the LLM copying a full
+             descriptive clause verbatim instead of extracting the term, so
+             it's dropped rather than truncated (a truncated sentence isn't a
+             usable keyword either).
+          2. No keyword is duplicated, case-insensitively, within or across
+             required/preferred/excluded. Priority on conflict: required >
+             preferred > excluded (drop the lower-priority copy).
+          3. No keyword is just sentence glue ("or", "similar", "certified",
+             etc. on their own) — see _FILLER_KEYWORDS.
+        Mutates `keywords` in place.
+        """
+        def _clean(items: Optional[List[str]]) -> List[str]:
+            return [
+                s for s in (items or [])
+                if s and len(s) <= self.MAX_KEYWORD_LENGTH and not self._is_filler_keyword(s)
+            ]
+
+        required = _clean(keywords.required)
+        preferred = _clean(keywords.preferred)
+        excluded = _clean(keywords.excluded)
+
+        seen: set = set()
+
+        def _dedupe(items: List[str]) -> List[str]:
+            out = []
+            for s in items:
+                key = re.sub(r"[^a-z0-9]", "", s.lower())
+                if key and key not in seen:
+                    seen.add(key)
+                    out.append(s)
+            return out
+
+        keywords.required = _dedupe(required)
+        keywords.preferred = _dedupe(preferred)
+        keywords.excluded = _dedupe(excluded)
 
     # ── Requirement chat (stage-then-apply) ────────────────────────────────
     # First chat message (no draft plan yet) is a fresh JD and goes through
