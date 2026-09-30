@@ -250,6 +250,11 @@ class RequirementAgent:
             "options", ["Any PG qualification", "Specific PG qualification", "No PG qualification"]
         )
 
+        active_field = self.schema.get("sections", {}).get("search_active_period", {}).get("fields", {}).get("active_in", {})
+        self._active_in_options = active_field.get(
+            "options", ["3 days", "7 days", "15 days", "30 days", "2 months", "3 months", "6 months"]
+        )
+
     def generate_search_plan(self, requirement: str) -> SearchPlan:
         """
         Main entrypoint: parses requirement into validated SearchPlan.
@@ -335,14 +340,16 @@ Rules:
 - pg_qualification: ONLY set if the JD explicitly states a postgraduate requirement. Allowed values: __PG_OPTIONS__. Otherwise null.
 - Experience: ONLY extract if explicitly stated in the text (e.g. "5 to 10 years"). NEVER invent or guess experience numbers if not mentioned in the JD.
 - verified_mobile, verified_email, attached_resume: ALWAYS set to true by default (show only candidates with verified contact info and resume). Only set to false if explicitly excluded.
-- Leave active_in null unless stated (the system defaults it to 15 days). NEVER assume or inject hardcoded values for gender, career_break, differently_abled, defence_background, or location. If not explicitly requested in the requirement, set them to null.
+- Leave active_in null unless the requirement explicitly ties a duration to candidate activity/recency (e.g. "active in the last 30 days", "updated within 2 months") — the system defaults it to 15 days otherwise. If stated, active_in MUST be exactly one of these values, not a paraphrase: __ACTIVE_IN_OPTIONS__. NEVER assume or inject hardcoded values for gender, career_break, differently_abled, defence_background, or location. If not explicitly requested in the requirement, set them to null.
 - Return ONLY raw JSON. No markdown, no explanation."""
 
-        # Substitute education option lists from resdex_schema.json (not hardcoded) so the
+        # Substitute option lists from resdex_schema.json (not hardcoded) so the
         # LLM's guidance stays in sync if the schema's allowed values ever change.
-        system_prompt = system_prompt.replace(
-            "__UG_OPTIONS__", ", ".join(f'"{o}"' for o in self._ug_options)
-        ).replace("__PG_OPTIONS__", ", ".join(f'"{o}"' for o in self._pg_options))
+        system_prompt = (
+            system_prompt.replace("__UG_OPTIONS__", ", ".join(f'"{o}"' for o in self._ug_options))
+            .replace("__PG_OPTIONS__", ", ".join(f'"{o}"' for o in self._pg_options))
+            .replace("__ACTIVE_IN_OPTIONS__", ", ".join(f'"{o}"' for o in self._active_in_options))
+        )
 
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -908,9 +915,23 @@ Rules:
                 if v is not None and v >= 1000:
                     setattr(plan.salary, attr, round(v / 100000, 2))
 
-        # Recruiter default: candidates active in the last 15 days.
-        if not plan.active_in:
+        # Recruiter default: candidates active in the last 15 days. Not just a
+        # null-fill — the LLM has been observed returning a non-null guess
+        # (e.g. "6 months") despite being told to leave this null unless
+        # stated, since "6 months" is a plausible-sounding recruiting default
+        # in its own training data. So this overrides whatever came back
+        # UNLESS the requirement text itself actually mentions an active/
+        # updated/recent-in duration — a null-only check wouldn't catch a
+        # confidently wrong non-null guess.
+        if not self._active_in_explicitly_stated(raw_text):
             plan.active_in = DEFAULT_ACTIVE_IN
+        else:
+            # Explicitly stated, but the model may have echoed the JD's own
+            # phrasing ("last 30 days") instead of the exact Resdex enum
+            # value ("30 days") — ValidationService would reject that.
+            # Normalize to the nearest real option; fall back to the default
+            # only if nothing in the text could be parsed as a duration at all.
+            plan.active_in = self._normalize_active_in_value(plan.active_in) or DEFAULT_ACTIVE_IN
 
         # Only set mandatory flag if required keywords are present and not explicitly set
         if plan.keywords and plan.keywords.required and plan.keywords.mandatory is None:
@@ -920,6 +941,50 @@ Rules:
             self._normalize_keywords(plan.keywords)
 
         return plan
+
+    _ACTIVE_IN_RE = re.compile(
+        r"\bactiv(?:e|ity)\b[^.\n]{0,40}\b(\d+\s*(?:days?|weeks?|months?|years?))\b"
+        r"|\b(\d+\s*(?:days?|weeks?|months?|years?))\b[^.\n]{0,40}\bactiv(?:e|ity)\b"
+        r"|\b(?:last\s+)?updated\b[^.\n]{0,40}\b(\d+\s*(?:days?|weeks?|months?|years?))\b",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _active_in_explicitly_stated(cls, raw_text: str) -> bool:
+        """True only if the requirement text itself ties a duration to
+        active/updated recency (e.g. "active in the last 30 days") — not just
+        any duration anywhere (an experience range like "3-5 years" must not
+        count)."""
+        return bool(cls._ACTIVE_IN_RE.search(raw_text or ""))
+
+    # Resdex's own active_in options, expressed in day-equivalents for
+    # nearest-match normalization (1 month ~= 30 days, 1 year ~= 365 days).
+    _ACTIVE_IN_DAYS = {
+        "3 days": 3, "7 days": 7, "15 days": 15, "30 days": 30,
+        "2 months": 60, "3 months": 90, "6 months": 180,
+    }
+    _DURATION_RE = re.compile(r"(\d+)\s*(day|week|month|year)s?", re.IGNORECASE)
+
+    def _normalize_active_in_value(self, raw_value: Optional[str]) -> Optional[str]:
+        """Maps a free-form duration (whatever the LLM echoed, e.g. "last 30
+        days" or "1 month") to the nearest actual Resdex active_in option.
+        Returns None only if no duration could be parsed at all."""
+        if not raw_value:
+            return None
+        if raw_value in self._active_in_options:
+            return raw_value
+        m = self._DURATION_RE.search(raw_value)
+        if not m:
+            return None
+        n = int(m.group(1))
+        unit = m.group(2).lower()
+        days = {"day": n, "week": n * 7, "month": n * 30, "year": n * 365}[unit]
+        candidates = {
+            opt: self._ACTIVE_IN_DAYS[opt] for opt in self._active_in_options if opt in self._ACTIVE_IN_DAYS
+        }
+        if not candidates:
+            return None
+        return min(candidates.items(), key=lambda kv: abs(kv[1] - days))[0]
 
     MAX_KEYWORD_LENGTH = 200  # Resdex's own per-keyword input limit
 

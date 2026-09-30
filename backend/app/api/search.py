@@ -338,6 +338,43 @@ async def update_plan_keyword_mandatory(request: UpdateKeywordMandatoryRequest):
     }
 
 
+class LiveResdexKeywordsRequest(BaseModel):
+    required: List[str] = Field(default_factory=list, description="Currently starred/mandatory keyword chips in Resdex")
+    preferred: List[str] = Field(default_factory=list, description="Currently present, non-starred keyword chips in Resdex")
+
+
+@router.post(
+    "/plan/live-keywords",
+    status_code=status.HTTP_200_OK,
+    summary="Extension reports the keywords currently live in the Resdex form, so the website draft stays in sync",
+)
+async def report_live_keywords(request: LiveResdexKeywordsRequest):
+    """
+    One-way, extension -> backend — the reverse of PATCH /plan/keywords
+    (website -> Resdex). Never touches _latest_search_plan or triggers any
+    re-apply-to-Resdex behavior. If HR manually adds/removes a keyword chip
+    or toggles a star directly in Resdex, this keeps the website's draft
+    keyword section (GET /plan/chat) showing the same thing instead of
+    silently drifting from what's actually live.
+    """
+    global _draft_plan, _draft_timestamp
+
+    if _draft_plan is None:
+        return {"status": "success", "synced": False, "message": "No draft on the website to sync into yet."}
+
+    kw = _draft_plan.get("keywords") or {}
+    if kw.get("required") == request.required and kw.get("preferred") == request.preferred:
+        return {"status": "success", "synced": False}
+
+    kw["required"] = request.required
+    kw["preferred"] = request.preferred
+    _draft_plan["keywords"] = kw
+    _draft_timestamp = time.time()
+    _persist_now()
+
+    return {"status": "success", "synced": True, "timestamp": _draft_timestamp}
+
+
 class ChatEditRequest(BaseModel):
     message: str = Field(..., min_length=1, description="First message = a JD/requirement; later messages = edit instructions")
 

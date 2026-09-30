@@ -448,24 +448,35 @@ export default function SearchAgentView({ onCompileCandidate }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Restore the chat thread + draft plan on mount/refresh — separate from the
-  // applied-plan restore above, since the draft may still be mid-conversation
-  // and not yet applied to Resdex at all.
-  useEffect(() => {
-    (async () => {
-      try {
-        const resp = await fetch(`${API_BASE}/search/plan/chat`);
-        if (!resp.ok) return;
-        const data = await resp.json();
-        setChatMessages(data.history || []);
-        setDraftPlan(data.plan || null);
-      } catch (err) {
-        console.warn('Failed to restore requirement chat on load:', err);
-      } finally {
-        setIsChatRestoring(false);
-      }
-    })();
+  // Restore the chat thread + draft plan on mount, then keep polling —
+  // separate from the applied-plan restore above, since the draft may still
+  // be mid-conversation and not yet applied to Resdex at all. Polling (not
+  // just a one-time mount fetch) is what lets a keyword edit made directly
+  // in Resdex (synced server-side via POST /search/plan/live-keywords) show
+  // up here automatically instead of only on the next page refresh. Skipped
+  // while a chat message is in flight so it can't clobber that in-progress
+  // send with a stale read.
+  const fetchDraftPlan = useCallback(async (isInitialLoad = false) => {
+    try {
+      const resp = await fetch(`${API_BASE}/search/plan/chat`);
+      if (!resp.ok) return;
+      const data = await resp.json();
+      if (isInitialLoad) setChatMessages(data.history || []);
+      setDraftPlan(data.plan || null);
+    } catch (err) {
+      console.warn('Failed to fetch requirement chat draft:', err);
+    } finally {
+      if (isInitialLoad) setIsChatRestoring(false);
+    }
   }, [API_BASE]);
+
+  useEffect(() => {
+    fetchDraftPlan(true);
+    const intervalId = setInterval(() => {
+      if (!isChatSending) fetchDraftPlan(false);
+    }, RESULTS_POLL_INTERVAL_MS);
+    return () => clearInterval(intervalId);
+  }, [fetchDraftPlan, isChatSending]);
 
   // Auto-scroll the chat thread to the latest message.
   useEffect(() => {

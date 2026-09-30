@@ -604,6 +604,72 @@ function countKeywordChips() {
   ).length;
 }
 
+// Reads the keyword chips ACTUALLY present in the Resdex form right now —
+// including any HR added/removed/starred manually, not just what the bot
+// itself typed. Scoped to the keyword input's own container (not a
+// document-wide chip query) so location/designation/other chips elsewhere
+// on the form can't get misread as keywords. Star state (same detection
+// logic as clickKeywordStar) determines required vs preferred.
+function readLiveKeywordsFromResdex() {
+  const kwInput = document.querySelector(
+    "input[name='ezKeywordsAny'], input[placeholder*='Enter keywords like skills'], " +
+    "input#keywords, input.keyword-input, input[name='keyword'], input[id*='keyword']"
+  );
+  if (!kwInput) return null;
+  const container = getKeywordContainer(kwInput);
+
+  const chips = Array.from(container.querySelectorAll(
+    "div[class*='chip'], span[class*='chip'], div[class*='tag'], span[class*='tag'], li[class*='chip'], li[class*='tag'], div[class*='pill'], span[class*='pill'], [class*='tuple']"
+  )).filter((c) => c.offsetParent !== null && c.textContent.trim().length > 0);
+
+  const required = [];
+  const preferred = [];
+  const seen = new Set();
+
+  for (const chip of chips) {
+    const text = chip.textContent.replace(/^[+\s]+/, "").trim();
+    if (!text) continue;
+    const norm = text.toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (!norm || seen.has(norm)) continue;
+    seen.add(norm);
+
+    const star = chip.querySelector(
+      "[class*='star'], [class*='Star'], [title*='Mandatory'], [title*='mandatory'], [title*='Must have']"
+    );
+    let isMandatory = false;
+    if (star) {
+      const cls = (star.className && star.className.toString()) || "";
+      const pressed = star.getAttribute("aria-pressed");
+      isMandatory = cls.includes("active") || cls.includes("selected") || cls.includes("starred") || pressed === "true";
+    }
+    (isMandatory ? required : preferred).push(text);
+  }
+
+  return { required, preferred };
+}
+
+let lastSyncedLiveKeywordsJson = null;
+
+// One-way, Resdex -> website. Runs on every form-page poll tick (independent
+// of auto-fill/cooldown state) so a manual chip edit shows up on the website
+// even when the bot isn't actively filling anything. Only POSTs when the
+// live keywords actually changed since the last successful sync.
+async function syncLiveKeywordsIfChanged() {
+  if (!isOnFormPage()) return;
+  const live = readLiveKeywordsFromResdex();
+  if (!live) return;
+  const json = JSON.stringify(live);
+  if (json === lastSyncedLiveKeywordsJson) return;
+
+  const result = await postToBackend("/search/plan/live-keywords", live);
+  if (result) {
+    lastSyncedLiveKeywordsJson = json;
+    if (result.synced) {
+      console.log("[Snypar Bot] Synced live Resdex keywords to website draft:", live);
+    }
+  }
+}
+
 // ─── Section Expand ──────────────────────────────────────────────────────────
 
 async function ensureSectionExpanded(sectionName) {
@@ -1247,15 +1313,12 @@ async function fillResdexForm(plan, autoSubmit = false) {
         await selectRelevantAISuggestedKeywords(requiredKws, preferredKws, mandatorySet);
         await sleep(200);
 
-        // Mandatory keywords checkbox
-        const mustHaveCheck = document.querySelector(
-          "input#must-have-checkbox, input[name='must-have-checkbox'], " +
-          "input#mandatoryKeywords, input[id*='mustHave'], input[id*='mandatory']"
-        );
-        if (mustHaveCheck && !mustHaveCheck.checked) {
-          mustHaveCheck.click();
-          await sleep(200);
-        }
+        // Deliberately NOT ticking Resdex's global "mark all keywords
+        // mandatory" checkbox — it overrides the per-keyword star marking
+        // above and forces every keyword (including preferred/optional ones)
+        // mandatory, which is not what plan.keywords.required vs .preferred
+        // means. Individual required keywords already get their own star via
+        // clickKeywordStar above; this global checkbox stays unchecked.
       } else {
         console.warn("[Snypar Bot] Keyword input not found.");
       }
@@ -2539,6 +2602,11 @@ async function fetchAndFill(forced = false) {
     }
     return;
   }
+
+  // On the form page: report whatever keywords are actually live right now,
+  // independent of auto-fill/cooldown state — HR may be editing chips
+  // directly in Resdex at any time, not just right after the bot filled them.
+  await syncLiveKeywordsIfChanged();
 
   const fetchedData = await fetchFromBackend("/search/active-plan");
 

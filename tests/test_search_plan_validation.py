@@ -145,6 +145,36 @@ def test_requirement_agent_normalize_keywords_drops_filler_words_but_keeps_real_
     assert keywords.preferred == ["Varonis", "Django"]
 
 
+def test_active_in_defaults_to_15_days_when_not_mentioned():
+    from app.agents.requirement_agent import RequirementAgent
+
+    agent = RequirementAgent()
+    plan = agent.generate_search_plan("Python developer in Bengaluru with 3-5 years experience")
+    assert plan.active_in == "15 days"
+
+
+def test_active_in_corrects_hallucinated_value_with_no_textual_basis():
+    from app.agents.requirement_agent import RequirementAgent
+    from app.schemas.search_plan import SearchPlan
+
+    agent = RequirementAgent()
+    # Simulates an LLM returning a non-null guess despite no mention in the text.
+    fake_llm_plan = SearchPlan(active_in="6 months")
+    corrected = agent._post_process_plan(fake_llm_plan, "Python developer in Bengaluru with 3-5 years experience")
+    assert corrected.active_in == "15 days"
+
+
+def test_active_in_respects_explicit_mention_and_normalizes_to_valid_enum():
+    from app.agents.requirement_agent import RequirementAgent
+    from app.schemas.search_plan import SearchPlan
+
+    agent = RequirementAgent()
+    # LLM echoes the JD's own phrasing instead of the exact Resdex enum value.
+    fake_llm_plan = SearchPlan(active_in="last 30 days")
+    corrected = agent._post_process_plan(fake_llm_plan, "Only show candidates active in the last 30 days.")
+    assert corrected.active_in == "30 days"
+
+
 def test_requirement_agent_normalize_keywords_dedupes_and_drops_overlong():
     from app.agents.requirement_agent import RequirementAgent
     from app.schemas.search_plan import KeywordsPlan
