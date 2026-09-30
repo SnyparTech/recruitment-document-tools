@@ -247,6 +247,7 @@ class RequirementAgent:
         schema: Optional[Dict[str, Any]] = None,
     ):
         self.nvidia_api_key = settings.NVIDIA_NIM_KEY
+        self.openrouter_api_key = settings.OPENROUTER_API_KEY
         self.groq_api_key = api_key or settings.GROQ_API_KEY
         self.gemini_api_key = settings.GEMINI_API_KEY
 
@@ -290,14 +291,17 @@ class RequirementAgent:
         """
         (name, api_url, api_key, model, fallback_models) tuples in priority
         order — only providers with a configured key are included. NVIDIA NIM
-        first (explicitly prioritized), then Groq, then Gemini. Only Groq has
-        known-good same-provider fallback model ids (GROQ_FALLBACK_MODELS,
-        verified live against the real API) — no fallback list is invented
-        for NVIDIA/Gemini without the same verification.
+        first (explicitly prioritized), then OpenRouter (fallback if NVIDIA
+        fails), then Groq, then Gemini. Only Groq has known-good
+        same-provider fallback model ids (GROQ_FALLBACK_MODELS, verified live
+        against the real API) — no fallback list is invented for the others
+        without the same verification.
         """
         chain = []
         if self.nvidia_api_key:
             chain.append(("nvidia", settings.NVIDIA_API_URL, self.nvidia_api_key, settings.NVIDIA_MODEL, []))
+        if self.openrouter_api_key:
+            chain.append(("openrouter", settings.OPENROUTER_API_URL, self.openrouter_api_key, settings.OPENROUTER_MODEL, []))
         if self.groq_api_key:
             chain.append(("groq", settings.GROQ_API_URL, self.groq_api_key, settings.GROQ_MODEL or "openai/gpt-oss-20b", GROQ_FALLBACK_MODELS))
         if self.gemini_api_key:
@@ -312,7 +316,8 @@ class RequirementAgent:
 
     def _call_llm_as_hr(self, requirement: str) -> Optional[SearchPlan]:
         """
-        Calls the first available provider (NVIDIA NIM -> Groq -> Gemini) as a
+        Calls the first available provider (NVIDIA NIM -> OpenRouter -> Groq
+        -> Gemini) as a
         Senior Technical HR Recruiter, falling through to the next provider if
         one fails entirely. Translates raw hiring descriptions into targeted
         Resdex candidate search plans.

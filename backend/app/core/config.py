@@ -10,11 +10,21 @@ class Settings(BaseSettings):
     # Candidate Portal URLs (Naukri Resdex Candidate Search)
     NAUKRI_RESDEX_URL: str = "https://resdex.naukri.com"
 
-    # LLM Configuration (NVIDIA NIM / Groq / Gemini) — tried in that order,
-    # see RequirementAgent. NVIDIA NIM is OpenAI-compatible.
+    # LLM Configuration (NVIDIA NIM / OpenRouter / Groq / Gemini) — tried in
+    # that order, see RequirementAgent._provider_chain. All OpenAI-compatible.
     NVIDIA_NIM_KEY: Optional[str] = None
     NVIDIA_MODEL: str = "meta/llama-3.2-11b-vision-instruct"
     NVIDIA_API_URL: str = "https://integrate.api.nvidia.com/v1/chat/completions"
+
+    # OpenRouter fallback (after NVIDIA). Default model chosen after testing
+    # every free-tier candidate against the real production prompt —
+    # stealth/space-bunny-alpha was fastest (1.5-8s) and the only one with no
+    # reasoning-token overhead truncating output. NOTE: it's an anonymous
+    # stealth-preview model — identity of the actual provider is undisclosed,
+    # and OpenRouter's terms say prompts/completions may be retained by them.
+    OPENROUTER_API_KEY: Optional[str] = None
+    OPENROUTER_MODEL: str = "stealth/space-bunny-alpha"
+    OPENROUTER_API_URL: str = "https://openrouter.ai/api/v1/chat/completions"
 
     GROQ_API_KEY: Optional[str] = None
     GROQ_MODEL: str = "openai/gpt-oss-20b"

@@ -183,19 +183,22 @@ def test_chat_completion_with_retry_treats_null_content_as_failure_not_a_crash(m
     assert result is None
 
 
-def test_provider_chain_prioritizes_nvidia_then_groq_then_gemini(monkeypatch):
+def test_provider_chain_prioritizes_nvidia_then_openrouter_then_groq_then_gemini(monkeypatch):
     from app.agents.requirement_agent import RequirementAgent
     from app.core.config import settings
 
     monkeypatch.setattr(settings, "NVIDIA_NIM_KEY", "nvapi-test")
+    monkeypatch.setattr(settings, "OPENROUTER_API_KEY", "sk-or-test")
     monkeypatch.setattr(settings, "GROQ_API_KEY", "gsk-test")
     monkeypatch.setattr(settings, "GEMINI_API_KEY", "gemini-test")
 
     agent = RequirementAgent()
     chain = agent._provider_chain()
-    assert [c[0] for c in chain] == ["nvidia", "groq", "gemini"]
+    assert [c[0] for c in chain] == ["nvidia", "openrouter", "groq", "gemini"]
     assert chain[0][1] == settings.NVIDIA_API_URL
     assert chain[0][3] == settings.NVIDIA_MODEL
+    assert chain[1][1] == settings.OPENROUTER_API_URL
+    assert chain[1][3] == settings.OPENROUTER_MODEL
 
 
 def test_provider_chain_skips_providers_without_a_key(monkeypatch):
@@ -203,6 +206,7 @@ def test_provider_chain_skips_providers_without_a_key(monkeypatch):
     from app.core.config import settings
 
     monkeypatch.setattr(settings, "NVIDIA_NIM_KEY", None)
+    monkeypatch.setattr(settings, "OPENROUTER_API_KEY", None)
     monkeypatch.setattr(settings, "GROQ_API_KEY", "gsk-test")
     monkeypatch.setattr(settings, "GEMINI_API_KEY", None)
 
