@@ -10,7 +10,12 @@ class Settings(BaseSettings):
     # Candidate Portal URLs (Naukri Resdex Candidate Search)
     NAUKRI_RESDEX_URL: str = "https://resdex.naukri.com"
 
-    # LLM Configuration (Groq / Gemini)
+    # LLM Configuration (NVIDIA NIM / Groq / Gemini) — tried in that order,
+    # see RequirementAgent. NVIDIA NIM is OpenAI-compatible.
+    NVIDIA_NIM_KEY: Optional[str] = None
+    NVIDIA_MODEL: str = "meta/llama-3.2-11b-vision-instruct"
+    NVIDIA_API_URL: str = "https://integrate.api.nvidia.com/v1/chat/completions"
+
     GROQ_API_KEY: Optional[str] = None
     GROQ_MODEL: str = "openai/gpt-oss-20b"
     GROQ_API_URL: str = "https://api.groq.com/openai/v1/chat/completions"

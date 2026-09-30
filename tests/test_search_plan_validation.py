@@ -145,6 +145,72 @@ def test_requirement_agent_normalize_keywords_drops_filler_words_but_keeps_real_
     assert keywords.preferred == ["Varonis", "Django"]
 
 
+def test_split_combined_locations():
+    from app.agents.requirement_agent import RequirementAgent
+
+    assert RequirementAgent._split_combined_locations("Bengaluru or Hyderabad") == ["Bengaluru", "Hyderabad"]
+    assert RequirementAgent._split_combined_locations("Pune, Mumbai, Chennai") == ["Pune", "Mumbai", "Chennai"]
+    assert RequirementAgent._split_combined_locations("New Delhi") == ["New Delhi"]
+    assert RequirementAgent._split_combined_locations("Bengaluru/Hyderabad") == ["Bengaluru", "Hyderabad"]
+
+
+def test_sanitize_llm_output_splits_combined_location_string():
+    from app.agents.requirement_agent import RequirementAgent
+
+    agent = RequirementAgent()
+    sanitized = agent._sanitize_llm_output({"current_location": "Pune or Mumbai"})
+    assert sanitized["current_location"] == ["Pune", "Mumbai"]
+
+
+def test_chat_completion_with_retry_treats_null_content_as_failure_not_a_crash(monkeypatch):
+    """Reasoning models can return HTTP 200 with content=None if their internal
+    reasoning trace exhausts max_tokens before writing a real answer — this
+    must be treated as a failed attempt, not raise on a bare .strip() call."""
+    import httpx
+    from app.agents.requirement_agent import _chat_completion_with_retry
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+        def json(self):
+            return {"choices": [{"message": {"content": None}}]}
+
+    class FakeClient:
+        def post(self, *args, **kwargs):
+            return FakeResponse()
+
+    result = _chat_completion_with_retry(FakeClient(), "http://fake", {}, {}, ["some-model"])
+    assert result is None
+
+
+def test_provider_chain_prioritizes_nvidia_then_groq_then_gemini(monkeypatch):
+    from app.agents.requirement_agent import RequirementAgent
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "NVIDIA_NIM_KEY", "nvapi-test")
+    monkeypatch.setattr(settings, "GROQ_API_KEY", "gsk-test")
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", "gemini-test")
+
+    agent = RequirementAgent()
+    chain = agent._provider_chain()
+    assert [c[0] for c in chain] == ["nvidia", "groq", "gemini"]
+    assert chain[0][1] == settings.NVIDIA_API_URL
+    assert chain[0][3] == settings.NVIDIA_MODEL
+
+
+def test_provider_chain_skips_providers_without_a_key(monkeypatch):
+    from app.agents.requirement_agent import RequirementAgent
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "NVIDIA_NIM_KEY", None)
+    monkeypatch.setattr(settings, "GROQ_API_KEY", "gsk-test")
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", None)
+
+    agent = RequirementAgent()
+    chain = agent._provider_chain()
+    assert [c[0] for c in chain] == ["groq"]
+
+
 def test_active_in_defaults_to_15_days_when_not_mentioned():
     from app.agents.requirement_agent import RequirementAgent
 

@@ -50,7 +50,17 @@ def _chat_completion_with_retry(
                 break
             if response.status_code == 200:
                 data = response.json()
-                return data["choices"][0]["message"]["content"].strip()
+                content = data["choices"][0]["message"].get("content")
+                if content is None:
+                    # Observed live with reasoning models (emit an internal
+                    # "reasoning_content" trace before the real answer): a
+                    # long trace can exhaust max_tokens before any `content`
+                    # is written at all, returning HTTP 200 with a null
+                    # content. A bare .strip() on that crashes; treat it the
+                    # same as any other failed attempt instead.
+                    logger.warning(f"LLM ({model_id}) returned 200 but null content (likely reasoning-token truncation)")
+                    break
+                return content.strip()
             logger.warning(f"LLM ({model_id}) returned {response.status_code}: {response.text[:300]}")
             if response.status_code in _RETRYABLE_STATUS and attempt == 0:
                 time.sleep(1.5)
@@ -236,6 +246,7 @@ class RequirementAgent:
         model: Optional[str] = None,
         schema: Optional[Dict[str, Any]] = None,
     ):
+        self.nvidia_api_key = settings.NVIDIA_NIM_KEY
         self.groq_api_key = api_key or settings.GROQ_API_KEY
         self.gemini_api_key = settings.GEMINI_API_KEY
 
@@ -275,26 +286,40 @@ class RequirementAgent:
         rule_plan = self._rule_based_extraction(cleaned)
         return self._post_process_plan(rule_plan, cleaned)
 
+    def _provider_chain(self) -> List[Tuple[str, str, str, str, List[str]]]:
+        """
+        (name, api_url, api_key, model, fallback_models) tuples in priority
+        order — only providers with a configured key are included. NVIDIA NIM
+        first (explicitly prioritized), then Groq, then Gemini. Only Groq has
+        known-good same-provider fallback model ids (GROQ_FALLBACK_MODELS,
+        verified live against the real API) — no fallback list is invented
+        for NVIDIA/Gemini without the same verification.
+        """
+        chain = []
+        if self.nvidia_api_key:
+            chain.append(("nvidia", settings.NVIDIA_API_URL, self.nvidia_api_key, settings.NVIDIA_MODEL, []))
+        if self.groq_api_key:
+            chain.append(("groq", settings.GROQ_API_URL, self.groq_api_key, settings.GROQ_MODEL or "openai/gpt-oss-20b", GROQ_FALLBACK_MODELS))
+        if self.gemini_api_key:
+            chain.append((
+                "gemini",
+                "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+                self.gemini_api_key,
+                getattr(settings, "GEMINI_MODEL", "gemini-1.5-flash"),
+                [],
+            ))
+        return chain
+
     def _call_llm_as_hr(self, requirement: str) -> Optional[SearchPlan]:
         """
-        Calls Groq or Google Gemini as a Senior Technical HR Recruiter.
-        Translates raw hiring descriptions into targeted Resdex candidate search plans.
+        Calls the first available provider (NVIDIA NIM -> Groq -> Gemini) as a
+        Senior Technical HR Recruiter, falling through to the next provider if
+        one fails entirely. Translates raw hiring descriptions into targeted
+        Resdex candidate search plans.
         """
-        # Determine provider and endpoint (Groq or Gemini ONLY)
-        api_url = None
-        api_key = None
-        model = self.model
-
-        if self.groq_api_key:
-            api_url = settings.GROQ_API_URL
-            api_key = self.groq_api_key
-            model = settings.GROQ_MODEL or "openai/gpt-oss-20b"
-        elif self.gemini_api_key:
-            api_url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
-            api_key = self.gemini_api_key
-            model = getattr(settings, "GEMINI_MODEL", "gemini-1.5-flash")
-        else:
-            logger.info("No LLM API key detected (Groq/Gemini). Using HR Rule-Based Engine.")
+        provider_chain = self._provider_chain()
+        if not provider_chain:
+            logger.info("No LLM API key detected (NVIDIA/Groq/Gemini). Using HR Rule-Based Engine.")
             return None
 
         # Compact system prompt — avoids exceeding model context/output limits.
@@ -326,6 +351,7 @@ Read the job description and return ONLY a JSON object with these exact fields:
 }
 
 Rules:
+- current_location MUST be a JSON array of separate city names, one per entry — split any "X or Y", "X, Y", "X/Y" phrasing in the requirement into individual array items ("Bengaluru or Hyderabad" -> ["Bengaluru", "Hyderabad"]), never one combined string.
 - Read the ENTIRE requirement first and synthesize the actual hiring intent before picking keywords — do not just grab the first list of tools mentioned. Long, narrative JDs often describe one role using several *equivalent or alternative* technology stacks (e.g. "Varonis, or if hard to find, Purview/BigID/Securiti") — these are OR-alternatives for the same underlying need (e.g. Data Security/Governance platform experience), not all mandatory together.
 - Every keyword (required, preferred, and excluded) MUST be copied VERBATIM from the requirement text — the exact skill/tool/platform/role name as the recruiter typed it, same wording and casing where reasonable. Do NOT rename, translate, expand abbreviations, merge synonyms, or substitute your own terminology/taxonomy for what the recruiter wrote. If the recruiter wrote "Microsoft Purview/MIP", use that phrase (or split into "Microsoft Purview" and "MIP" if listed as separate items) — do not invent a different label for it.
 - "Verbatim" means the SKILL NAME's own wording, not the surrounding sentence. Never emit connector/filler words as their own keyword entry — "or", "and", "similar", "such as", "like", "etc", "experience", "knowledge", "certified" (on its own), "proficient", "hands-on", "exposure to", "familiarity with" are sentence glue, not skills, even though they appear right next to real skill names in the text. Extract only the actual skill/tool/platform/certification/role NAME itself. ("AWS Certified Solutions Architect" is a real credential name and stays intact; "certified" by itself, split off a sentence like "certified in AWS", is not.)
@@ -351,52 +377,44 @@ Rules:
             .replace("__ACTIVE_IN_OPTIONS__", ", ".join(f'"{o}"' for o in self._active_in_options))
         )
 
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
+        user_message = {
+            "role": "user",
+            "content": f"Job Description:\n\n{requirement}\n\nReturn ONLY the JSON object.",
         }
 
-        payload = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {
-                    "role": "user",
-                    "content": (
-                        f"Job Description:\n\n{requirement}\n\n"
-                        "Return ONLY the JSON object."
-                    ),
-                },
-            ],
-            "temperature": 0.1,
-            "max_tokens": 1600,
-        }
+        for provider_name, api_url, api_key, model, fallback_models in provider_chain:
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            }
+            payload = {
+                "model": model,
+                "messages": [{"role": "system", "content": system_prompt}, user_message],
+                "temperature": 0.1,
+                "max_tokens": 1600,
+            }
+            models_to_try = [model] + [m for m in fallback_models if m != model]
 
-        models_to_try = [model] + ([m for m in GROQ_FALLBACK_MODELS if m != model] if self.groq_api_key else [])
+            try:
+                with httpx.Client(timeout=30.0) as client:
+                    content = _chat_completion_with_retry(client, api_url, headers, payload, models_to_try)
+                    if content is None:
+                        logger.warning(f"Provider '{provider_name}' failed entirely; trying next provider in chain.")
+                        continue
 
-        try:
-            with httpx.Client(timeout=30.0) as client:
-                content = _chat_completion_with_retry(client, api_url, headers, payload, models_to_try)
-                if content is None:
-                    return None
+                    if content.startswith("```"):
+                        content = re.sub(r"^```(?:json)?", "", content)
+                        content = re.sub(r"```$", "", content).strip()
 
-                # Strip markdown code fences if present
-                if content.startswith("```"):
-                    content = re.sub(r"^```(?:json)?", "", content)
-                    content = re.sub(r"```$", "", content).strip()
+                    content = self._repair_json(content)
+                    parsed = json.loads(content)
+                    parsed = self._sanitize_llm_output(parsed)
 
-                # Attempt to repair truncated/unterminated JSON
-                content = self._repair_json(content)
-
-                parsed = json.loads(content)
-
-                # Sanitize common LLM output mistakes before Pydantic validation
-                parsed = self._sanitize_llm_output(parsed)
-
-                logger.info("LLM HR Agent successfully parsed SearchPlan")
-                return SearchPlan(**parsed)
-        except Exception as exc:
-            logger.warning(f"LLM HR parsing failed: {exc}")
+                    logger.info(f"LLM HR Agent ('{provider_name}') successfully parsed SearchPlan")
+                    return SearchPlan(**parsed)
+            except Exception as exc:
+                logger.warning(f"LLM HR parsing failed for provider '{provider_name}': {exc}")
+                continue
 
         return None
 
@@ -465,6 +483,16 @@ Rules:
             except Exception:
                 return "{}"
 
+    _LOCATION_SPLIT_RE = re.compile(r"\s*(?:,|/| or | and |&)\s*", re.IGNORECASE)
+
+    @classmethod
+    def _split_combined_locations(cls, loc: str) -> List[str]:
+        """Splits a possibly-combined location string ("Bengaluru or
+        Hyderabad", "Pune, Mumbai") into separate city entries. A plain
+        single-city string with no separator passes through unchanged."""
+        parts = [p.strip() for p in cls._LOCATION_SPLIT_RE.split(loc) if p.strip()]
+        return parts or [loc]
+
     def _sanitize_llm_output(self, parsed: dict) -> dict:
         """
         Fixes common LLM output mistakes before Pydantic validation:
@@ -485,12 +513,20 @@ Rules:
         elif isinstance(np, str):
             parsed["notice_period"] = [np] if np else None
 
-        # Fix current_location: must be List[str]
+        # Fix current_location: must be List[str] — and split any combined
+        # "X or Y" / "X, Y" / "X/Y" string the model didn't split on its own
+        # (observed live: "Bengaluru or Hyderabad" as one merged string)
+        # into separate city entries, not silently kept as one bad location.
         loc = parsed.get("current_location")
         if isinstance(loc, str):
-            parsed["current_location"] = [loc] if loc else None
+            parsed["current_location"] = self._split_combined_locations(loc) if loc else None
         elif isinstance(loc, dict):
             parsed["current_location"] = list(loc.values())
+        elif isinstance(loc, list):
+            split = []
+            for item in loc:
+                split.extend(self._split_combined_locations(item) if isinstance(item, str) else [item])
+            parsed["current_location"] = split
 
         # Fix list fields that sometimes come as strings
         for list_field in ("department_role", "designation", "industry", "company", "exclude_company", "work_permit"):

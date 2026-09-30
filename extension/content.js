@@ -959,17 +959,20 @@ async function setActiveIn(value) {
       want = `${n} ${unit}${n === 1 ? "" : "s"}`;
     }
     const norm2 = (t) => (t || "").replace(/\s+/g, " ").trim().toLowerCase();
-    // The real interactive element is div.naukri-suggestor-wrapper[role=button]
-    // [aria-haspopup=listbox] — dropdown-head/selected-value are just display
-    // children inside it. Try that as the primary opener; keep the old
-    // children as fallbacks in case markup varies.
+    // i.ico.ico-expand (nested inside div.naukri-suggestor-wrapper.drop-down
+    // > ... > div.dropdown-head) is confirmed live to actually open this
+    // dropdown — tried first so a wrong-but-present earlier candidate can't
+    // consume a click (and potentially leave the wrapper in a half-open
+    // state) before reaching the one that works. The rest stay as fallbacks
+    // in case markup varies across Resdex versions/AB tests.
     const openers = () => [
+      wrap.querySelector("div.naukri-suggestor-wrapper.drop-down i.ico-expand"),
+      wrap.querySelector("i.ico-expand"),
       wrap.querySelector("div.naukri-suggestor-wrapper[role='button']"),
       wrap.querySelector("div.naukri-suggestor-wrapper"),
       wrap.querySelector("span.selected-value"),
       wrap.querySelector("span.dropdown-head-value"),
       wrap.querySelector("div.dropdown-head"),
-      wrap.querySelector("i.ico-expand"),
       wrap,
     ].filter(Boolean);
     const findOpt = () => {
@@ -1573,7 +1576,11 @@ async function fillResdexForm(plan, autoSubmit = false) {
     stepResults.push(await runStep("notice_period", async () => {
     if (plan.notice_period && plan.notice_period.length > 0) {
       updateWidgetStatus("Notice Period...", "busy", "filling");
-      await ensureSectionExpanded("Employment Details");
+      // resdex_schema.json has "Notice Period" as its own top-level section,
+      // separate from "Employment Details" — expanding the wrong one leaves
+      // #noticePeriodTags collapsed/hidden, so the chip clicks below land on
+      // nothing.
+      await ensureSectionExpanded("Notice Period");
       await sleep(500);
 
       const noticePeriodDisplayMap = {
