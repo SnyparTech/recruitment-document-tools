@@ -273,7 +273,11 @@ class GroqResumeAIProvider(ResumeAIProvider):
                                 f"{provider_name} ({model_id}) returned HTTP {response.status_code}: {response.text[:200]}"
                             )
                     except Exception as exc:
-                        logger.warning(f"Error structuring with {provider_name} model {model_id}: {exc}")
+                        # str(exc) can be empty for some exceptions (e.g.
+                        # httpx.ReadTimeout has no message unless constructed
+                        # with one) — include the type so the log line is
+                        # actually diagnosable instead of a blank trailing colon.
+                        logger.warning(f"Error structuring with {provider_name} model {model_id}: {type(exc).__name__}: {exc}")
 
         # If every provider failed, invoke deterministic fallback parser
         logger.warning("All LLM providers failed or timed out. Falling back to deterministic local parser.")

@@ -46,7 +46,10 @@ def _chat_completion_with_retry(
             try:
                 response = client.post(api_url, headers=headers, json=attempt_payload)
             except Exception as exc:
-                logger.warning(f"LLM request error with model {model_id}: {exc}")
+                # str(exc) can be empty for some exceptions (e.g.
+                # httpx.ReadTimeout has no message unless constructed with
+                # one) — include the type so this is actually diagnosable.
+                logger.warning(f"LLM request error with model {model_id}: {type(exc).__name__}: {exc}")
                 break
             if response.status_code == 200:
                 data = response.json()
@@ -418,7 +421,7 @@ Rules:
                     logger.info(f"LLM HR Agent ('{provider_name}') successfully parsed SearchPlan")
                     return SearchPlan(**parsed)
             except Exception as exc:
-                logger.warning(f"LLM HR parsing failed for provider '{provider_name}': {exc}")
+                logger.warning(f"LLM HR parsing failed for provider '{provider_name}': {type(exc).__name__}: {exc}")
                 continue
 
         return None
