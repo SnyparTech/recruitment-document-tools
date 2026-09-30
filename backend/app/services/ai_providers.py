@@ -170,7 +170,11 @@ class ResumeAIProvider(abc.ABC):
 
 
 class GroqResumeAIProvider(ResumeAIProvider):
-    """Groq Cloud implementation with automatic model fallback and offline parser."""
+    """
+    Multi-provider (NVIDIA NIM -> OpenRouter -> Groq) resume structuring, same
+    priority chain as RequirementAgent (backend/app/agents/requirement_agent.py),
+    with an offline deterministic parser as the final fallback.
+    """
 
     # Verified live against the real Groq API: "llama-3.1-8b-instant" 404s (model
     # doesn't exist), "mixtral-8x7b-32768" and "gemma2-9b-it" are decommissioned
@@ -183,24 +187,42 @@ class GroqResumeAIProvider(ResumeAIProvider):
     ]
 
     def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
+        self.nvidia_api_key = settings.NVIDIA_NIM_KEY
+        self.openrouter_api_key = settings.OPENROUTER_API_KEY
         self.api_key = api_key or settings.GROQ_API_KEY
         self.model = model or getattr(settings, "GROQ_MODEL", "openai/gpt-oss-20b")
         self.api_url = getattr(
             settings, "GROQ_API_URL", "https://api.groq.com/openai/v1/chat/completions"
         )
 
+    def _provider_chain(self):
+        """
+        (name, api_url, api_key, model, fallback_models, supports_json_mode)
+        tuples in priority order — only providers with a configured key are
+        included. `supports_json_mode` gates `response_format: json_object`,
+        which is only confirmed to work against Groq's API; NVIDIA/OpenRouter
+        rely on the prompt + _clean_and_parse_json's markdown-fence stripping
+        instead, same as RequirementAgent's LLM calls do.
+        """
+        chain = []
+        if self.nvidia_api_key:
+            chain.append(("nvidia", settings.NVIDIA_API_URL, self.nvidia_api_key, settings.NVIDIA_MODEL, [], False))
+        if self.openrouter_api_key:
+            chain.append(("openrouter", settings.OPENROUTER_API_URL, self.openrouter_api_key, settings.OPENROUTER_MODEL, [], False))
+        if self.api_key:
+            chain.append(("groq", self.api_url, self.api_key, self.model, self.FALLBACK_MODELS, True))
+        return chain
+
     async def structure_resume(
         self,
         canonical_content: Dict[str, Any],
         sanitized_text: str,
     ) -> Dict[str, Any]:
-        """Calls Groq API to structure resume, falling back gracefully if necessary."""
-        if not self.api_key or self.api_key.strip() == "":
-            logger.info("GROQ_API_KEY not configured. Using deterministic high-fidelity local parser.")
+        """Calls the first available provider, falling through to the next on failure."""
+        provider_chain = self._provider_chain()
+        if not provider_chain:
+            logger.info("No LLM API key configured (NVIDIA/OpenRouter/Groq). Using deterministic high-fidelity local parser.")
             return DeterministicFallbackParser.parse(canonical_content, sanitized_text)
-
-        # Attempt structured generation with primary model and fallbacks
-        models_to_try = [self.model] + [m for m in self.FALLBACK_MODELS if m != self.model]
 
         user_prompt = (
             f"Here is the complete extracted resume content:\n\n"
@@ -210,42 +232,51 @@ class GroqResumeAIProvider(ResumeAIProvider):
             f"{JSON_STRUCTURE_GUIDE}"
         )
 
-        headers = {
-            "Authorization": f"Bearer {self.api_key.strip()}",
-            "Content-Type": "application/json",
-        }
-
         async with httpx.AsyncClient(timeout=90.0) as client:
-            for model_id in models_to_try:
-                try:
-                    logger.info(f"Structuring resume using Groq model: {model_id}")
-                    payload = {
-                        "model": model_id,
-                        "messages": [
-                            {"role": "system", "content": STRICT_RESUME_SYSTEM_PROMPT},
-                            {"role": "user", "content": user_prompt},
-                        ],
-                        "temperature": 0.0,  # Strict deterministic mode
-                        "response_format": {"type": "json_object"},
-                    }
-                    response = await client.post(self.api_url, headers=headers, json=payload)
+            for provider_name, api_url, api_key, model, fallback_models, supports_json_mode in provider_chain:
+                headers = {
+                    "Authorization": f"Bearer {api_key.strip()}",
+                    "Content-Type": "application/json",
+                }
+                models_to_try = [model] + [m for m in fallback_models if m != model]
+                for model_id in models_to_try:
+                    try:
+                        logger.info(f"Structuring resume using {provider_name} model: {model_id}")
+                        payload = {
+                            "model": model_id,
+                            "messages": [
+                                {"role": "system", "content": STRICT_RESUME_SYSTEM_PROMPT},
+                                {"role": "user", "content": user_prompt},
+                            ],
+                            "temperature": 0.0,  # Strict deterministic mode
+                        }
+                        if supports_json_mode:
+                            payload["response_format"] = {"type": "json_object"}
+                        response = await client.post(api_url, headers=headers, json=payload)
 
-                    if response.status_code == 200:
-                        data = response.json()
-                        raw_content = data["choices"][0]["message"]["content"]
-                        parsed_json = self._clean_and_parse_json(raw_content)
-                        if parsed_json:
-                            logger.info(f"Groq ({model_id}) successfully structured resume.")
-                            return parsed_json
-                    else:
-                        logger.warning(
-                            f"Groq ({model_id}) returned HTTP {response.status_code}: {response.text[:200]}"
-                        )
-                except Exception as exc:
-                    logger.warning(f"Error structuring with Groq model {model_id}: {exc}")
+                        if response.status_code == 200:
+                            data = response.json()
+                            raw_content = data["choices"][0]["message"].get("content")
+                            if raw_content is None:
+                                # A reasoning model can return HTTP 200 with null
+                                # content if its internal reasoning trace exhausted
+                                # the token budget before writing a real answer —
+                                # same failure mode seen live with RequirementAgent.
+                                logger.warning(f"{provider_name} ({model_id}) returned 200 but null content.")
+                                continue
+                            parsed_json = self._clean_and_parse_json(raw_content)
+                            if parsed_json:
+                                logger.info(f"{provider_name} ({model_id}) successfully structured resume.")
+                                return parsed_json
+                        else:
+                            logger.warning(
+                                f"{provider_name} ({model_id}) returned HTTP {response.status_code}: {response.text[:200]}"
+                            )
+                    except Exception as exc:
+                        logger.warning(f"Error structuring with {provider_name} model {model_id}: {exc}")
 
-        # If all remote models failed, invoke deterministic fallback parser
-        logger.warning("Remote LLM failed or timed out. Falling back to deterministic local parser.")
+        # If every provider failed, invoke deterministic fallback parser
+        logger.warning("All LLM providers failed or timed out. Falling back to deterministic local parser.")
         return DeterministicFallbackParser.parse(canonical_content, sanitized_text)
 
     @staticmethod
