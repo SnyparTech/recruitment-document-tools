@@ -31,6 +31,28 @@ def test_provider_chain_prioritizes_nvidia_then_openrouter_then_groq(monkeypatch
     assert chain[2][5] is True  # confirmed supported for Groq
 
 
+def test_nvidia_gets_a_short_timeout_others_stay_generous(monkeypatch):
+    """
+    NVIDIA has been observed (production logs) timing out 100% of the time
+    on this endpoint's larger resume-structuring prompt. Waiting the full 90s
+    budget before falling through made every conversion feel hung. NVIDIA
+    gets a short timeout so a dead provider fails fast; OpenRouter/Groq keep
+    the generous budget a large resume may genuinely need to succeed.
+    """
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "NVIDIA_NIM_KEY", "nvapi-test")
+    monkeypatch.setattr(settings, "OPENROUTER_API_KEY", "sk-or-test")
+
+    provider = GroqResumeAIProvider(api_key="gsk-test")
+    chain = provider._provider_chain()
+
+    timeouts = {c[0]: c[6] for c in chain}
+    assert timeouts["nvidia"] < timeouts["openrouter"]
+    assert timeouts["nvidia"] <= 30.0
+    assert timeouts["openrouter"] == timeouts["groq"] == 90.0
+
+
 def test_provider_chain_skips_providers_without_a_key(monkeypatch):
     from app.core.config import settings
 

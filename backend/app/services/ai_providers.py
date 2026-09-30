@@ -204,13 +204,24 @@ class GroqResumeAIProvider(ResumeAIProvider):
         rely on the prompt + _clean_and_parse_json's markdown-fence stripping
         instead, same as RequirementAgent's LLM calls do.
         """
+        # Per-provider timeout (seconds) — NVIDIA has been observed timing out
+        # 100% of the time in production for this endpoint's larger
+        # resume-structuring prompt (confirmed via user-reported logs: every
+        # single call hits the full timeout as a ReadTimeout before falling
+        # through). Waiting 90s for a provider that's reliably dead just
+        # makes the whole request feel hung. OpenRouter/Groq are the ones
+        # expected to actually succeed, so they keep the generous budget a
+        # large resume may genuinely need.
+        NVIDIA_TIMEOUT = 25.0
+        DEFAULT_TIMEOUT = 90.0
+
         chain = []
         if self.nvidia_api_key:
-            chain.append(("nvidia", settings.NVIDIA_API_URL, self.nvidia_api_key, settings.NVIDIA_MODEL, [], False))
+            chain.append(("nvidia", settings.NVIDIA_API_URL, self.nvidia_api_key, settings.NVIDIA_MODEL, [], False, NVIDIA_TIMEOUT))
         if self.openrouter_api_key:
-            chain.append(("openrouter", settings.OPENROUTER_API_URL, self.openrouter_api_key, settings.OPENROUTER_MODEL, [], False))
+            chain.append(("openrouter", settings.OPENROUTER_API_URL, self.openrouter_api_key, settings.OPENROUTER_MODEL, [], False, DEFAULT_TIMEOUT))
         if self.api_key:
-            chain.append(("groq", self.api_url, self.api_key, self.model, self.FALLBACK_MODELS, True))
+            chain.append(("groq", self.api_url, self.api_key, self.model, self.FALLBACK_MODELS, True, DEFAULT_TIMEOUT))
         return chain
 
     async def structure_resume(
@@ -232,13 +243,13 @@ class GroqResumeAIProvider(ResumeAIProvider):
             f"{JSON_STRUCTURE_GUIDE}"
         )
 
-        async with httpx.AsyncClient(timeout=90.0) as client:
-            for provider_name, api_url, api_key, model, fallback_models, supports_json_mode in provider_chain:
-                headers = {
-                    "Authorization": f"Bearer {api_key.strip()}",
-                    "Content-Type": "application/json",
-                }
-                models_to_try = [model] + [m for m in fallback_models if m != model]
+        for provider_name, api_url, api_key, model, fallback_models, supports_json_mode, timeout_s in provider_chain:
+            headers = {
+                "Authorization": f"Bearer {api_key.strip()}",
+                "Content-Type": "application/json",
+            }
+            models_to_try = [model] + [m for m in fallback_models if m != model]
+            async with httpx.AsyncClient(timeout=timeout_s) as client:
                 for model_id in models_to_try:
                     try:
                         logger.info(f"Structuring resume using {provider_name} model: {model_id}")
