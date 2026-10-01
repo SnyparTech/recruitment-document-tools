@@ -1027,34 +1027,55 @@ async function setActiveIn(value) {
         if (shown.includes(want)) return true;
       }
     }
+
+    // Mouse clicks on the opener weren't flipping aria-expanded in a live
+    // run (confirmed via a captured trace: 3 separate click attempts on
+    // different parts of the wrapper, all left aria-expanded="false" and the
+    // value stuck on Resdex's own default). This widget is keyboard-
+    // accessible (tabindex="0", role="button", aria-haspopup="listbox"), so
+    // as a last resort before giving up, try opening/selecting it the way a
+    // real keyboard user would — some custom-select components bind their
+    // open/select behavior to keydown more reliably than to synthetic clicks.
+    const keyboardOpener = wrap.querySelector("div.naukri-suggestor-wrapper") || wrap;
+    keyboardOpener.focus?.();
+    for (const key of ["Enter", " "]) {
+      let opt = findOpt();
+      if (!opt) {
+        for (const type of ["keydown", "keyup"]) {
+          keyboardOpener.dispatchEvent(new KeyboardEvent(type, { key, bubbles: true, cancelable: true }));
+        }
+        await sleep(400);
+        opt = findOpt();
+      }
+      if (opt) {
+        const li = opt.closest("li") || opt;
+        li.scrollIntoView({ block: "nearest" });
+        li.click();
+        dispatchFullClick(li);
+        await sleep(400);
+        const shown = norm2(wrap.querySelector("span.selected-value")?.textContent);
+        console.log(`[Snypar Bot] Active-in "${value}" via keyboard open -> option "${want}", now showing "${shown}"`);
+        if (shown.includes(want)) return true;
+      }
+    }
+
     const wrapperEl = wrap.querySelector("div.naukri-suggestor-wrapper");
     console.warn(
-      `[Snypar Bot] active-in "${want}" could not be selected; aria-expanded=${wrapperEl?.getAttribute("aria-expanded")} wrap html:`,
+      `[Snypar Bot] active-in "${want}" could not be selected (mouse and keyboard attempts both failed); aria-expanded=${wrapperEl?.getAttribute("aria-expanded")} wrap html:`,
       wrap.outerHTML.slice(0, 2500)
     );
   }
 
-  // Try React custom dropdown
-  const triggers = Array.from(document.querySelectorAll(
-    "span, div, button"
-  )).filter(el => el.textContent.trim().toLowerCase().includes("active in") && el.offsetParent !== null);
-
-  if (triggers.length > 0) {
-    triggers[0].click();
-    await sleep(400);
-
-    const options = Array.from(document.querySelectorAll(
-      "li, div[role='option'], span"
-    )).filter(el => el.textContent.trim().toLowerCase().includes(value.toLowerCase()) && el.offsetParent !== null);
-
-    if (options.length > 0) {
-      options[0].click();
-      console.log(`[Snypar Bot] ✓ Set active_in "${value}" via dropdown`);
-      await sleep(200);
-      return true;
-    }
-  }
-
+  // NOTE: there used to be a final fallback here that searched the ENTIRE
+  // document for any element whose text merely contained the target value
+  // (e.g. "15 days") and clicked the first match, then unconditionally
+  // logged success. A live trace proved this is actively harmful: with no
+  // real Active In option ever found/open, it matched and clicked the
+  // Notice Period "0 - 15 days" chip instead (same substring), silently
+  // toggling an unrelated field while leaving Active In stuck on Resdex's
+  // default and falsely reporting "✓ Set active_in". Removed — an honest
+  // `false` return (see below) is strictly better than a wrong click
+  // reported as a success.
   return false;
 }
 
@@ -1765,8 +1786,14 @@ async function fillResdexForm(plan, autoSubmit = false) {
     stepResults.push(await runStep("active_in", async () => {
     if (plan.active_in) {
       updateWidgetStatus("Active In...", "busy", "filling");
-      await setActiveIn(plan.active_in);
+      const activeInSet = await setActiveIn(plan.active_in);
       await sleep(300);
+      if (!activeInSet) {
+        // Surface this as a real step failure (not silently discarded) —
+        // runStep only catches thrown errors, and a false return on its own
+        // doesn't show up in the step summary otherwise.
+        throw new Error(`active_in "${plan.active_in}" could not be set — see the warning above for the DOM state at the time.`);
+      }
     }
     }));
 

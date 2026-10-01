@@ -363,8 +363,8 @@ Rules:
 - Read the ENTIRE requirement first and synthesize the actual hiring intent before picking keywords — do not just grab the first list of tools mentioned. Long, narrative JDs often describe one role using several *equivalent or alternative* technology stacks (e.g. "Varonis, or if hard to find, Purview/BigID/Securiti") — these are OR-alternatives for the same underlying need (e.g. Data Security/Governance platform experience), not all mandatory together.
 - Every keyword (required, preferred, and excluded) MUST be copied VERBATIM from the requirement text — the exact skill/tool/platform/role name as the recruiter typed it, same wording and casing where reasonable. Do NOT rename, translate, expand abbreviations, merge synonyms, or substitute your own terminology/taxonomy for what the recruiter wrote. If the recruiter wrote "Microsoft Purview/MIP", use that phrase (or split into "Microsoft Purview" and "MIP" if listed as separate items) — do not invent a different label for it.
 - "Verbatim" means the SKILL NAME's own wording, not the surrounding sentence. Never emit connector/filler words as their own keyword entry — "or", "and", "similar", "such as", "like", "etc", "experience", "knowledge", "certified" (on its own), "proficient", "hands-on", "exposure to", "familiarity with" are sentence glue, not skills, even though they appear right next to real skill names in the text. Extract only the actual skill/tool/platform/certification/role NAME itself. ("AWS Certified Solutions Architect" is a real credential name and stays intact; "certified" by itself, split off a sentence like "certified in AWS", is not.)
-- keywords.required = the small set of skills/tools/domains, copied verbatim, that are core to EVERY acceptable candidate profile, regardless of which specific tool/platform they used. Prefer the broader terms the recruiter themselves used for the overall need (e.g. if they wrote "Data Security/Governance", use that exact phrase) over cramming in every named tool as individually mandatory, unless the JD says a specific tool is truly non-negotiable.
-- keywords.preferred = the specific tools/platforms named as options, nice-to-haves, or "adjacent/similar" alternatives, copied verbatim as written, plus secondary skills mentioned by name (also verbatim).
+- keywords.required = the small set of skills/tools/domains, copied verbatim, that are core to EVERY acceptable candidate profile, regardless of which specific tool/platform they used. Prefer the broader terms the recruiter themselves used for the overall need (e.g. if they wrote "Data Security/Governance", use that exact phrase) over cramming in every named tool as individually mandatory, unless the JD says a specific tool is truly non-negotiable. HARD CAP: at most 8 required keywords. Resdex ANDs every required keyword together — a candidate profile must contain ALL of them to match at all, so required is for the handful of true must-haves, not an exhaustive list of every skill mentioned in a long JD. If a JD lists many specific tools, pick the broadest 1-3 terms covering the overall need as required and move the individual tool names to preferred instead of making all of them mandatory.
+- keywords.preferred = the specific tools/platforms named as options, nice-to-haves, or "adjacent/similar" alternatives, copied verbatim as written, plus secondary skills mentioned by name (also verbatim). HARD CAP: at most 12 preferred keywords — pick the most important/frequently-emphasized ones from the JD, not an exhaustive enumeration of every tool/term mentioned.
 - keywords.excluded = anything the requirement explicitly says to AVOID or de-prioritize, using the recruiter's own wording (e.g. "avoid focusing primarily on pure Data Engineer/Databricks profiles" -> excluded should include "Data Engineer" and "Databricks" as written). Read for negative/avoid/don't/instead-of language throughout the whole text, not just the first paragraph.
 - Each keyword must be a short, atomic skill/tool/platform/role name (Resdex enforces a 200-character limit per keyword) — never a full sentence or long descriptive clause. If the JD's phrasing for one concept is a long clause, extract the core term(s) from it rather than copying the whole clause verbatim.
 - Never list the same keyword (case-insensitively, ignoring minor punctuation) more than once — not twice in the same list, and not in both required and preferred. If a term is both core and optionally reinforced elsewhere in the JD, keep it once in required only.
@@ -1064,6 +1064,20 @@ Rules:
             cls._FILLER_KEYWORDS_NORM = {cls._normalize_filler_text(w) for w in cls._FILLER_KEYWORDS}
         return cls._normalize_filler_text(s) in cls._FILLER_KEYWORDS_NORM
 
+    # Resdex ANDs every required keyword together — a candidate must match
+    # ALL of them. Observed live: an LLM generated 20 required + 16 preferred
+    # (36 total) keywords for one JD. Beyond being what was actually reported
+    # as hitting Resdex's combined-keyword-length limit, 20 ANDed required
+    # terms makes a search nearly unsatisfiable (every additional required
+    # keyword can only narrow results further, never widen them) — capping
+    # count is a correctness fix, not just a length one. Preferred keywords
+    # are ORed, so they're less harmful in volume, but still capped since an
+    # unbounded list is still what blows the combined string past Resdex's
+    # limit. Kept in the LLM's own given order (assumed most-important-first
+    # for a JD's natural structure) when trimming.
+    MAX_REQUIRED_KEYWORDS = 8
+    MAX_PREFERRED_KEYWORDS = 12
+
     def _normalize_keywords(self, keywords: KeywordsPlan) -> None:
         """
         Enforces things the LLM can be told but not trusted to reliably do on
@@ -1079,6 +1093,8 @@ Rules:
              preferred > excluded (drop the lower-priority copy).
           3. No keyword is just sentence glue ("or", "similar", "certified",
              etc. on their own) — see _FILLER_KEYWORDS.
+          4. required/preferred counts are capped (MAX_REQUIRED_KEYWORDS /
+             MAX_PREFERRED_KEYWORDS) — see class-level comment above.
         Mutates `keywords` in place.
         """
         def _clean(items: Optional[List[str]]) -> List[str]:
@@ -1102,8 +1118,8 @@ Rules:
                     out.append(s)
             return out
 
-        keywords.required = _dedupe(required)
-        keywords.preferred = _dedupe(preferred)
+        keywords.required = _dedupe(required)[: self.MAX_REQUIRED_KEYWORDS]
+        keywords.preferred = _dedupe(preferred)[: self.MAX_PREFERRED_KEYWORDS]
         keywords.excluded = _dedupe(excluded)
 
     # ── Requirement chat (stage-then-apply) ────────────────────────────────

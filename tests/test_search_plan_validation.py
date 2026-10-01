@@ -260,3 +260,28 @@ def test_requirement_agent_normalize_keywords_dedupes_and_drops_overlong():
     assert keywords.required == ["Python", "Django"]
     assert keywords.preferred == ["FastAPI"]  # "Python" dropped: already in required; 250-char entry dropped
     assert all(len(k) <= agent.MAX_KEYWORD_LENGTH for k in keywords.required + keywords.preferred)
+
+
+def test_normalize_keywords_caps_total_count():
+    """
+    Real bug from a live trace: the LLM generated 20 required + 16 preferred
+    (36 total) keywords for one JD. Resdex ANDs required keywords together,
+    so 20 required terms makes a search nearly unsatisfiable — and the
+    combined keyword string from 36 terms blows past Resdex's own limit.
+    Caps required to 8, preferred to 12, keeping the first-listed (assumed
+    most-important-first) entries.
+    """
+    from app.agents.requirement_agent import RequirementAgent
+    from app.schemas.search_plan import KeywordsPlan
+
+    agent = RequirementAgent()
+    keywords = KeywordsPlan(
+        required=[f"Skill{i}" for i in range(20)],
+        preferred=[f"Pref{i}" for i in range(16)],
+    )
+    agent._normalize_keywords(keywords)
+
+    assert len(keywords.required) == agent.MAX_REQUIRED_KEYWORDS == 8
+    assert len(keywords.preferred) == agent.MAX_PREFERRED_KEYWORDS == 12
+    assert keywords.required == [f"Skill{i}" for i in range(8)]
+    assert keywords.preferred == [f"Pref{i}" for i in range(12)]
