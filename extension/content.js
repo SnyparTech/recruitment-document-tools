@@ -990,6 +990,34 @@ async function setActiveIn(value) {
       }
       return null;
     };
+    // The option list only renders a few items at a time (confirmed live:
+    // "15 days" isn't present in the DOM right after opening, so findOpt()
+    // alone never sees it — only earlier items like "1 day" are there yet).
+    // Scroll the list's own internal scroll container in steps, re-checking
+    // findOpt() after each, so an option further down gets a chance to
+    // render before giving up on it.
+    const scrollableListRoot = () => {
+      const owner = wrap.querySelector("[aria-owns], [aria-controls]");
+      const owned = owner ? getComboboxListbox(owner) : null;
+      return (owned && owned.closest(".custom-scroll-area, .custom-scroll-view"))
+        || document.querySelector(".custom-scroll-area, .custom-scroll-view");
+    };
+    const findOptWithScroll = async (maxSteps = 12, stepPx = 90) => {
+      let opt = findOpt();
+      if (opt) return opt;
+      const scrollRoot = scrollableListRoot();
+      if (!scrollRoot) return null;
+      let lastScrollTop = -1;
+      for (let i = 0; i < maxSteps; i++) {
+        scrollRoot.scrollTop += stepPx;
+        await sleep(150);
+        opt = findOpt();
+        if (opt) return opt;
+        if (scrollRoot.scrollTop === lastScrollTop) break; // reached the bottom, nothing left to scroll
+        lastScrollTop = scrollRoot.scrollTop;
+      }
+      return null;
+    };
     const dispatchFullClick = (el) => {
       for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
         try {
@@ -1013,7 +1041,7 @@ async function setActiveIn(value) {
           // Give React one more tick, then look at whether the wrapper actually
           // flipped open before giving up on this opener.
           await sleep(400);
-          opt = findOpt();
+          opt = await findOptWithScroll();
         }
       }
       if (opt) {
@@ -1039,14 +1067,21 @@ async function setActiveIn(value) {
     const keyboardOpener = wrap.querySelector("div.naukri-suggestor-wrapper") || wrap;
     keyboardOpener.focus?.();
     for (const key of ["Enter", " "]) {
-      let opt = findOpt();
-      if (!opt) {
-        for (const type of ["keydown", "keyup"]) {
-          keyboardOpener.dispatchEvent(new KeyboardEvent(type, { key, bubbles: true, cancelable: true }));
-        }
-        await sleep(400);
-        opt = findOpt();
+      // Only send Enter/Space once per key — repeating it on an
+      // already-open listbox can act as "confirm the current keyboard
+      // selection" rather than "open", silently picking whatever item
+      // happens to be focused by default (e.g. the first real entry in the
+      // list) instead of the one we actually want. Confirm the wrapper
+      // genuinely flipped open before trusting anything findOpt() returns
+      // from this attempt.
+      for (const type of ["keydown", "keyup"]) {
+        keyboardOpener.dispatchEvent(new KeyboardEvent(type, { key, bubbles: true, cancelable: true }));
       }
+      await sleep(400);
+      const nowExpanded = keyboardOpener.getAttribute?.("aria-expanded") === "true";
+      if (!nowExpanded) continue; // this key didn't open it — try the next one, don't guess at options yet
+
+      const opt = await findOptWithScroll();
       if (opt) {
         const li = opt.closest("li") || opt;
         li.scrollIntoView({ block: "nearest" });
