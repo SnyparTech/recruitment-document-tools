@@ -83,6 +83,23 @@
     #resume-btn:hover { background: linear-gradient(135deg, #10b981, #059669); }
 
     .note { margin-top: 8px; font-size: 11px; color: #64748b; text-align: center; }
+
+    #device-auth-box { display: none; margin-bottom: 12px; padding: 10px; background: #1e293b; border-radius: 6px; }
+    #device-auth-box.visible { display: block; }
+    #device-auth-box input {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 7px;
+      margin-bottom: 6px;
+      border-radius: 5px;
+      border: 1px solid #334155;
+      background: #0f172a;
+      color: #f8fafc;
+      font-size: 12px;
+    }
+    #device-auth-msg { font-size: 11px; margin-top: 6px; min-height: 14px; }
+    #device-auth-msg.error { color: #f87171; }
+    #device-auth-msg.success { color: #34d399; }
   </style>
 </head>
 <body>
@@ -91,6 +108,14 @@
     <span id="dot" class="dot"></span>
     <span id="status-text">Checking server...</span>
   </div>
+
+  <div id="device-auth-box">
+    <p style="margin-bottom:8px;">This device is not authorized. Enter the one-time registration token given by your admin.</p>
+    <input id="device-token-input" type="text" placeholder="Registration token" />
+    <button id="activate-btn">Activate this device</button>
+    <div id="device-auth-msg"></div>
+  </div>
+
   <p>Connected to your Naukri Launcher session. Auto-fills skills, experience, location, and more.</p>
 
   <button id="fill-btn">⚡ Auto-Fill Resdex Form</button>

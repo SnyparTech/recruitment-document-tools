@@ -3,6 +3,7 @@
   "name": "Snypar Resdex Auto-Fill Bot",
   "version": "1.0",
   "description": "Automatically fills Naukri Resdex candidate search criteria from Snypar Profile Bot",
+  "permissions": ["storage"],
   "host_permissions": [
     "*://resdex.naukri.com/*",
     "https://recruitment-document-tools.onrender.com/*",

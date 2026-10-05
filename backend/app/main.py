@@ -21,6 +21,7 @@ from app.api.gmail import router as gmail_router
 from app.api.jobs import router as jobs_router
 from app.api.whatsapp import router as whatsapp_router
 from app.api.webhooks import router as webhooks_router
+from app.api.device_auth import router as device_auth_router
 from app.core.config import settings
 from app.core.exceptions import ProfileBotException
 from app.core.security import (
@@ -186,6 +187,7 @@ app.include_router(gmail_router)
 app.include_router(jobs_router)
 app.include_router(whatsapp_router)
 app.include_router(webhooks_router)
+app.include_router(device_auth_router)
 
 
 # ------------------------------------------------------------------------------

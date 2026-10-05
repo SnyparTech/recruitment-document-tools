@@ -1,17 +1,35 @@
-const BACKEND_URLS = [
-  "https://recruitment-document-tools.onrender.com/search/active-plan",
-  "http://127.0.0.1:8001/search/active-plan",
-  "http://localhost:8001/search/active-plan",
+const BACKEND_BASES = [
+  "https://recruitment-document-tools.onrender.com",
+  "http://127.0.0.1:8001",
+  "http://localhost:8001",
 ];
+
+// Same device-id scheme as content.js (not importable here, Manifest V3 popup
+// is a separate script context) — generated once, cached in chrome.storage.local.
+async function getDeviceId() {
+  const stored = await chrome.storage.local.get("snypar_device_id");
+  if (stored.snypar_device_id) return stored.snypar_device_id;
+  const generated = crypto.randomUUID();
+  await chrome.storage.local.set({ snypar_device_id: generated });
+  return generated;
+}
 
 async function checkBackendStatus() {
   const dot = document.getElementById("dot");
   const text = document.getElementById("status-text");
+  const authBox = document.getElementById("device-auth-box");
+  const deviceId = await getDeviceId();
   let connected = false;
+  let unauthorized = false;
 
-  for (const url of BACKEND_URLS) {
+  for (const base of BACKEND_BASES) {
     try {
-      const res = await fetch(url);
+      const res = await fetch(base + "/search/active-plan", { headers: { "X-Device-Id": deviceId } });
+      if (res.status === 403) {
+        unauthorized = true;
+        connected = true;
+        break;
+      }
       if (res.ok) {
         const data = await res.json();
         dot.className = "dot";
@@ -25,8 +43,48 @@ async function checkBackendStatus() {
   if (!connected) {
     dot.className = "dot offline";
     text.innerText = "Server Offline";
+  } else if (unauthorized) {
+    dot.className = "dot offline";
+    text.innerText = "Device Not Authorized";
+    authBox.className = "visible";
   }
 }
+
+document.getElementById("activate-btn").addEventListener("click", async () => {
+  const msg = document.getElementById("device-auth-msg");
+  const token = document.getElementById("device-token-input").value.trim();
+  if (!token) {
+    msg.className = "error";
+    msg.innerText = "Enter the token your admin gave you.";
+    return;
+  }
+  const deviceId = await getDeviceId();
+  msg.className = "";
+  msg.innerText = "Activating...";
+
+  for (const base of BACKEND_BASES) {
+    try {
+      const res = await fetch(base + "/auth/register-device", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ registration_token: token, device_id: deviceId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        msg.className = "success";
+        msg.innerText = "Device activated. Reopen this popup.";
+        document.getElementById("device-auth-box").className = "";
+        checkBackendStatus();
+        return;
+      }
+      msg.className = "error";
+      msg.innerText = (data && data.detail) || "Activation failed.";
+      return;
+    } catch (e) {}
+  }
+  msg.className = "error";
+  msg.innerText = "Could not reach the server.";
+});
 
 /**
  * Query the content script for real-time fill state.

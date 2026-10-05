@@ -4,10 +4,12 @@ import os
 import re
 import time
 from typing import List, Optional
-from fastapi import APIRouter, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
 import fitz  # PyMuPDF
 import docx
+
+from app.core.device_auth import verify_device
 
 from app.schemas.requirement import (
     CandidateSearchRequest,
@@ -72,6 +74,7 @@ def _persist_now() -> None:
 @router.get(
     "/active-plan",
     summary="Get active SearchPlan for Naukri Resdex browser auto-fill",
+    dependencies=[Depends(verify_device)],
 )
 async def get_active_plan():
     """Returns the latest SearchPlan for the extension to auto-fill."""
@@ -213,6 +216,7 @@ async def store_search_plan(
     "/results",
     status_code=status.HTTP_200_OK,
     summary="Submit candidates scraped from the Resdex results page",
+    dependencies=[Depends(verify_device)],
 )
 async def submit_candidate_results(request: SubmitCandidateResultsRequest):
     """
@@ -347,6 +351,7 @@ class LiveResdexKeywordsRequest(BaseModel):
     "/plan/live-keywords",
     status_code=status.HTTP_200_OK,
     summary="Extension reports the keywords currently live in the Resdex form, so the website draft stays in sync",
+    dependencies=[Depends(verify_device)],
 )
 async def report_live_keywords(request: LiveResdexKeywordsRequest):
     """

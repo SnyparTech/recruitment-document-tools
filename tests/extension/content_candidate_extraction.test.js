@@ -110,7 +110,7 @@ function buildCandidateCard({ name, title, company, location, skillNames = [], e
   return { card, anchor };
 }
 
-test("extractOneCandidate pulls all fields when present, and only the ones present when not", () => {
+test("extractOneCandidate pulls all fields when present, and only the ones present when not", async () => {
   const sandbox = loadContentJsSandbox();
   const { card, anchor } = buildCandidateCard({
     name: "Ravi Kumar",
@@ -121,7 +121,7 @@ test("extractOneCandidate pulls all fields when present, and only the ones prese
     experienceText: "6 yrs 2 months experience",
   });
 
-  const candidate = sandbox.extractOneCandidate(card, anchor);
+  const candidate = await sandbox.extractOneCandidate(card, anchor);
   assert.equal(candidate.name, "Ravi Kumar");
   assert.equal(candidate.title, "Senior Python Developer");
   assert.equal(candidate.company, "TCS");
@@ -132,17 +132,17 @@ test("extractOneCandidate pulls all fields when present, and only the ones prese
   assert.equal(candidate.resdex_candidate_id, "Ravi Kumar");
 
   const sparse = buildCandidateCard({ name: "Priya Singh" });
-  const sparseCandidate = sandbox.extractOneCandidate(sparse.card, sparse.anchor);
+  const sparseCandidate = await sandbox.extractOneCandidate(sparse.card, sparse.anchor);
   assert.equal(sparseCandidate.name, "Priya Singh");
   assert.equal(sparseCandidate.title, null);
   assert.equal(sparseCandidate.company, null);
   assert.equal(JSON.stringify(sparseCandidate.skills), JSON.stringify([]));
 });
 
-test("extractOneCandidate returns null (fail-soft, not throw) when no name can be derived", () => {
+test("extractOneCandidate returns null (fail-soft, not throw) when no name can be derived", async () => {
   const sandbox = loadContentJsSandbox();
   const emptyCard = new FakeEl({ tag: "div", className: "candidateCard", children: [] });
-  assert.equal(sandbox.extractOneCandidate(emptyCard, null), null);
+  assert.equal(await sandbox.extractOneCandidate(emptyCard, null), null);
 });
 
 test("extractCandidatesFromResultsPage isolates a per-container error: one bad card doesn't stop the others", async () => {

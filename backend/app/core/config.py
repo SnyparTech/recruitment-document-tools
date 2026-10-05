@@ -35,6 +35,14 @@ class Settings(BaseSettings):
 
     # Security, Isolation & DLP Configuration
     LOCAL_API_KEY: Optional[str] = None
+
+    # Device-lock for the Chrome extension: a comma-separated pool of one-time
+    # registration tokens you hand out to authorized machines. Empty (default)
+    # means the lock is OFF — every device is allowed, same as before this
+    # feature existed. Once set, only devices that have successfully redeemed
+    # one of these tokens via POST /auth/register-device may call the
+    # extension-facing endpoints (search_router) — see core/device_auth.py.
+    DEVICE_REGISTRATION_TOKENS: str = ""
     ALLOWED_ORIGINS: list[str] = [
         "http://localhost:8002",
         "http://127.0.0.1:8002",

@@ -42,10 +42,40 @@ function isOnFormPage() {
   return !isOnResultsPage() && !isOnPreviewPage();
 }
 
+// Device lock: a random id generated once per install (chrome.storage.local
+// so it survives page reloads/navigations) and sent on every backend call.
+// The backend only enforces this if DEVICE_REGISTRATION_TOKENS is configured
+// server-side — until this device redeems a one-time token via the popup's
+// "Activate this device" field, the backend rejects it with 403. See
+// backend/app/core/device_auth.py.
+let _cachedDeviceId = null;
+async function getDeviceId() {
+  if (_cachedDeviceId) return _cachedDeviceId;
+  try {
+    const stored = await chrome.storage.local.get("snypar_device_id");
+    if (stored.snypar_device_id) {
+      _cachedDeviceId = stored.snypar_device_id;
+      return _cachedDeviceId;
+    }
+    const generated = crypto.randomUUID();
+    await chrome.storage.local.set({ snypar_device_id: generated });
+    _cachedDeviceId = generated;
+    return generated;
+  } catch (e) {
+    return null; // chrome.storage unavailable (e.g. test sandbox) — backend treats missing id as unauthorized when lock is on
+  }
+}
+
 async function fetchFromBackend(path) {
+  const deviceId = await getDeviceId();
+  const headers = deviceId ? { "X-Device-Id": deviceId } : {};
   for (const base of BACKEND_BASE_URLS) {
     try {
-      const res = await fetch(base + path);
+      const res = await fetch(base + path, { headers });
+      if (res.status === 403) {
+        console.warn("[Snypar Bot] This device is not authorized. Activate it from the extension popup.");
+        return null;
+      }
       if (res.ok) return await res.json();
     } catch (e) {}
   }
@@ -53,13 +83,20 @@ async function fetchFromBackend(path) {
 }
 
 async function postToBackend(path, body) {
+  const deviceId = await getDeviceId();
+  const headers = { "Content-Type": "application/json" };
+  if (deviceId) headers["X-Device-Id"] = deviceId;
   for (const base of BACKEND_BASE_URLS) {
     try {
       const res = await fetch(base + path, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify(body),
       });
+      if (res.status === 403) {
+        console.warn("[Snypar Bot] This device is not authorized. Activate it from the extension popup.");
+        return null;
+      }
       if (res.ok) return await res.json();
       console.warn(`[Snypar Bot] POST ${path} to ${base} returned ${res.status}`);
     } catch (e) {}
@@ -2352,22 +2389,65 @@ function findCandidateContainers() {
   };
 }
 
-// Naukri's AI-generated candidate summary (the text shown when hovering the
-// three-dots/info icon) lives statically in the DOM already — no hover
-// simulation needed. It's on the anchor `a.candidate-profile-summary`
-// (a more specific subclass of `.link.ext`, which is reused elsewhere on the
-// page e.g. the nav "go to advance search form" icon — must scope to this
-// class, not `.link.ext`), both as a `title` attribute and as visible
-// (highlighted) span text. Confirmed via live DOM capture 2026-09-22.
-// Not every candidate has one — Naukri only generates it for some profiles.
-function extractAiSummary(container) {
+// Naukri's AI-generated candidate summary lives on the anchor
+// `a.candidate-profile-summary` (a more specific subclass of `.link.ext`,
+// which is reused elsewhere on the page e.g. the nav "go to advance search
+// form" icon — must scope to this class, not `.link.ext`). The static
+// `title` attribute / visible span text is often truncated with a trailing
+// "..." (confirmed via screenshots: visible text cuts off at "...Chang..."
+// while the full skill list only appears in a separate tooltip shown on
+// mouse hover). So: read the static text first (cheap, always available as
+// a floor), and if it looks truncated, simulate a real hover to trigger
+// whatever tooltip/popover Resdex renders, read ITS text, and use whichever
+// is longer — never regress below what the static attribute already gave us.
+async function extractAiSummary(container) {
   const el = container.querySelector("a.candidate-profile-summary");
   if (!el) return null;
-  const text = (el.getAttribute("title") || el.textContent || "").trim();
-  return text || null;
+
+  const staticText = (el.getAttribute("title") || el.textContent || "").trim();
+  const looksTruncated = /\.\.\.$|…$/.test(staticText) || !staticText;
+  if (!looksTruncated) return staticText || null;
+
+  const hoverText = await readHoverTooltipText(el, staticText);
+  const best = (hoverText && hoverText.length > staticText.length) ? hoverText : staticText;
+  return best || null;
 }
 
-function extractOneCandidate(container, anchor) {
+// Generic hover-triggered tooltip reader: dispatches a real hover event
+// sequence (pointerover/mouseover/mouseenter all bubble, since React can
+// bind to any of them), waits for a tooltip to render, reads the longest
+// newly-visible tooltip-like element's text, then closes it with the
+// matching leave events so the page doesn't stay stuck "hovered". Scoped to
+// elements that actually look like a tooltip (role=tooltip or a class
+// containing "tooltip") and are longer than the excerpt we already have, so
+// an unrelated nearby popup can't get picked up by accident.
+async function readHoverTooltipText(triggerEl, excludeText, waitMs = 350) {
+  try {
+    for (const type of ["pointerover", "mouseover", "mouseenter"]) {
+      triggerEl.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+    }
+    await sleep(waitMs);
+
+    const candidates = Array.from(document.querySelectorAll(
+      "[role='tooltip'], [class*='tooltip' i], [class*='Tooltip']"
+    )).filter((el) => el.offsetParent !== null);
+
+    let best = null;
+    for (const el of candidates) {
+      const text = (el.textContent || "").trim();
+      if (text && text.length > (excludeText || "").length && (!best || text.length > best.length)) {
+        best = text;
+      }
+    }
+    return best;
+  } finally {
+    for (const type of ["pointerout", "mouseout", "mouseleave"]) {
+      triggerEl.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+    }
+  }
+}
+
+async function extractOneCandidate(container, anchor) {
   const name = anchor ? safeText(anchor, 100) : (
     findChildTextByClassHints(container, ["name", "candidatename"]) ||
     safeText(container.querySelector("h1, h2, h3, strong"), 100)
@@ -2387,7 +2467,7 @@ function extractOneCandidate(container, anchor) {
     notice_period: txt.notice_period || findChildTextByClassHints(container, FIELD_CLASS_HINTS.notice_period),
     profile_url: anchor && anchor.href ? anchor.href : null,
     resdex_candidate_id: extractResdexCandidateId(anchor),
-    ai_summary: extractAiSummary(container),
+    ai_summary: await extractAiSummary(container),
   };
   // One-time calibration dump: if the key fields are still empty, log the real
   // card markup/text so selectors can be written from it instead of guessed.
@@ -2431,7 +2511,7 @@ async function extractCandidatesFromResultsPage() {
 
   for (const { container, anchor } of pairs) {
     try {
-      const candidate = extractOneCandidate(container, anchor);
+      const candidate = await extractOneCandidate(container, anchor);
       if (!candidate) {
         extractionWarnings.push("A candidate container had no extractable name; skipped.");
         continue;
