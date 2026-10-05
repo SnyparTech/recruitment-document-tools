@@ -1,12 +1,12 @@
 """
-Device allowlist for the Chrome extension.
+Device allowlist for the Chrome extension, gated by company email.
 
-Registration tokens (one-time, handed out by the admin) live in
-settings.DEVICE_REGISTRATION_TOKENS (comma-separated, .env). Redeeming one
-permanently authorizes the device id that redeemed it and burns the token —
-it can't be reused to authorize a second device. The authorized-device set
-and the list of burned tokens are persisted to a JSON file (same pattern as
-state_persistence.py) so a backend restart doesn't un-authorize everyone.
+A device registers once with its work email (must end @<AUTHORIZED_EMAIL_DOMAIN>,
+default snypartech.com). One email = one device: registering a second device
+with the same email is rejected outright — an admin must clear the old entry
+in authorized_devices.json first (e.g. after a laptop swap). The authorized
+set is persisted to a JSON file (same pattern as state_persistence.py) so a
+backend restart doesn't un-authorize everyone.
 
 Device ids themselves are opaque, extension-generated UUIDs (see
 extension/content.js) — this module never tries to fingerprint hardware.
@@ -14,6 +14,7 @@ extension/content.js) — this module never tries to fingerprint hardware.
 import json
 import logging
 import os
+import re
 import tempfile
 import time
 from typing import Any, Dict
@@ -23,20 +24,22 @@ logger = logging.getLogger(__name__)
 _STATE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), ".data")
 _STATE_FILE = os.path.join(_STATE_DIR, "authorized_devices.json")
 
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
 
 def _load() -> Dict[str, Any]:
     try:
         with open(_STATE_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
             if isinstance(data, dict):
-                data.setdefault("devices", {})
-                data.setdefault("burned_tokens", [])
+                data.setdefault("devices", {})  # device_id -> {email, registered_at}
+                data.setdefault("emails", {})   # email (lowercase) -> device_id
                 return data
     except FileNotFoundError:
         pass
     except Exception as exc:
         logger.warning("Could not load authorized_devices.json (%s) — starting empty.", exc)
-    return {"devices": {}, "burned_tokens": []}
+    return {"devices": {}, "emails": {}}
 
 
 def _save(data: Dict[str, Any]) -> None:
@@ -58,12 +61,7 @@ def _save(data: Dict[str, Any]) -> None:
 
 
 def device_lock_enabled(settings) -> bool:
-    return bool(_valid_tokens(settings))
-
-
-def _valid_tokens(settings) -> set:
-    raw = settings.DEVICE_REGISTRATION_TOKENS or ""
-    return {t.strip() for t in raw.split(",") if t.strip()}
+    return bool(getattr(settings, "DEVICE_AUTH_ENABLED", False))
 
 
 def is_authorized(device_id: str) -> bool:
@@ -72,24 +70,27 @@ def is_authorized(device_id: str) -> bool:
     return device_id in _load()["devices"]
 
 
-def register_device(settings, registration_token: str, device_id: str) -> None:
-    """Redeem a one-time token for device_id. Raises ValueError on any failure
-    (unknown/already-burned token, missing device_id) with a message safe to
-    return to the caller."""
+def register_device(settings, email: str, device_id: str) -> None:
+    """Register device_id against a work email. Raises ValueError (message is
+    safe to return to the caller) on any failure: malformed email, wrong
+    domain, email already tied to a different device, or missing device_id."""
     if not device_id or not device_id.strip():
         raise ValueError("device_id is required.")
-    token = (registration_token or "").strip()
-    valid_tokens = _valid_tokens(settings)
-    if not valid_tokens:
-        raise ValueError("Device registration is not enabled on this server.")
+
+    email = (email or "").strip().lower()
+    if not _EMAIL_RE.match(email):
+        raise ValueError("Enter a valid email address.")
+
+    domain = (getattr(settings, "AUTHORIZED_EMAIL_DOMAIN", "") or "").strip().lower()
+    if domain and not email.endswith("@" + domain):
+        raise ValueError(f"Only @{domain} email addresses can register a device.")
 
     data = _load()
-    if token in data["burned_tokens"]:
-        raise ValueError("This registration token has already been used.")
-    if token not in valid_tokens:
-        raise ValueError("Invalid registration token.")
+    existing_device = data["emails"].get(email)
+    if existing_device and existing_device != device_id:
+        raise ValueError("This email is already registered to another device. Ask an admin to clear it first.")
 
-    data["devices"][device_id] = {"registered_at": time.time()}
-    data["burned_tokens"].append(token)
+    data["devices"][device_id] = {"email": email, "registered_at": time.time()}
+    data["emails"][email] = device_id
     _save(data)
-    logger.info("Device %s registered via token redemption.", device_id)
+    logger.info("Device %s registered to %s.", device_id, email)

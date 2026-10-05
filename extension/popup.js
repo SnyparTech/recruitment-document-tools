@@ -52,10 +52,10 @@ async function checkBackendStatus() {
 
 document.getElementById("activate-btn").addEventListener("click", async () => {
   const msg = document.getElementById("device-auth-msg");
-  const token = document.getElementById("device-token-input").value.trim();
-  if (!token) {
+  const email = document.getElementById("device-email-input").value.trim();
+  if (!email) {
     msg.className = "error";
-    msg.innerText = "Enter the token your admin gave you.";
+    msg.innerText = "Enter your @snypartech.com email.";
     return;
   }
   const deviceId = await getDeviceId();
@@ -67,7 +67,7 @@ document.getElementById("activate-btn").addEventListener("click", async () => {
       const res = await fetch(base + "/auth/register-device", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ registration_token: token, device_id: deviceId }),
+        body: JSON.stringify({ email, device_id: deviceId }),
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
