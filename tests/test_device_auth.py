@@ -1,6 +1,7 @@
 """
-Tests for the extension device-lock: POST /auth/register-device (gated by
-@snypartech.com email, one device per email) and the verify_device
+Tests for the extension device-lock: OTP-verified registration
+(POST /auth/request-device-otp, POST /auth/register-device) gated by
+@snypartech.com email, one device per email, and the verify_device
 dependency applied to the 3 extension-facing /search endpoints
 (GET /search/active-plan, POST /search/results, POST /search/plan/live-keywords).
 """
@@ -12,7 +13,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 from fastapi.testclient import TestClient
 from app.main import app
 from app.core.config import settings
-from app.services import device_auth_service
+from app.services import device_auth_service, otp_service
 
 client = TestClient(app)
 
@@ -23,6 +24,15 @@ def _reset_device_store(monkeypatch, tmp_path):
     monkeypatch.setattr(device_auth_service, "_STATE_DIR", str(tmp_path))
     monkeypatch.setattr(settings, "DEVICE_AUTH_ENABLED", True)
     monkeypatch.setattr(settings, "AUTHORIZED_EMAIL_DOMAIN", "snypartech.com")
+    otp_service._pending.clear()
+
+
+def _stub_send_otp(monkeypatch, captured):
+    def fake_send(settings, email, device_id):
+        code = "123456"
+        otp_service._pending[email] = (code, device_id, __import__("time").time() + 600)
+        captured["code"] = code
+    monkeypatch.setattr(otp_service, "send_otp", fake_send)
 
 
 def test_lock_disabled_allows_any_device(monkeypatch, tmp_path):
@@ -44,48 +54,73 @@ def test_missing_device_id_header_rejected_when_lock_enabled(monkeypatch, tmp_pa
     assert res.status_code == 403
 
 
-def test_registering_with_company_email_authorizes_the_device(monkeypatch, tmp_path):
+def test_non_company_email_rejected_at_otp_request(monkeypatch, tmp_path):
     _reset_device_store(monkeypatch, tmp_path)
-
-    reg = client.post("/auth/register-device", json={"email": "harshith@snypartech.com", "device_id": "device-1"})
-    assert reg.status_code == 200, reg.text
-
-    res = client.get("/search/active-plan", headers={"X-Device-Id": "device-1"})
-    assert res.status_code == 200
-
-
-def test_non_company_email_rejected(monkeypatch, tmp_path):
-    _reset_device_store(monkeypatch, tmp_path)
-    res = client.post("/auth/register-device", json={"email": "someone@gmail.com", "device_id": "device-1"})
+    res = client.post("/auth/request-device-otp", json={"email": "someone@gmail.com", "device_id": "device-1"})
     assert res.status_code == 403
 
 
-def test_malformed_email_rejected(monkeypatch, tmp_path):
+def test_register_without_requesting_otp_first_is_rejected(monkeypatch, tmp_path):
     _reset_device_store(monkeypatch, tmp_path)
-    res = client.post("/auth/register-device", json={"email": "not-an-email", "device_id": "device-1"})
+    res = client.post("/auth/register-device", json={"email": "harshith@snypartech.com", "device_id": "device-1", "otp": "000000"})
     assert res.status_code == 403
+
+
+def test_wrong_otp_rejected(monkeypatch, tmp_path):
+    _reset_device_store(monkeypatch, tmp_path)
+    captured = {}
+    _stub_send_otp(monkeypatch, captured)
+
+    req = client.post("/auth/request-device-otp", json={"email": "harshith@snypartech.com", "device_id": "device-1"})
+    assert req.status_code == 200
+
+    res = client.post("/auth/register-device", json={"email": "harshith@snypartech.com", "device_id": "device-1", "otp": "999999"})
+    assert res.status_code == 403
+
+
+def test_correct_otp_authorizes_the_device(monkeypatch, tmp_path):
+    _reset_device_store(monkeypatch, tmp_path)
+    captured = {}
+    _stub_send_otp(monkeypatch, captured)
+
+    req = client.post("/auth/request-device-otp", json={"email": "harshith@snypartech.com", "device_id": "device-1"})
+    assert req.status_code == 200
+
+    res = client.post("/auth/register-device", json={"email": "harshith@snypartech.com", "device_id": "device-1", "otp": captured["code"]})
+    assert res.status_code == 200, res.text
+
+    check = client.get("/search/active-plan", headers={"X-Device-Id": "device-1"})
+    assert check.status_code == 200
+
+
+def test_otp_is_single_use(monkeypatch, tmp_path):
+    _reset_device_store(monkeypatch, tmp_path)
+    captured = {}
+    _stub_send_otp(monkeypatch, captured)
+
+    client.post("/auth/request-device-otp", json={"email": "harshith@snypartech.com", "device_id": "device-1"})
+    first = client.post("/auth/register-device", json={"email": "harshith@snypartech.com", "device_id": "device-1", "otp": captured["code"]})
+    assert first.status_code == 200
+
+    second = client.post("/auth/register-device", json={"email": "harshith@snypartech.com", "device_id": "device-1", "otp": captured["code"]})
+    assert second.status_code == 403
 
 
 def test_same_email_cannot_register_a_second_device(monkeypatch, tmp_path):
     _reset_device_store(monkeypatch, tmp_path)
+    captured = {}
+    _stub_send_otp(monkeypatch, captured)
 
-    first = client.post("/auth/register-device", json={"email": "harshith@snypartech.com", "device_id": "device-1"})
+    client.post("/auth/request-device-otp", json={"email": "harshith@snypartech.com", "device_id": "device-1"})
+    first = client.post("/auth/register-device", json={"email": "harshith@snypartech.com", "device_id": "device-1", "otp": captured["code"]})
     assert first.status_code == 200
 
-    second = client.post("/auth/register-device", json={"email": "harshith@snypartech.com", "device_id": "device-2"})
+    client.post("/auth/request-device-otp", json={"email": "harshith@snypartech.com", "device_id": "device-2"})
+    second = client.post("/auth/register-device", json={"email": "harshith@snypartech.com", "device_id": "device-2", "otp": captured["code"]})
     assert second.status_code == 403
 
     res = client.get("/search/active-plan", headers={"X-Device-Id": "device-2"})
     assert res.status_code == 403
-
-
-def test_re_registering_same_email_same_device_is_idempotent(monkeypatch, tmp_path):
-    _reset_device_store(monkeypatch, tmp_path)
-
-    first = client.post("/auth/register-device", json={"email": "harshith@snypartech.com", "device_id": "device-1"})
-    assert first.status_code == 200
-    second = client.post("/auth/register-device", json={"email": "harshith@snypartech.com", "device_id": "device-1"})
-    assert second.status_code == 200
 
 
 def test_jd_upload_endpoint_unaffected_by_device_lock(monkeypatch, tmp_path):

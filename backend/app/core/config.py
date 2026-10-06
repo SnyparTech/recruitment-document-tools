@@ -44,6 +44,16 @@ class Settings(BaseSettings):
     # registered your own device (or are ready to).
     DEVICE_AUTH_ENABLED: bool = False
     AUTHORIZED_EMAIL_DOMAIN: str = "snypartech.com"
+
+    # Outlook/Office365 SMTP — sends the one-time OTP code used to verify a
+    # registering device's email actually belongs to them (see
+    # services/otp_service.py). OUTLOOK_PASSWORD should be an app password,
+    # not the account's normal login password. Never hardcode — env only.
+    OUTLOOK_SMTP_HOST: str = "smtp.office365.com"
+    OUTLOOK_SMTP_PORT: int = 587
+    OUTLOOK_EMAIL: Optional[str] = None
+    OUTLOOK_PASSWORD: Optional[str] = None
+    DEVICE_OTP_TTL_SECONDS: int = 600
     ALLOWED_ORIGINS: list[str] = [
         "http://localhost:8002",
         "http://127.0.0.1:8002",
@@ -105,9 +115,15 @@ class Settings(BaseSettings):
     META_WEBHOOK_VERIFY_TOKEN: Optional[str] = None
     META_API_BASE_URL: str = "https://graph.facebook.com"
 
-    # Destination(s) for the formatted recruitment message. The official Meta
-    # WhatsApp Cloud API has no "create/post to a WhatsApp Group" endpoint (see
-    # meta_whatsapp_service.py) — the supported equivalent is messaging each
+    # Group this business account created via POST /api/whatsapp/groups (see
+    # api/whatsapp.py) and wants the recruitment pipeline to post into. If set,
+    # /api/whatsapp/send posts to this group instead of broadcasting to
+    # WHATSAPP_BROADCAST_RECIPIENTS individually. Requires OBA account status
+    # — see meta_whatsapp_service.py module docstring.
+    META_GROUP_ID: Optional[str] = None
+
+    # Fallback destination(s) for the formatted recruitment message when no
+    # META_GROUP_ID is configured (or group send fails) — messaging each
     # opted-in recipient's phone number individually. Comma-separated E.164
     # numbers, e.g. "+919876543210,+919812345678".
     WHATSAPP_BROADCAST_RECIPIENTS: str = ""

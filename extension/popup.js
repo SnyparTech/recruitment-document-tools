@@ -50,12 +50,49 @@ async function checkBackendStatus() {
   }
 }
 
-document.getElementById("activate-btn").addEventListener("click", async () => {
+document.getElementById("send-otp-btn").addEventListener("click", async () => {
   const msg = document.getElementById("device-auth-msg");
   const email = document.getElementById("device-email-input").value.trim();
   if (!email) {
     msg.className = "error";
-    msg.innerText = "Enter your @snypartech.com email.";
+    msg.innerText = "Enter your work email.";
+    return;
+  }
+  const deviceId = await getDeviceId();
+  msg.className = "";
+  msg.innerText = "Sending code...";
+
+  for (const base of BACKEND_BASES) {
+    try {
+      const res = await fetch(base + "/auth/request-device-otp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, device_id: deviceId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        msg.className = "success";
+        msg.innerText = "Code sent. Check your inbox.";
+        document.getElementById("device-otp-input").style.display = "block";
+        document.getElementById("activate-btn").style.display = "block";
+        return;
+      }
+      msg.className = "error";
+      msg.innerText = (data && data.detail) || "Could not send code.";
+      return;
+    } catch (e) {}
+  }
+  msg.className = "error";
+  msg.innerText = "Could not reach the server.";
+});
+
+document.getElementById("activate-btn").addEventListener("click", async () => {
+  const msg = document.getElementById("device-auth-msg");
+  const email = document.getElementById("device-email-input").value.trim();
+  const otp = document.getElementById("device-otp-input").value.trim();
+  if (!otp) {
+    msg.className = "error";
+    msg.innerText = "Enter the code sent to your email.";
     return;
   }
   const deviceId = await getDeviceId();
@@ -67,7 +104,7 @@ document.getElementById("activate-btn").addEventListener("click", async () => {
       const res = await fetch(base + "/auth/register-device", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, device_id: deviceId }),
+        body: JSON.stringify({ email, device_id: deviceId, otp }),
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok) {

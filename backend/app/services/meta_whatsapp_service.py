@@ -2,22 +2,28 @@
 MetaWhatsAppService — the ONLY code in this codebase allowed to talk to the
 WhatsApp Business Platform, and only via its official Graph API endpoints.
 
-IMPORTANT — WhatsApp Groups capability:
-As of the currently documented Meta WhatsApp Business Platform (Cloud API),
-there is NO endpoint to create, join, or post into a consumer WhatsApp Group
-from a business account. The Cloud API's messaging model is business-to-
-individual-customer only (session messages within a 24h customer-service
-window, or business-initiated template messages any time). This is a
-platform capability limit, not a missing-implementation gap — see
-`check_operation_supported()` below, which is the single source of truth
-other services consult before attempting any send. `send_to_group()` exists
-only to make that limitation explicit and machine-checkable; it never
-attempts a workaround and never calls any endpoint.
+WhatsApp Groups capability:
+Meta's Business Messaging docs (developers.facebook.com/documentation/
+business-messaging/whatsapp/groups) now document a Groups API: a business can
+create its own group (POST /{phone_number_id}/groups), list/inspect groups it
+owns, fetch an invite link, and send messages into a group it created
+(POST /{phone_number_id}/messages with recipient_type="group"). Two real
+constraints to know before relying on this:
+  1. Requires "Official Business Account (OBA)" status on the WhatsApp
+     Business Account — not every account qualifies, and there's no API to
+     self-check this; a 403 from Meta on create_group is the likely signal
+     if the account isn't OBA-approved.
+  2. The business can only create and manage groups it made through this API.
+     There's no way to "adopt" an existing consumer-created WhatsApp group or
+     add arbitrary phone numbers directly — people join a created group via
+     its invite link (or an approval workflow if join_approval_mode is set).
+`check_operation_supported()` is the single source of truth other services
+consult before attempting any send/create, so a misconfigured or
+non-OBA account fails with a clear reason instead of a raw Graph API error.
 
-The practical substitute this pipeline implements instead is a configured
-broadcast list: the JD message is sent individually, via the official
-`/{phone_number_id}/messages` endpoint, to each opted-in recipient number in
-WHATSAPP_BROADCAST_RECIPIENTS. That IS an officially supported operation.
+The broadcast-list substitute (send the JD individually to each number in
+WHATSAPP_BROADCAST_RECIPIENTS) is still implemented and still works
+regardless of OBA status — useful as a fallback if group creation 403s.
 
 Never logs: access tokens, Authorization headers, or full request payloads.
 """
@@ -48,14 +54,14 @@ class MetaWhatsAppService:
         "send_text_message": True,       # session message; requires an open 24h customer-service window
         "send_template_message": True,   # business-initiated; requires a pre-approved template
         "send_broadcast": True,          # our own composition of send_text/template per recipient — officially supported per-message
-        "create_group": False,           # not exposed by the Cloud API at all
-        "send_to_group": False,          # not exposed by the Cloud API at all
+        "create_group": True,            # requires Official Business Account (OBA) status — see module docstring
+        "send_to_group": True,           # requires a group_id this business account created via create_group
     }
 
     UNSUPPORTED_REASON = (
-        "The official Meta WhatsApp Business Platform (Cloud API) has no endpoint "
-        "to create or post into a WhatsApp Group from a business account. Messaging "
-        "is business-to-individual only (session or template messages)."
+        "Meta WhatsApp group operations require Official Business Account (OBA) "
+        "status and credentials to be configured. If this keeps failing, the "
+        "account likely isn't OBA-approved yet — see module docstring."
     )
 
     def __init__(
@@ -83,10 +89,95 @@ class MetaWhatsAppService:
     def _messages_url(self) -> str:
         return f"{self.base_url}/{self.api_version}/{self.phone_number_id}/messages"
 
-    async def send_to_group(self, *_args: Any, **_kwargs: Any) -> MetaApiResult:
-        """Always returns 'unsupported' without making any request — see module docstring."""
-        logger.info("send_to_group() called — official API has no group-messaging endpoint; refusing without a request.")
-        return MetaApiResult(ok=False, status="unsupported", reason=self.UNSUPPORTED_REASON)
+    def _groups_url(self) -> str:
+        return f"{self.base_url}/{self.api_version}/{self.phone_number_id}/groups"
+
+    def _node_url(self, node_id: str, suffix: str = "") -> str:
+        return f"{self.base_url}/{self.api_version}/{node_id}{suffix}"
+
+    async def send_to_group(self, group_id: str, body: str) -> MetaApiResult:
+        """Sends a text message into a group this business account created
+        (via create_group). group_id is the id returned by create_group/
+        list_groups, not a consumer WhatsApp group invite code."""
+        supported, reason = self.check_operation_supported("send_to_group")
+        if not supported:
+            return MetaApiResult(ok=False, status="unsupported", reason=reason, destination=group_id)
+        payload = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "group",
+            "to": group_id,
+            "type": "text",
+            "text": {"preview_url": False, "body": body},
+        }
+        return await self._post_with_retry(payload, destination=group_id)
+
+    async def create_group(
+        self, subject: str, description: Optional[str] = None, join_approval_mode: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Creates a new group owned by this business account. Returns a
+        normalized {ok, data|reason} dict (group metadata isn't a 'message
+        send', so MetaApiResult doesn't fit — no point stretching it)."""
+        supported, reason = self.check_operation_supported("create_group")
+        if not supported:
+            return {"ok": False, "reason": reason}
+        payload: Dict[str, Any] = {"messaging_product": "whatsapp", "subject": subject}
+        if description:
+            payload["description"] = description
+        if join_approval_mode:
+            payload["join_approval_mode"] = join_approval_mode
+        return await self._graph_request("POST", self._groups_url(), json=payload)
+
+    async def list_groups(self, limit: int = 25, after: Optional[str] = None, before: Optional[str] = None) -> Dict[str, Any]:
+        supported, reason = self.check_operation_supported("create_group")
+        if not supported:
+            return {"ok": False, "reason": reason}
+        params: Dict[str, Any] = {"limit": limit}
+        if after:
+            params["after"] = after
+        if before:
+            params["before"] = before
+        return await self._graph_request("GET", self._groups_url(), params=params)
+
+    async def get_group(self, group_id: str, fields: Optional[str] = None) -> Dict[str, Any]:
+        supported, reason = self.check_operation_supported("create_group")
+        if not supported:
+            return {"ok": False, "reason": reason}
+        params = {"fields": fields} if fields else None
+        return await self._graph_request("GET", self._node_url(group_id), params=params)
+
+    async def get_invite_link(self, group_id: str) -> Dict[str, Any]:
+        supported, reason = self.check_operation_supported("create_group")
+        if not supported:
+            return {"ok": False, "reason": reason}
+        return await self._graph_request("GET", self._node_url(group_id, "/invite_link"))
+
+    async def reset_invite_link(self, group_id: str) -> Dict[str, Any]:
+        supported, reason = self.check_operation_supported("create_group")
+        if not supported:
+            return {"ok": False, "reason": reason}
+        return await self._graph_request("POST", self._node_url(group_id, "/invite_link"), json={"messaging_product": "whatsapp"})
+
+    async def _graph_request(
+        self, method: str, url: str, json: Optional[Dict[str, Any]] = None, params: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        headers = {"Authorization": f"Bearer {self.access_token}", "Content-Type": "application/json"}
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+                response = await client.request(method, url, headers=headers, json=json, params=params)
+        except httpx.HTTPError as exc:
+            logger.warning("Meta Graph API transport error (%s %s): %s", method, url, exc.__class__.__name__)
+            return {"ok": False, "reason": f"Transport error calling Meta API: {exc.__class__.__name__}"}
+
+        if response.status_code == 200:
+            return {"ok": True, "data": response.json()}
+
+        error_body = _safe_error_body(response)
+        logger.warning("Meta Graph API error (%s %s, status=%d): %s", method, url, response.status_code, error_body.get("message"))
+        return {
+            "ok": False,
+            "reason": error_body.get("message") or f"Meta API returned HTTP {response.status_code}",
+            "raw_error_code": error_body.get("code"),
+        }
 
     async def send_text_message(self, to: str, body: str) -> MetaApiResult:
         supported, reason = self.check_operation_supported("send_text_message")

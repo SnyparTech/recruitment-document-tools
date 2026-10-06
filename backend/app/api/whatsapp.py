@@ -2,6 +2,7 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, status
+from pydantic import BaseModel, Field
 
 from app.core.config import settings
 from app.schemas.jd import ExtractedJD, WhatsAppSendStatus
@@ -85,8 +86,13 @@ async def send_whatsapp(request: WhatsAppSendRequest):
             "message_preview": message,
         }
 
-    recipients = [r for r in settings.WHATSAPP_BROADCAST_RECIPIENTS.split(",") if r.strip()]
-    api_results = await _meta_service.send_broadcast(recipients, message)
+    if settings.META_GROUP_ID:
+        group_result = await _meta_service.send_to_group(settings.META_GROUP_ID, message)
+        api_results = [group_result]
+    else:
+        recipients = [r for r in settings.WHATSAPP_BROADCAST_RECIPIENTS.split(",") if r.strip()]
+        api_results = await _meta_service.send_broadcast(recipients, message)
+
     any_ok = any(r.ok for r in api_results)
     for api_result in api_results:
         await _tracking_service.record_result(request.job_id, api_result.destination, api_result)
@@ -98,3 +104,45 @@ async def send_whatsapp(request: WhatsAppSendRequest):
         "status": final_status.value,
         "results": [r.model_dump() for r in api_results],
     }
+
+
+# ─── WhatsApp Group management (requires OBA-approved account — see
+# meta_whatsapp_service.py module docstring) ──────────────────────────────
+
+
+class CreateGroupRequest(BaseModel):
+    subject: str = Field(..., min_length=1, max_length=128)
+    description: Optional[str] = Field(default=None, max_length=2048)
+    join_approval_mode: Optional[str] = Field(default=None, description='"auto_approve" or "approval_required"')
+
+
+@router.post("/groups", summary="Create a new WhatsApp group owned by this business account")
+async def create_group(request: CreateGroupRequest):
+    result = await _meta_service.create_group(request.subject, request.description, request.join_approval_mode)
+    if not result["ok"]:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=result["reason"])
+    return result["data"]
+
+
+@router.get("/groups", summary="List WhatsApp groups this business account owns")
+async def list_groups(limit: int = 25, after: Optional[str] = None, before: Optional[str] = None):
+    result = await _meta_service.list_groups(limit=limit, after=after, before=before)
+    if not result["ok"]:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=result["reason"])
+    return result["data"]
+
+
+@router.get("/groups/{group_id}", summary="Get a WhatsApp group's details")
+async def get_group(group_id: str, fields: Optional[str] = None):
+    result = await _meta_service.get_group(group_id, fields=fields)
+    if not result["ok"]:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=result["reason"])
+    return result["data"]
+
+
+@router.get("/groups/{group_id}/invite-link", summary="Get the invite link for a group this business account owns")
+async def get_group_invite_link(group_id: str):
+    result = await _meta_service.get_invite_link(group_id)
+    if not result["ok"]:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=result["reason"])
+    return result["data"]

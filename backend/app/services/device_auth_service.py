@@ -70,20 +70,32 @@ def is_authorized(device_id: str) -> bool:
     return device_id in _load()["devices"]
 
 
+def normalize_and_validate_email(settings, email: str) -> str:
+    """Raises ValueError (safe to show the caller) for a malformed address or
+    one outside AUTHORIZED_EMAIL_DOMAIN. Returns the normalized (lowercased,
+    trimmed) address otherwise. Deliberately gives the same generic rejection
+    for both cases — doesn't confirm/deny which rule failed, so a wrong-domain
+    guess can't be used to probe for valid-looking addresses."""
+    email = (email or "").strip().lower()
+    domain = (getattr(settings, "AUTHORIZED_EMAIL_DOMAIN", "") or "").strip().lower()
+    valid_format = bool(_EMAIL_RE.match(email))
+    valid_domain = not domain or email.endswith("@" + domain)
+    if not valid_format or not valid_domain:
+        suffix = f" with an @{domain} email address" if domain else ""
+        raise ValueError(f"Enter a valid company email{suffix}.")
+    return email
+
+
 def register_device(settings, email: str, device_id: str) -> None:
-    """Register device_id against a work email. Raises ValueError (message is
-    safe to return to the caller) on any failure: malformed email, wrong
-    domain, email already tied to a different device, or missing device_id."""
+    """Register device_id against a work email that has already passed OTP
+    verification (see services/otp_service.py — callers must verify_otp()
+    before calling this). Raises ValueError (message is safe to return to the
+    caller) if the email is already tied to a different device, or device_id
+    is missing."""
     if not device_id or not device_id.strip():
         raise ValueError("device_id is required.")
 
-    email = (email or "").strip().lower()
-    if not _EMAIL_RE.match(email):
-        raise ValueError("Enter a valid email address.")
-
-    domain = (getattr(settings, "AUTHORIZED_EMAIL_DOMAIN", "") or "").strip().lower()
-    if domain and not email.endswith("@" + domain):
-        raise ValueError(f"Only @{domain} email addresses can register a device.")
+    email = normalize_and_validate_email(settings, email)
 
     data = _load()
     existing_device = data["emails"].get(email)

@@ -110,9 +110,11 @@
   </div>
 
   <div id="device-auth-box">
-    <p style="margin-bottom:8px;">This device is not authorized. Register it with your @snypartech.com email (one device per email).</p>
-    <input id="device-email-input" type="email" placeholder="you@snypartech.com" />
-    <button id="activate-btn">Activate this device</button>
+    <p style="margin-bottom:8px;">This device is not authorized.</p>
+    <input id="device-email-input" type="email" placeholder="Work email" />
+    <button id="send-otp-btn">Send code</button>
+    <input id="device-otp-input" type="text" placeholder="Enter code" style="display:none; margin-top:6px;" />
+    <button id="activate-btn" style="display:none; margin-top:6px;">Activate this device</button>
     <div id="device-auth-msg"></div>
   </div>
 
