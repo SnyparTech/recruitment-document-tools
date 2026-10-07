@@ -249,6 +249,7 @@ class RequirementAgent:
         model: Optional[str] = None,
         schema: Optional[Dict[str, Any]] = None,
     ):
+        self.openai_api_key = settings.OPENAI_API_KEY
         self.nvidia_api_key = settings.NVIDIA_NIM_KEY
         self.openrouter_api_key = settings.OPENROUTER_API_KEY
         self.groq_api_key = api_key or settings.GROQ_API_KEY
@@ -293,14 +294,17 @@ class RequirementAgent:
     def _provider_chain(self) -> List[Tuple[str, str, str, str, List[str]]]:
         """
         (name, api_url, api_key, model, fallback_models) tuples in priority
-        order — only providers with a configured key are included. NVIDIA NIM
-        first (explicitly prioritized), then OpenRouter (fallback if NVIDIA
-        fails), then Groq, then Gemini. Only Groq has known-good
-        same-provider fallback model ids (GROQ_FALLBACK_MODELS, verified live
-        against the real API) — no fallback list is invented for the others
-        without the same verification.
+        order — only providers with a configured key are included. OpenAI
+        (gpt-4.1-mini) first — best accuracy/cost balance for this project's
+        structured-extraction tasks, see docs/LLM_MODEL_COMPARISON.md — then
+        NVIDIA NIM, then OpenRouter, then Groq, then Gemini as free-tier
+        fallbacks. Only Groq has known-good same-provider fallback model ids
+        (GROQ_FALLBACK_MODELS, verified live against the real API) — no
+        fallback list is invented for the others without the same verification.
         """
         chain = []
+        if self.openai_api_key:
+            chain.append(("openai", settings.OPENAI_API_URL, self.openai_api_key, settings.OPENAI_MODEL, []))
         if self.nvidia_api_key:
             chain.append(("nvidia", settings.NVIDIA_API_URL, self.nvidia_api_key, settings.NVIDIA_MODEL, []))
         if self.openrouter_api_key:

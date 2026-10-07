@@ -187,6 +187,7 @@ class GroqResumeAIProvider(ResumeAIProvider):
     ]
 
     def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
+        self.openai_api_key = settings.OPENAI_API_KEY
         self.nvidia_api_key = settings.NVIDIA_NIM_KEY
         self.openrouter_api_key = settings.OPENROUTER_API_KEY
         self.api_key = api_key or settings.GROQ_API_KEY
@@ -216,6 +217,12 @@ class GroqResumeAIProvider(ResumeAIProvider):
         DEFAULT_TIMEOUT = 90.0
 
         chain = []
+        if self.openai_api_key:
+            # OpenAI's JSON response_format mode is a stable, long-documented
+            # feature (unlike NVIDIA/OpenRouter's pass-through endpoints) —
+            # trusted here the same way Groq's is, without needing separate
+            # live verification.
+            chain.append(("openai", settings.OPENAI_API_URL, self.openai_api_key, settings.OPENAI_MODEL, [], True, DEFAULT_TIMEOUT))
         if self.nvidia_api_key:
             chain.append(("nvidia", settings.NVIDIA_API_URL, self.nvidia_api_key, settings.NVIDIA_MODEL, [], False, NVIDIA_TIMEOUT))
         if self.openrouter_api_key:

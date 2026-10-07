@@ -183,10 +183,28 @@ def test_chat_completion_with_retry_treats_null_content_as_failure_not_a_crash(m
     assert result is None
 
 
+def test_provider_chain_prioritizes_openai_first_when_configured(monkeypatch):
+    from app.agents.requirement_agent import RequirementAgent
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", "sk-test")
+    monkeypatch.setattr(settings, "NVIDIA_NIM_KEY", "nvapi-test")
+    monkeypatch.setattr(settings, "OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.setattr(settings, "GROQ_API_KEY", "gsk-test")
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", "gemini-test")
+
+    agent = RequirementAgent()
+    chain = agent._provider_chain()
+    assert [c[0] for c in chain] == ["openai", "nvidia", "openrouter", "groq", "gemini"]
+    assert chain[0][1] == settings.OPENAI_API_URL
+    assert chain[0][3] == settings.OPENAI_MODEL == "gpt-4.1-mini"
+
+
 def test_provider_chain_prioritizes_nvidia_then_openrouter_then_groq_then_gemini(monkeypatch):
     from app.agents.requirement_agent import RequirementAgent
     from app.core.config import settings
 
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", None)
     monkeypatch.setattr(settings, "NVIDIA_NIM_KEY", "nvapi-test")
     monkeypatch.setattr(settings, "OPENROUTER_API_KEY", "sk-or-test")
     monkeypatch.setattr(settings, "GROQ_API_KEY", "gsk-test")
@@ -205,6 +223,7 @@ def test_provider_chain_skips_providers_without_a_key(monkeypatch):
     from app.agents.requirement_agent import RequirementAgent
     from app.core.config import settings
 
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", None)
     monkeypatch.setattr(settings, "NVIDIA_NIM_KEY", None)
     monkeypatch.setattr(settings, "OPENROUTER_API_KEY", None)
     monkeypatch.setattr(settings, "GROQ_API_KEY", "gsk-test")

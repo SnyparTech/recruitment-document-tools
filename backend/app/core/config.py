@@ -10,8 +10,16 @@ class Settings(BaseSettings):
     # Candidate Portal URLs (Naukri Resdex Candidate Search)
     NAUKRI_RESDEX_URL: str = "https://resdex.naukri.com"
 
-    # LLM Configuration (NVIDIA NIM / OpenRouter / Groq / Gemini) — tried in
-    # that order, see RequirementAgent._provider_chain. All OpenAI-compatible.
+    # LLM Configuration (OpenAI / NVIDIA NIM / OpenRouter / Groq / Gemini) —
+    # tried in that order, see RequirementAgent._provider_chain. All
+    # OpenAI-compatible. OpenAI is first: best accuracy/cost balance for this
+    # project's structured-extraction tasks (see docs/LLM_MODEL_COMPARISON.md)
+    # — only used if OPENAI_API_KEY is configured, otherwise the chain skips
+    # straight to the existing free-tier providers below.
+    OPENAI_API_KEY: Optional[str] = None
+    OPENAI_MODEL: str = "gpt-4.1-mini"
+    OPENAI_API_URL: str = "https://api.openai.com/v1/chat/completions"
+
     NVIDIA_NIM_KEY: Optional[str] = None
     NVIDIA_MODEL: str = "meta/llama-3.2-11b-vision-instruct"
     NVIDIA_API_URL: str = "https://integrate.api.nvidia.com/v1/chat/completions"
