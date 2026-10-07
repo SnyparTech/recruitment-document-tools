@@ -365,10 +365,10 @@ Read the job description and return ONLY a JSON object with these exact fields:
 Rules:
 - current_location MUST be a JSON array of separate city names, one per entry — split any "X or Y", "X, Y", "X/Y" phrasing in the requirement into individual array items ("Bengaluru or Hyderabad" -> ["Bengaluru", "Hyderabad"]), never one combined string.
 - Read the ENTIRE requirement first and synthesize the actual hiring intent before picking keywords — do not just grab the first list of tools mentioned. Long, narrative JDs often describe one role using several *equivalent or alternative* technology stacks (e.g. "Varonis, or if hard to find, Purview/BigID/Securiti") — these are OR-alternatives for the same underlying need (e.g. Data Security/Governance platform experience), not all mandatory together.
-- Every keyword (required, preferred, and excluded) MUST be copied VERBATIM from the requirement text — the exact skill/tool/platform/role name as the recruiter typed it, same wording and casing where reasonable. Do NOT rename, translate, expand abbreviations, merge synonyms, or substitute your own terminology/taxonomy for what the recruiter wrote. If the recruiter wrote "Microsoft Purview/MIP", use that phrase (or split into "Microsoft Purview" and "MIP" if listed as separate items) — do not invent a different label for it.
+- Every keyword MUST name a real skill/tool/platform/role/credential that the requirement actually talks about — never invent a skill the JD doesn't imply. For a NAMED tool/product/credential (e.g. "Microsoft Purview", "AWS Certified Solutions Architect", "Varonis"), use that exact name as written — do not rename, translate, or substitute your own label for a proper noun. For a DESCRIPTIVE phrase that isn't itself a searchable term (e.g. "Azure resource management experience", "cloud infrastructure knowledge"), extract the actual atomic skill name(s) a candidate would list on their own profile instead of keeping the JD's full descriptive phrase as one keyword — e.g. "Azure resource management" -> "Azure" (required/broad) plus "Azure Resource Manager" or "ARM" (preferred/specific), not the literal 2-3 word phrase "Azure resource" as a single keyword. Resdex keyword matching is close to exact-phrase, so a compound descriptive phrase that doesn't match how real candidates phrase their own skills on their profile will silently return zero/few matches even though qualified candidates exist. The test is: "would a candidate realistically type this exact phrase on their own resume/profile?" — if not, break it into the atomic term(s) that they would.
 - "Verbatim" means the SKILL NAME's own wording, not the surrounding sentence. Never emit connector/filler words as their own keyword entry — "or", "and", "similar", "such as", "like", "etc", "experience", "knowledge", "certified" (on its own), "proficient", "hands-on", "exposure to", "familiarity with" are sentence glue, not skills, even though they appear right next to real skill names in the text. Extract only the actual skill/tool/platform/certification/role NAME itself. ("AWS Certified Solutions Architect" is a real credential name and stays intact; "certified" by itself, split off a sentence like "certified in AWS", is not.)
-- keywords.required = the small set of skills/tools/domains, copied verbatim, that are core to EVERY acceptable candidate profile, regardless of which specific tool/platform they used. Prefer the broader terms the recruiter themselves used for the overall need (e.g. if they wrote "Data Security/Governance", use that exact phrase) over cramming in every named tool as individually mandatory, unless the JD says a specific tool is truly non-negotiable. HARD CAP: at most 8 required keywords. Resdex ANDs every required keyword together — a candidate profile must contain ALL of them to match at all, so required is for the handful of true must-haves, not an exhaustive list of every skill mentioned in a long JD. If a JD lists many specific tools, pick the broadest 1-3 terms covering the overall need as required and move the individual tool names to preferred instead of making all of them mandatory.
-- keywords.preferred = the specific tools/platforms named as options, nice-to-haves, or "adjacent/similar" alternatives, copied verbatim as written, plus secondary skills mentioned by name (also verbatim). HARD CAP: at most 12 preferred keywords — pick the most important/frequently-emphasized ones from the JD, not an exhaustive enumeration of every tool/term mentioned.
+- keywords.required = the small set of skills/tools/domains that are core to EVERY acceptable candidate profile, regardless of which specific tool/platform they used. Prefer the broader, real-world searchable terms for the overall need (e.g. "Azure", "Data Security/Governance") over cramming in every named tool as individually mandatory, unless the JD says a specific tool is truly non-negotiable. HARD CAP: at most 8 required keywords. Resdex ANDs every required keyword together — a candidate profile must contain ALL of them to match at all, so required is for the handful of true must-haves, not an exhaustive list of every skill mentioned in a long JD. If a JD lists many specific tools, pick the broadest 1-3 terms covering the overall need as required and move the individual tool names to preferred instead of making all of them mandatory.
+- keywords.preferred = the specific tools/platforms named as options, nice-to-haves, or "adjacent/similar" alternatives, plus secondary skills, each as a real searchable term (see the atomic-term rule above). HARD CAP: at most 12 preferred keywords — pick the most important/frequently-emphasized ones from the JD, not an exhaustive enumeration of every tool/term mentioned.
 - keywords.excluded = anything the requirement explicitly says to AVOID or de-prioritize, using the recruiter's own wording (e.g. "avoid focusing primarily on pure Data Engineer/Databricks profiles" -> excluded should include "Data Engineer" and "Databricks" as written). Read for negative/avoid/don't/instead-of language throughout the whole text, not just the first paragraph.
 - Each keyword must be a short, atomic skill/tool/platform/role name (Resdex enforces a 200-character limit per keyword) — never a full sentence or long descriptive clause. If the JD's phrasing for one concept is a long clause, extract the core term(s) from it rather than copying the whole clause verbatim.
 - Never list the same keyword (case-insensitively, ignoring minor punctuation) more than once — not twice in the same list, and not in both required and preferred. If a term is both core and optionally reinforced elsewhere in the JD, keep it once in required only.
@@ -1125,6 +1125,49 @@ Rules:
         keywords.required = _dedupe(required)[: self.MAX_REQUIRED_KEYWORDS]
         keywords.preferred = _dedupe(preferred)[: self.MAX_PREFERRED_KEYWORDS]
         keywords.excluded = _dedupe(excluded)
+
+    # Ceiling for the "broaden search" one-click retry below — deliberately
+    # capped at 30 days (not higher) per explicit instruction: widening the
+    # activity window further starts surfacing stale/inactive profiles, which
+    # isn't what "too few results" should reach for.
+    BROADEN_ACTIVE_IN_CEILING = "30 days"
+
+    def broaden_plan(self, plan: SearchPlan) -> bool:
+        """
+        Deterministic "too few/unsatisfying results" retry — the recruiter
+        clicks one button, no new LLM call (fast, free, predictable, unlike
+        re-prompting). Two moves, same ones a human would try first:
+          1. Demote the last required keyword to preferred (Resdex ANDs every
+             required keyword, so dropping the count of mandatory terms is
+             usually the single highest-leverage change). Leaves at least one
+             required keyword in place — never clears required to empty.
+          2. Widen active_in up to BROADEN_ACTIVE_IN_CEILING (30 days) if it's
+             currently narrower; never narrows it, and never widens past the
+             30-day ceiling even if it's already wider (e.g. "6 months" stays
+             "6 months" — the point is a bounded nudge, not an unbounded one).
+        Mutates `plan` in place. Returns True if anything actually changed
+        (so the caller can tell the recruiter "nothing left to broaden"
+        instead of silently no-op'ing).
+        """
+        changed = False
+
+        required = list(plan.keywords.required or [])
+        if len(required) > 1:
+            demoted = required.pop()
+            plan.keywords.required = required
+            preferred = list(plan.keywords.preferred or [])
+            if demoted not in preferred:
+                preferred.append(demoted)
+            plan.keywords.preferred = preferred[: self.MAX_PREFERRED_KEYWORDS]
+            changed = True
+
+        current_days = self._ACTIVE_IN_DAYS.get(plan.active_in or "", 0)
+        ceiling_days = self._ACTIVE_IN_DAYS[self.BROADEN_ACTIVE_IN_CEILING]
+        if current_days < ceiling_days:
+            plan.active_in = self.BROADEN_ACTIVE_IN_CEILING
+            changed = True
+
+        return changed
 
     # ── Requirement chat (stage-then-apply) ────────────────────────────────
     # First chat message (no draft plan yet) is a fresh JD and goes through

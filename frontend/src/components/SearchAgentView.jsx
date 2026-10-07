@@ -67,6 +67,8 @@ export default function SearchAgentView({ onCompileCandidate }) {
   const [mandatoryKeywords, setMandatoryKeywords] = useState(new Set());
   const [isApplyingKeywords, setIsApplyingKeywords] = useState(false);
   const [keywordApplyMsg, setKeywordApplyMsg] = useState(null);
+  const [isBroadening, setIsBroadening] = useState(false);
+  const [broadenMsg, setBroadenMsg] = useState(null);
 
   // Document Upload & Format Preservation State
   const [uploadedDoc, setUploadedDoc] = useState(null);
@@ -534,6 +536,27 @@ export default function SearchAgentView({ onCompileCandidate }) {
       setKeywordApplyMsg({ ok: false, text: err.message || 'Failed to apply keyword changes.' });
     } finally {
       setIsApplyingKeywords(false);
+    }
+  };
+
+  const broadenSearch = async () => {
+    setIsBroadening(true);
+    setBroadenMsg(null);
+    try {
+      const resp = await fetch(`${API_BASE}/search/plan/broaden`, { method: 'POST' });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail?.message || data.detail || 'Failed to broaden search.');
+
+      if (data.status === 'no_change') {
+        setBroadenMsg({ ok: false, text: data.message });
+      } else {
+        setSearchResponse((prev) => prev && { ...prev, search_plan: data.plan });
+        setBroadenMsg({ ok: true, text: 'Demoted a required keyword to preferred and widened active_in — extension will re-apply on Resdex.' });
+      }
+    } catch (err) {
+      setBroadenMsg({ ok: false, text: err.message || 'Failed to broaden search.' });
+    } finally {
+      setIsBroadening(false);
     }
   };
 
@@ -1050,6 +1073,20 @@ export default function SearchAgentView({ onCompileCandidate }) {
                   ? ' — ranked against the active SearchPlan below.'
                   : ' — no active SearchPlan to rank against yet.'}
               </p>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                <button
+                  className="btn-secondary"
+                  onClick={broadenSearch}
+                  disabled={isBroadening || !searchResponse?.search_plan}
+                >
+                  {isBroadening ? 'Broadening...' : 'Not satisfied? Broaden search'}
+                </button>
+                {broadenMsg && (
+                  <span style={{ fontSize: 13, color: broadenMsg.ok ? 'var(--success, #22c55e)' : 'var(--error, #ef4444)' }}>
+                    {broadenMsg.text}
+                  </span>
+                )}
+              </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 {candidateResults.candidates.map((c, i) => (
                   <div key={i} style={{

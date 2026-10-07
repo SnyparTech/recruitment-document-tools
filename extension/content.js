@@ -2744,9 +2744,9 @@ async function fetchAndFill(forced = false) {
     // is skipped whenever we're on the results page) — check for it here and
     // hop back to the form so the next poll (now on the form) can apply it.
     const pending = await fetchFromBackend("/search/active-plan");
-    if (pending && pending.has_plan && pending.plan?._keyword_sync_only &&
+    if (pending && pending.has_plan && (pending.plan?._keyword_sync_only || pending.plan?._broaden_search) &&
         pending.timestamp > lastProcessedTimestamp) {
-      updateWidgetStatus("Applying updated mandatory keywords...", "busy");
+      updateWidgetStatus("Applying updated search criteria...", "busy");
       await ensureOnFormPage();
     }
     return;
@@ -2808,6 +2808,27 @@ async function fetchAndFill(forced = false) {
           sessionStorage.setItem(FILL_CACHE_KEY, planTs);
         } else {
           console.warn("[Snypar Bot] Keyword sync search re-run not verified — will retry on next eligible poll.");
+        }
+        return;
+      }
+
+      if (fetchedData.plan?._broaden_search) {
+        // "Not satisfied with results" retry: same fast star-sync path as
+        // _keyword_sync_only, PLUS active_in also needs re-applying (the
+        // backend may have widened it up to 30 days as part of broadening).
+        updateWidgetStatus("Broadening search (keywords + active in)...", "busy");
+        if (fetchedData.plan.active_in) {
+          await setActiveIn(fetchedData.plan.active_in);
+          await sleep(300);
+        }
+        await syncKeywordStarsOnForm(fetchedData.plan);
+        const verified = await clickSearchButtonAndVerify();
+        if (verified) {
+          sessionStorage.setItem(AUTOPAGE_KEY, "1");
+          sessionStorage.removeItem("snypar_autopage_total");
+          sessionStorage.setItem(FILL_CACHE_KEY, planTs);
+        } else {
+          console.warn("[Snypar Bot] Broaden-search re-run not verified — will retry on next eligible poll.");
         }
         return;
       }

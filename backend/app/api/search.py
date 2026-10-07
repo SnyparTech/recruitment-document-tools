@@ -342,6 +342,50 @@ async def update_plan_keyword_mandatory(request: UpdateKeywordMandatoryRequest):
     }
 
 
+@router.post(
+    "/plan/broaden",
+    status_code=status.HTTP_200_OK,
+    summary="Too few/unsatisfying candidate results — demote one required keyword to preferred and widen active_in up to 30 days, then re-apply on Resdex",
+)
+async def broaden_search_plan():
+    """
+    One-click retry for 'I'm not satisfied with these results' — see
+    RequirementAgent.broaden_plan for the exact (deterministic, no LLM call)
+    broadening logic. Flags `_broaden_search` so the extension both re-syncs
+    keyword stars AND re-applies active_in (unlike the keywords-only PATCH
+    above), then re-runs the search.
+    """
+    global _latest_search_plan, _latest_plan_timestamp
+
+    if not _latest_search_plan:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No active SearchPlan to broaden. Generate a search first.",
+        )
+
+    plan = SearchPlan(**{k: v for k, v in _latest_search_plan.items() if not k.startswith("_")})
+    changed = requirement_service.agent.broaden_plan(plan)
+
+    if not changed:
+        return {
+            "status": "no_change",
+            "message": "Already at the broadest setting this retry covers (one required keyword, active_in at 30 days) — edit the plan manually for further changes.",
+            "plan": _latest_search_plan,
+        }
+
+    _latest_search_plan = plan.model_dump()
+    _latest_search_plan["_submit_search"] = True
+    _latest_search_plan["_broaden_search"] = True
+    _latest_plan_timestamp = time.time()
+    _persist_now()
+
+    return {
+        "status": "success",
+        "message": "Demoted one required keyword to preferred and widened active_in. Extension will re-apply on Resdex.",
+        "plan": _latest_search_plan,
+    }
+
+
 class LiveResdexKeywordsRequest(BaseModel):
     required: List[str] = Field(default_factory=list, description="Currently starred/mandatory keyword chips in Resdex")
     preferred: List[str] = Field(default_factory=list, description="Currently present, non-starred keyword chips in Resdex")

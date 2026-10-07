@@ -304,3 +304,55 @@ def test_normalize_keywords_caps_total_count():
     assert len(keywords.preferred) == agent.MAX_PREFERRED_KEYWORDS == 12
     assert keywords.required == [f"Skill{i}" for i in range(8)]
     assert keywords.preferred == [f"Pref{i}" for i in range(12)]
+
+
+def test_broaden_plan_demotes_last_required_keyword_to_preferred():
+    from app.agents.requirement_agent import RequirementAgent
+    from app.schemas.search_plan import SearchPlan
+
+    agent = RequirementAgent()
+    plan = SearchPlan(keywords={"required": ["Python", "Django", "AWS"], "preferred": ["Docker"]}, active_in="30 days")
+
+    changed = agent.broaden_plan(plan)
+
+    assert changed is True
+    assert plan.keywords.required == ["Python", "Django"]
+    assert plan.keywords.preferred == ["Docker", "AWS"]
+
+
+def test_broaden_plan_never_empties_required():
+    from app.agents.requirement_agent import RequirementAgent
+    from app.schemas.search_plan import SearchPlan
+
+    agent = RequirementAgent()
+    plan = SearchPlan(keywords={"required": ["Python"], "preferred": []}, active_in="30 days")
+
+    agent.broaden_plan(plan)
+
+    assert plan.keywords.required == ["Python"], "must never demote the last remaining required keyword"
+
+
+def test_broaden_plan_widens_active_in_up_to_30_days_but_not_beyond():
+    from app.agents.requirement_agent import RequirementAgent
+    from app.schemas.search_plan import SearchPlan
+
+    agent = RequirementAgent()
+
+    narrow = SearchPlan(keywords={"required": ["Python"]}, active_in="7 days")
+    agent.broaden_plan(narrow)
+    assert narrow.active_in == "30 days"
+
+    already_wide = SearchPlan(keywords={"required": ["Python"]}, active_in="6 months")
+    changed = agent.broaden_plan(already_wide)
+    assert already_wide.active_in == "6 months", "must never narrow an already-wider active_in"
+    assert changed is False, "nothing to broaden: required has 1 keyword, active_in already past the ceiling"
+
+
+def test_broaden_plan_returns_false_when_already_maximally_broad():
+    from app.agents.requirement_agent import RequirementAgent
+    from app.schemas.search_plan import SearchPlan
+
+    agent = RequirementAgent()
+    plan = SearchPlan(keywords={"required": ["Python"], "preferred": []}, active_in="30 days")
+
+    assert agent.broaden_plan(plan) is False
