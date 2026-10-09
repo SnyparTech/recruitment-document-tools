@@ -16,6 +16,7 @@ paddlepaddle>=2.6.0
 
 # Recruitment JD -> WhatsApp pipeline
 motor>=3.4.0
+dnspython>=2.6.0  # required by Motor/pymongo for mongodb+srv:// (Atlas) connection strings
 google-auth>=2.29.0
 google-auth-oauthlib>=1.2.0
 google-api-python-client>=2.126.0

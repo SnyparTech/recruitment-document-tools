@@ -255,6 +255,14 @@ class RequirementAgent:
         self.groq_api_key = api_key or settings.GROQ_API_KEY
         self.gemini_api_key = settings.GEMINI_API_KEY
 
+        # Set by _call_llm_as_hr/_call_llm_chat_edit on success, or explicitly
+        # to "Rule-based (no LLM)" on the deterministic fallback paths — read
+        # immediately after the call within the same request's synchronous
+        # chain (this whole file is sync, blocking httpx.Client — no await
+        # point for another request to interleave and race this), then
+        # surfaced to the chat UI via generate_chat_reply's 3rd return value.
+        self._last_model_label: Optional[str] = None
+
         self.model = model or settings.GROQ_MODEL
         self.schema = schema or load_resdex_schema()
 
@@ -271,11 +279,23 @@ class RequirementAgent:
             "options", ["3 days", "7 days", "15 days", "30 days", "2 months", "3 months", "6 months"]
         )
 
-    def generate_search_plan(self, requirement: str) -> SearchPlan:
+    def generate_search_plan(
+        self,
+        requirement: str,
+        preferred_active_in_default: Optional[str] = None,
+        preferred_provider: Optional[str] = None,
+    ) -> SearchPlan:
         """
         Main entrypoint: parses requirement into validated SearchPlan.
         Acts as an expert HR Recruiter using an LLM model (Groq or Gemini) if an API key is available,
         falling back to deterministic HR extraction rules.
+
+        preferred_active_in_default: see _post_process_plan — an explicitly-
+        confirmed recruiter preference, or None for the normal hardcoded default.
+        preferred_provider: if set (e.g. "openai", "gemini"), only that
+        provider is tried — no falling through to a different LLM provider.
+        Falls back to the rule-based extractor if that provider isn't
+        configured or its call fails, same as the no-preference case.
         """
         if not requirement or not requirement.strip():
             return SearchPlan(confidence=0.0, uncertain_fields=["requirement_empty"])
@@ -283,34 +303,39 @@ class RequirementAgent:
         cleaned = requirement.strip()
 
         # Step 1: Attempt LLM generation as a Senior HR Recruiter (Groq or Gemini)
-        llm_plan = self._call_llm_as_hr(cleaned)
+        llm_plan = self._call_llm_as_hr(cleaned, preferred_provider)
         if llm_plan:
-            return self._post_process_plan(llm_plan, cleaned)
+            return self._post_process_plan(llm_plan, cleaned, preferred_active_in_default)
 
         # Step 2: Deterministic Rule-Based extraction (acting as HR)
+        self._last_model_label = "Rule-based (no LLM)"
         rule_plan = self._rule_based_extraction(cleaned)
-        return self._post_process_plan(rule_plan, cleaned)
+        return self._post_process_plan(rule_plan, cleaned, preferred_active_in_default)
 
-    def _provider_chain(self) -> List[Tuple[str, str, str, str, List[str]]]:
+    # Every provider name _provider_chain can produce — used to validate a
+    # recruiter-requested `preferred_provider` and to list what's actually
+    # selectable (only ones with a configured key) via GET /search/providers.
+    ALL_PROVIDER_NAMES = ["gemini", "openai", "nvidia", "openrouter", "groq"]
+
+    def _provider_chain(self, only_provider: Optional[str] = None) -> List[Tuple[str, str, str, str, List[str]]]:
         """
         (name, api_url, api_key, model, fallback_models) tuples in priority
-        order — only providers with a configured key are included. OpenAI
-        (gpt-4.1-mini) first — best accuracy/cost balance for this project's
-        structured-extraction tasks, see docs/LLM_MODEL_COMPARISON.md — then
-        NVIDIA NIM, then OpenRouter, then Groq, then Gemini as free-tier
-        fallbacks. Only Groq has known-good same-provider fallback model ids
-        (GROQ_FALLBACK_MODELS, verified live against the real API) — no
-        fallback list is invented for the others without the same verification.
+        order — only providers with a configured key are included.
+
+        only_provider: if set, returns a chain containing AT MOST that one
+        provider (still only if it's configured) — used when the recruiter
+        explicitly picks a model in the chat UI and wants output from that
+        model only, not silently falling through to a different provider.
+
+        TEMPORARY: Gemini first for testing (normally OpenAI gpt-4.1-mini is
+        first — best accuracy/cost balance per docs/LLM_MODEL_COMPARISON.md;
+        swap this back once testing is done). Then OpenAI, NVIDIA NIM,
+        OpenRouter, Groq as fallbacks. Only Groq has known-good same-provider
+        fallback model ids (GROQ_FALLBACK_MODELS, verified live against the
+        real API) — no fallback list is invented for the others without the
+        same verification.
         """
         chain = []
-        if self.openai_api_key:
-            chain.append(("openai", settings.OPENAI_API_URL, self.openai_api_key, settings.OPENAI_MODEL, []))
-        if self.nvidia_api_key:
-            chain.append(("nvidia", settings.NVIDIA_API_URL, self.nvidia_api_key, settings.NVIDIA_MODEL, []))
-        if self.openrouter_api_key:
-            chain.append(("openrouter", settings.OPENROUTER_API_URL, self.openrouter_api_key, settings.OPENROUTER_MODEL, []))
-        if self.groq_api_key:
-            chain.append(("groq", settings.GROQ_API_URL, self.groq_api_key, settings.GROQ_MODEL or "openai/gpt-oss-20b", GROQ_FALLBACK_MODELS))
         if self.gemini_api_key:
             chain.append((
                 "gemini",
@@ -319,9 +344,25 @@ class RequirementAgent:
                 getattr(settings, "GEMINI_MODEL", "gemini-1.5-flash"),
                 [],
             ))
+        if self.openai_api_key:
+            chain.append(("openai", settings.OPENAI_API_URL, self.openai_api_key, settings.OPENAI_MODEL, []))
+        if self.nvidia_api_key:
+            chain.append(("nvidia", settings.NVIDIA_API_URL, self.nvidia_api_key, settings.NVIDIA_MODEL, []))
+        if self.openrouter_api_key:
+            chain.append(("openrouter", settings.OPENROUTER_API_URL, self.openrouter_api_key, settings.OPENROUTER_MODEL, []))
+        if self.groq_api_key:
+            chain.append(("groq", settings.GROQ_API_URL, self.groq_api_key, settings.GROQ_MODEL or "openai/gpt-oss-20b", GROQ_FALLBACK_MODELS))
+
+        if only_provider:
+            chain = [c for c in chain if c[0] == only_provider]
         return chain
 
-    def _call_llm_as_hr(self, requirement: str) -> Optional[SearchPlan]:
+    def configured_providers(self) -> List[Dict[str, str]]:
+        """For GET /search/providers — which providers the chat's model
+        picker can actually offer (only ones with a configured key)."""
+        return [{"name": c[0], "model": c[3]} for c in self._provider_chain()]
+
+    def _call_llm_as_hr(self, requirement: str, preferred_provider: Optional[str] = None) -> Optional[SearchPlan]:
         """
         Calls the first available provider (NVIDIA NIM -> OpenRouter -> Groq
         -> Gemini) as a
@@ -329,9 +370,12 @@ class RequirementAgent:
         one fails entirely. Translates raw hiring descriptions into targeted
         Resdex candidate search plans.
         """
-        provider_chain = self._provider_chain()
+        provider_chain = self._provider_chain(only_provider=preferred_provider)
         if not provider_chain:
-            logger.info("No LLM API key detected (NVIDIA/Groq/Gemini). Using HR Rule-Based Engine.")
+            if preferred_provider:
+                logger.info(f"Requested provider '{preferred_provider}' is not configured — no fallback, per 'this model only' selection.")
+            else:
+                logger.info("No LLM API key detected (NVIDIA/Groq/Gemini). Using HR Rule-Based Engine.")
             return None
 
         # Compact system prompt — avoids exceeding model context/output limits.
@@ -423,6 +467,7 @@ Rules:
                     parsed = self._sanitize_llm_output(parsed)
 
                     logger.info(f"LLM HR Agent ('{provider_name}') successfully parsed SearchPlan")
+                    self._last_model_label = f"{provider_name} ({model})"
                     return SearchPlan(**parsed)
             except Exception as exc:
                 logger.warning(f"LLM HR parsing failed for provider '{provider_name}': {type(exc).__name__}: {exc}")
@@ -940,8 +985,17 @@ Rules:
 
         return roles, designations
 
-    def _post_process_plan(self, plan: SearchPlan, raw_text: str) -> SearchPlan:
-        """Enforces normalization rules and sets defaults."""
+    def _post_process_plan(
+        self, plan: SearchPlan, raw_text: str, preferred_active_in_default: Optional[str] = None
+    ) -> SearchPlan:
+        """Enforces normalization rules and sets defaults.
+
+        preferred_active_in_default: an explicitly-confirmed recruiter
+        preference (see services/preference_service.py) to use instead of the
+        hardcoded DEFAULT_ACTIVE_IN, when the requirement doesn't state one
+        itself. None (the normal case, until a preference is confirmed)
+        falls back to the original hardcoded default — zero behavior change
+        for anyone who hasn't confirmed a preference."""
         # Ensure notice period normalization
         if plan.notice_period:
             normalized_np = []
@@ -972,7 +1026,7 @@ Rules:
         # updated/recent-in duration — a null-only check wouldn't catch a
         # confidently wrong non-null guess.
         if not self._active_in_explicitly_stated(raw_text):
-            plan.active_in = DEFAULT_ACTIVE_IN
+            plan.active_in = preferred_active_in_default or DEFAULT_ACTIVE_IN
         else:
             # Explicitly stated, but the model may have echoed the JD's own
             # phrasing ("last 30 days") instead of the exact Resdex enum
@@ -1197,18 +1251,33 @@ Rules:
         current_plan: Optional[SearchPlan],
         message: str,
         history: Optional[List[Dict[str, str]]] = None,
-    ) -> Tuple[SearchPlan, str]:
+        preferred_active_in_default: Optional[str] = None,
+        preferred_provider: Optional[str] = None,
+    ) -> Tuple[SearchPlan, str, Optional[str]]:
         """
-        Single entrypoint for the requirement chat. Returns (updated_plan, reply).
+        Single entrypoint for the requirement chat. Returns
+        (updated_plan, reply, model_label) — model_label is a short
+        human-readable string like "openai (gpt-4.1-mini)" or
+        "Rule-based (no LLM)", for the chat UI to show under each reply.
         Never mutates `current_plan` in place — always returns a new SearchPlan.
+
+        preferred_active_in_default: see _post_process_plan — only used when
+        this message starts a brand-new plan (current_plan is None or gets
+        fully replaced); irrelevant to a follow-up edit on an existing plan.
+        preferred_provider: if set (e.g. "openai"), only that provider is
+        used for this message — the recruiter's explicit model choice in the
+        chat UI's model picker. No falling through to a different provider.
         """
         message = (message or "").strip()
         if not message:
-            return current_plan or SearchPlan(), "Didn't catch that — paste a JD or tell me what to change."
+            return current_plan or SearchPlan(), "Didn't catch that — paste a JD or tell me what to change.", None
+
+        has_llm_configured = bool(self._provider_chain(only_provider=preferred_provider))
 
         if current_plan is None:
-            plan = self.generate_search_plan(message)
-            if not self._plan_has_signal(plan) and len(message) > 40 and (self.groq_api_key or self.gemini_api_key):
+            plan = self.generate_search_plan(message, preferred_active_in_default, preferred_provider)
+            model_label = self._last_model_label
+            if not self._plan_has_signal(plan) and len(message) > 40 and has_llm_configured:
                 # A real JD is long; if a long message produced an empty plan
                 # while an LLM key IS configured, that's much more likely a
                 # transient extraction failure (rate limit/decommissioned
@@ -1218,13 +1287,13 @@ Rules:
                     "I couldn't extract structured requirements from that message — the extraction "
                     "service may be temporarily rate-limited or unavailable. Nothing was saved yet; "
                     "please resend the job description in a moment and I'll parse it fully."
-                )
-            return plan, self._summarize_plan_reply(plan, prefix="Plan created")
+                ), model_label
+            return plan, self._summarize_plan_reply(plan, prefix="Plan created"), model_label
 
-        if self.groq_api_key or self.gemini_api_key:
-            edited = self._call_llm_chat_edit(current_plan, message, history or [])
+        if has_llm_configured:
+            edited = self._call_llm_chat_edit(current_plan, message, history or [], preferred_provider)
             if edited:
-                return edited
+                return edited[0], edited[1], self._last_model_label
             if len(message) > 40:
                 # The free-form LLM edit failed (rate limit/transient error).
                 # Do NOT fall through to a full regenerate here — that path
@@ -1237,8 +1306,9 @@ Rules:
                     "I couldn't process that edit just now — the extraction service may be temporarily "
                     "rate-limited or unavailable. Your current plan is unchanged (nothing was lost); "
                     "please resend that message in a moment and I'll apply it."
-                )
+                ), None
 
+        self._last_model_label = "Rule-based (no LLM)"
         plan, reply = self._rule_based_chat_edit(current_plan, message)
         if reply.startswith("Didn't recognize that as an edit") and len(message) > 40:
             # Not a single-intent "add X"/"remove X" command — long unmatched
@@ -1246,7 +1316,8 @@ Rules:
             # we need a frontend dev in Pune instead..."), not a one-liner
             # edit. Regenerate the whole plan from it rather than leaving the
             # recruiter stuck on an unhelpful "didn't understand".
-            new_plan = self.generate_search_plan(message)
+            new_plan = self.generate_search_plan(message, preferred_active_in_default, preferred_provider)
+            model_label = self._last_model_label
             if not self._plan_has_signal(new_plan):
                 # Regenerate produced nothing useful — almost certainly a
                 # failed/rate-limited extraction, not an intentionally empty
@@ -1257,9 +1328,9 @@ Rules:
                     "extraction service is temporarily rate-limited, or if the message wasn't "
                     "recognized as either an edit instruction or a full job description — please "
                     "try rephrasing or resend it in a moment."
-                )
-            return new_plan, self._summarize_plan_reply(new_plan, prefix="Replaced the plan with this new requirement")
-        return plan, reply
+                ), model_label
+            return new_plan, self._summarize_plan_reply(new_plan, prefix="Replaced the plan with this new requirement"), model_label
+        return plan, reply, self._last_model_label
 
     @staticmethod
     def _plan_has_signal(plan: SearchPlan) -> bool:
@@ -1482,22 +1553,23 @@ Rules:
         )
 
     def _call_llm_chat_edit(
-        self, current_plan: SearchPlan, message: str, history: List[Dict[str, str]]
+        self,
+        current_plan: SearchPlan,
+        message: str,
+        history: List[Dict[str, str]],
+        preferred_provider: Optional[str] = None,
     ) -> Optional[Tuple[SearchPlan, str]]:
-        """LLM-backed free-form chat edit, for when a Groq/Gemini key is configured.
-        Falls back to None (caller uses the rule-based parser) on any failure."""
-        api_url = None
-        api_key = None
-        model = self.model
-        if self.groq_api_key:
-            api_url = settings.GROQ_API_URL
-            api_key = self.groq_api_key
-            model = settings.GROQ_MODEL or "openai/gpt-oss-20b"
-        elif self.gemini_api_key:
-            api_url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
-            api_key = self.gemini_api_key
-            model = getattr(settings, "GEMINI_MODEL", "gemini-1.5-flash")
-        else:
+        """LLM-backed free-form chat edit. Uses the same provider priority
+        chain as _call_llm_as_hr (OpenAI -> NVIDIA -> OpenRouter -> Groq ->
+        Gemini) — this used to only ever try Groq/Gemini directly, silently
+        skipping the priority OpenAI model on every follow-up edit even
+        though the first message correctly used it. Falls back to None (caller
+        uses the rule-based parser) if every configured provider fails.
+
+        preferred_provider: see generate_search_plan — restricts this to one
+        provider, no falling through to a different LLM."""
+        provider_chain = self._provider_chain(only_provider=preferred_provider)
+        if not provider_chain:
             return None
 
         system_prompt = (
@@ -1523,25 +1595,29 @@ Rules:
             "content": f"Current plan:\n{json.dumps(current_plan.model_dump())}\n\nInstruction: {message}",
         })
 
-        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-        payload = {"model": model, "messages": messages, "temperature": 0.1, "max_tokens": 1200}
+        for provider_name, api_url, api_key, model, fallback_models in provider_chain:
+            headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+            payload = {"model": model, "messages": messages, "temperature": 0.1, "max_tokens": 1200}
+            models_to_try = [model] + [m for m in fallback_models if m != model]
 
-        models_to_try = [model] + ([m for m in GROQ_FALLBACK_MODELS if m != model] if self.groq_api_key else [])
+            try:
+                with httpx.Client(timeout=30.0) as client:
+                    content = _chat_completion_with_retry(client, api_url, headers, payload, models_to_try)
+                    if content is None:
+                        logger.warning(f"Chat-edit provider '{provider_name}' failed entirely; trying next provider in chain.")
+                        continue
+                    if content.startswith("```"):
+                        content = re.sub(r"^```(?:json)?", "", content)
+                        content = re.sub(r"```$", "", content).strip()
+                    content = self._repair_json(content)
+                    parsed = json.loads(content)
+                    plan_dict = self._sanitize_llm_output(parsed.get("plan") or {})
+                    plan = SearchPlan(**plan_dict)
+                    reply = parsed.get("reply") or self._summarize_plan_reply(plan, prefix="Updated the plan")
+                    self._last_model_label = f"{provider_name} ({model})"
+                    return plan, reply
+            except Exception as exc:
+                logger.warning(f"Chat-edit LLM parsing failed for provider '{provider_name}': {type(exc).__name__}: {exc}")
+                continue
 
-        try:
-            with httpx.Client(timeout=30.0) as client:
-                content = _chat_completion_with_retry(client, api_url, headers, payload, models_to_try)
-                if content is None:
-                    return None
-                if content.startswith("```"):
-                    content = re.sub(r"^```(?:json)?", "", content)
-                    content = re.sub(r"```$", "", content).strip()
-                content = self._repair_json(content)
-                parsed = json.loads(content)
-                plan_dict = self._sanitize_llm_output(parsed.get("plan") or {})
-                plan = SearchPlan(**plan_dict)
-                reply = parsed.get("reply") or self._summarize_plan_reply(plan, prefix="Updated the plan")
-                return plan, reply
-        except Exception as exc:
-            logger.warning(f"Chat-edit LLM parsing failed: {exc}")
-            return None
+        return None

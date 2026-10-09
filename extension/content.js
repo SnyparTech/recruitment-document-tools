@@ -608,6 +608,53 @@ async function selectRelevantAISuggestedKeywords(requiredKws, preferredKws, mand
   }
 }
 
+// Shared by clickKeywordStar, readLiveKeywordsFromResdex, and
+// syncKeywordStarsOnForm — kept in one place so the "what counts as the
+// mandatory star" and "is it currently on" logic can't drift between call
+// sites. Deliberately does NOT fall back to a blind `svg, button` query:
+// a chip commonly also has a delete/remove "×" icon, and matching the first
+// svg/button in DOM order risks grabbing that instead of the actual star —
+// which would silently no-op every click (toggling the wrong element).
+function findMandatoryStarInChip(chip) {
+  const candidates = chip.querySelectorAll(
+    "[class*='star'], [class*='Star'], [title*='Mandatory'], [title*='mandatory'], [title*='Must have'], [title*='must have']"
+  );
+  for (const el of candidates) {
+    const cls = (el.className && el.className.toString()) || "";
+    const title = (el.getAttribute("title") || "").toLowerCase();
+    // Exclude anything that's actually a remove/delete/close control that
+    // happens to also match (e.g. shares a 'tag-icon' style class).
+    if (/remove|delete|close/.test(cls) || /remove|delete|close/.test(title)) continue;
+    return el;
+  }
+  return null;
+}
+
+// Multiple independent signals, since we don't control Resdex's markup and
+// any single one (a specific class name, a specific aria attribute) could be
+// wrong for the real DOM. If NONE of these ever match on a real mandatory
+// star, un-marking will silently no-op — see syncKeywordStarsOnForm's debug
+// log, which prints exactly what was found so a live console capture can
+// pinpoint the real signal if this heuristic still misses it.
+function isStarMarkedMandatory(star) {
+  if (!star) return false;
+  const cls = (star.className && star.className.toString() || "").toLowerCase();
+  const title = (star.getAttribute("title") || "").toLowerCase();
+  const ariaLabel = (star.getAttribute("aria-label") || "").toLowerCase();
+  const pressed = star.getAttribute("aria-pressed");
+  const checked = star.getAttribute("aria-checked");
+  const dataActive = star.getAttribute("data-active") || star.getAttribute("data-selected");
+
+  if (pressed === "true" || checked === "true" || dataActive === "true") return true;
+  if (/\b(active|selected|starred|checked|filled|toggled|on)\b/.test(cls)) return true;
+  // A toggle's own title/aria-label often flips to describe the OPPOSITE
+  // action once pressed (e.g. "Remove mandatory" / "Unmark as mandatory"
+  // only appears while it IS mandatory) — a stronger signal than a class
+  // guess when present.
+  if (/remove mandatory|unmark|undo mandatory/.test(title) || /remove mandatory|unmark|undo mandatory/.test(ariaLabel)) return true;
+  return false;
+}
+
 async function clickKeywordStar(skillName) {
   if (!skillName) return false;
   const clean = skillName.toLowerCase().trim();
@@ -618,17 +665,11 @@ async function clickKeywordStar(skillName) {
   for (const chip of chips) {
     const chipNorm = chip.textContent.toLowerCase().replace(/[^a-z0-9]/g, '');
     if (chipNorm.includes(cleanNorm)) {
-      const star = chip.querySelector(
-        "[class*='star'], [class*='Star'], [title*='Mandatory'], [title*='mandatory'], [title*='Must have'], svg, button"
-      );
-      if (star) {
-        const cls = (star.className && star.className.toString()) || "";
-        const pressed = star.getAttribute("aria-pressed");
-        if (!cls.includes("active") && !cls.includes("selected") && !cls.includes("starred") && pressed !== "true") {
-          star.click();
-          await sleep(200);
-          return true;
-        }
+      const star = findMandatoryStarInChip(chip);
+      if (star && !isStarMarkedMandatory(star)) {
+        star.click();
+        await sleep(200);
+        return true;
       }
     }
   }
@@ -670,15 +711,7 @@ function readLiveKeywordsFromResdex() {
     if (!norm || seen.has(norm)) continue;
     seen.add(norm);
 
-    const star = chip.querySelector(
-      "[class*='star'], [class*='Star'], [title*='Mandatory'], [title*='mandatory'], [title*='Must have']"
-    );
-    let isMandatory = false;
-    if (star) {
-      const cls = (star.className && star.className.toString()) || "";
-      const pressed = star.getAttribute("aria-pressed");
-      isMandatory = cls.includes("active") || cls.includes("selected") || cls.includes("starred") || pressed === "true";
-    }
+    const isMandatory = isStarMarkedMandatory(findMandatoryStarInChip(chip));
     (isMandatory ? required : preferred).push(text);
   }
 
@@ -2095,17 +2128,18 @@ async function syncKeywordStarsOnForm(plan) {
     else if (optionalNorm.some((kw) => kw && chipNorm.includes(kw))) want = false;
     if (want === null) continue; // chip isn't one of our tracked keywords — leave it
 
-    const star = chip.querySelector(
-      "[class*='star'], [class*='Star'], [title*='Mandatory'], [title*='mandatory'], [title*='Must have'], svg, button"
-    );
-    if (!star) continue;
-    const cls = (star.className && star.className.toString()) || "";
-    const pressed = star.getAttribute("aria-pressed");
-    const isActive = cls.includes("active") || cls.includes("selected") || cls.includes("starred") || pressed === "true";
+    const star = findMandatoryStarInChip(chip);
+    if (!star) {
+      console.warn(`[Snypar Bot] Keyword sync: no star element found in chip "${chip.textContent.trim().slice(0, 40)}" — can't toggle it. Chip outerHTML:`, chip.outerHTML?.slice(0, 300));
+      continue;
+    }
+    const isActive = isStarMarkedMandatory(star);
     if (isActive !== want) {
       star.click();
       toggled++;
       await sleep(200);
+    } else {
+      console.log(`[Snypar Bot] Keyword sync: "${chip.textContent.trim().slice(0, 40)}" already ${want ? "mandatory" : "not mandatory"} — no click needed. (star class="${(star.className || "").toString().slice(0, 80)}")`);
     }
   }
   console.log(`[Snypar Bot] Keyword mandatory sync: ${toggled} star(s) toggled.`);

@@ -23,6 +23,8 @@ from app.services.requirement_service import RequirementService
 from app.services.candidate_store_service import merge_candidates
 from app.services.candidate_ranking_service import rank_candidates
 from app.services import state_persistence
+from app.services.chat_session_service import ChatSessionStore
+from app.services import preference_service
 
 logger = logging.getLogger(__name__)
 
@@ -48,14 +50,13 @@ _latest_candidates: List[CandidateResult] = [
 _latest_candidates_timestamp = _persisted.get("candidates_timestamp") or 0.0
 _latest_search_id: Optional[str] = _persisted.get("search_id")
 
-# Requirement-chat draft state: a SEPARATE plan from _latest_search_plan
-# above. The chat edits this one turn-by-turn; nothing here reaches the
-# extension until the recruiter clicks "Apply to Resdex" on the frontend,
-# which POSTs this draft to /search/plan (store_search_plan) like any other
-# pre-built plan. Keeps "still drafting" cleanly separate from "live on Resdex".
-_draft_plan: Optional[dict] = _persisted.get("draft_plan")
-_draft_timestamp: float = _persisted.get("draft_timestamp") or 0.0
-_chat_history: List[dict] = _persisted.get("chat_history") or []
+# Requirement-chat draft state: SEPARATE from _latest_search_plan above, and
+# multi-session (see services/chat_session_service.py) — a recruiter can run
+# several draft conversations ("New Chat") without losing earlier ones.
+# Nothing in any session reaches the extension until the recruiter clicks
+# "Apply to Resdex" on the frontend, which POSTs the active session's draft
+# to /search/plan (store_search_plan) like any other pre-built plan.
+_session_store = ChatSessionStore()
 
 
 def _persist_now() -> None:
@@ -65,9 +66,8 @@ def _persist_now() -> None:
         candidates=[c.model_dump() for c in _latest_candidates],
         candidates_timestamp=_latest_candidates_timestamp,
         search_id=_latest_search_id,
-        draft_plan=_draft_plan,
-        draft_timestamp=_draft_timestamp,
-        chat_history=_chat_history,
+        sessions=_session_store.sessions,
+        active_session_id=_session_store.active_session_id,
     )
 
 
@@ -102,7 +102,10 @@ async def search_candidates(
     """
     global _latest_search_plan, _latest_plan_timestamp, _latest_candidates, _latest_candidates_timestamp
 
-    plan, validation = requirement_service.process_requirement(request.requirement)
+    confirmed_prefs = await preference_service.get_confirmed_preferences()
+    plan, validation = requirement_service.process_requirement(
+        request.requirement, confirmed_prefs.get("active_in_default")
+    )
 
     if request.active_in:
         plan.active_in = request.active_in
@@ -158,6 +161,7 @@ async def search_candidates(
 class DirectSearchPlanRequest(BaseModel):
     plan: SearchPlan = Field(..., description="Pre-built SearchPlan to store for extension")
     submit_search: bool = Field(default=False, description="Whether extension should auto-click Search Candidates")
+    session_id: Optional[str] = Field(default=None, description="Chat session this plan came from, if any — used for preference learning (see preference_service.py)")
 
 
 @router.post(
@@ -190,6 +194,11 @@ async def store_search_plan(
     _latest_search_plan = plan_dict
     _latest_plan_timestamp = time.time()
     _persist_now()
+
+    if request.session_id:
+        session = _session_store.get(request.session_id)
+        if session:
+            await preference_service.record_active_in_widening(session.get("generated_active_in"), plan.active_in)
 
     msg = "SearchPlan stored. Extension will auto-fill the form."
     if request.submit_search:
@@ -406,87 +415,166 @@ async def report_live_keywords(request: LiveResdexKeywordsRequest):
     keyword section (GET /plan/chat) showing the same thing instead of
     silently drifting from what's actually live.
     """
-    global _draft_plan, _draft_timestamp
+    active = _session_store.get_active()
 
-    if _draft_plan is None:
+    if active["draft_plan"] is None:
         return {"status": "success", "synced": False, "message": "No draft on the website to sync into yet."}
 
-    kw = _draft_plan.get("keywords") or {}
+    kw = active["draft_plan"].get("keywords") or {}
     if kw.get("required") == request.required and kw.get("preferred") == request.preferred:
         return {"status": "success", "synced": False}
 
     kw["required"] = request.required
     kw["preferred"] = request.preferred
-    _draft_plan["keywords"] = kw
-    _draft_timestamp = time.time()
-    _persist_now()
+    active["draft_plan"]["keywords"] = kw
+    _session_store.update_session(active["id"], active["draft_plan"], active["chat_history"], _persist_now)
 
-    return {"status": "success", "synced": True, "timestamp": _draft_timestamp}
+    return {"status": "success", "synced": True, "timestamp": active["draft_timestamp"]}
 
 
 class ChatEditRequest(BaseModel):
     message: str = Field(..., min_length=1, description="First message = a JD/requirement; later messages = edit instructions")
+    provider: Optional[str] = Field(
+        default=None,
+        description="Explicit model choice from the chat UI's model picker (e.g. 'openai', 'gemini') — restricts this message to that provider only, no fallback to a different one. None uses the normal priority chain.",
+    )
+
+
+@router.get("/providers", summary="List configured LLM providers the chat's model picker can offer")
+async def list_providers():
+    return {"status": "success", "providers": requirement_service.agent.configured_providers()}
+
+
+# ─── Multi-session requirement chat ────────────────────────────────────────
+# Each session has its own draft SearchPlan + chat history (see
+# services/chat_session_service.py) — a recruiter can run several draft
+# conversations ("New Chat") without losing earlier ones. session_id is
+# optional on the /plan/chat routes below (defaults to whichever session is
+# currently active) so a client that hasn't adopted the session list yet
+# still works against "the" chat, same as before this feature existed.
+
+@router.get("/sessions", summary="List chat sessions (for a session-switcher sidebar)")
+async def list_sessions():
+    return {"status": "success", "sessions": _session_store.list_sessions(), "active_session_id": _session_store.active_session_id}
+
+
+@router.post("/sessions", summary="Start a new chat session ('New Chat') without losing earlier ones")
+async def create_session():
+    session = _session_store.create_session(_persist_now)
+    return {"status": "success", "session": session}
+
+
+@router.post("/sessions/{session_id}/activate", summary="Switch the active chat session")
+async def activate_session(session_id: str):
+    session = _session_store.set_active(session_id, _persist_now)
+    if session is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No session with id {session_id}.")
+    return {"status": "success", "session": session}
+
+
+@router.delete("/sessions/{session_id}", summary="Delete a chat session")
+async def delete_session(session_id: str):
+    deleted = _session_store.delete_session(session_id, _persist_now)
+    if not deleted:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No session with id {session_id}.")
+    return {"status": "success", "active_session_id": _session_store.active_session_id}
+
+
+# ─── Recruiter preference learning (Phase 2 — see services/preference_service.py) ──
+# Tracks one pattern so far: how far the recruiter widens active_in beyond
+# what the LLM originally proposed, by the time they actually apply a plan.
+# After OBSERVATION_THRESHOLD occurrences, a suggestion is surfaced for
+# explicit yes/no confirmation — never applied silently.
+
+@router.get("/preferences/pending", summary="Get a pending preference suggestion awaiting confirmation, if any")
+async def get_pending_preference():
+    suggestion = await preference_service.get_pending_suggestion()
+    return {"status": "success", "suggestion": suggestion}
+
+
+@router.post("/preferences/{pattern_key}/confirm", summary="Confirm a suggested preference — future plans will use it")
+async def confirm_preference(pattern_key: str):
+    ok = await preference_service.confirm_preference(pattern_key)
+    if not ok:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No pending preference with key {pattern_key}.")
+    return {"status": "success"}
+
+
+@router.post("/preferences/{pattern_key}/reject", summary="Reject a suggested preference — won't be asked again")
+async def reject_preference(pattern_key: str):
+    ok = await preference_service.reject_preference(pattern_key)
+    if not ok:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No pending preference with key {pattern_key}.")
+    return {"status": "success"}
 
 
 @router.get(
     "/plan/chat",
-    summary="Get the requirement chat history and current (unapplied) draft SearchPlan",
+    summary="Get the requirement chat history and current (unapplied) draft SearchPlan for a session",
 )
-async def get_chat_state():
-    """Restores the chat thread + draft plan on page refresh. The draft is
+async def get_chat_state(session_id: Optional[str] = None):
+    """Restores a chat thread + draft plan on page refresh. The draft is
     separate from the applied plan (/active-plan) — this never reflects what's
     live on Resdex, only what the recruiter has staged so far."""
+    session = _session_store.get(session_id) if session_id else _session_store.get_active()
+    if session is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No session with id {session_id}.")
     return {
         "status": "success",
-        "history": _chat_history,
-        "plan": _draft_plan,
-        "timestamp": _draft_timestamp,
+        "session_id": session["id"],
+        "history": session["chat_history"],
+        "plan": session["draft_plan"],
+        "timestamp": session["draft_timestamp"],
     }
 
 
 @router.post(
     "/plan/chat",
-    summary="Chat-edit the draft SearchPlan (paste a JD to start, or send follow-up edit instructions)",
+    summary="Chat-edit a session's draft SearchPlan (paste a JD to start, or send follow-up edit instructions)",
 )
-async def chat_edit_plan(request: ChatEditRequest):
+async def chat_edit_plan(request: ChatEditRequest, session_id: Optional[str] = None):
     """
     Requirement chat, staged: nothing here touches the live Resdex tab. The
-    first message (no draft yet) is parsed as a full JD; every message after
-    is applied as an edit on top of the existing draft. The recruiter reviews
-    the resulting plan + keyword pills on the frontend and explicitly clicks
-    "Apply to Resdex" (POST /search/plan) to actually push it to the extension.
+    first message (no draft yet, in this session) is parsed as a full JD;
+    every message after is applied as an edit on top of the existing draft.
+    The recruiter reviews the resulting plan + keyword pills on the frontend
+    and explicitly clicks "Apply to Resdex" (POST /search/plan) to actually
+    push it to the extension.
     """
-    global _draft_plan, _draft_timestamp, _chat_history
+    session = _session_store.get(session_id) if session_id else _session_store.get_active()
+    if session is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No session with id {session_id}.")
 
-    base_plan = SearchPlan(**_draft_plan) if _draft_plan else None
-    updated_plan, reply = requirement_service.chat_edit(base_plan, request.message, _chat_history)
+    base_plan = SearchPlan(**session["draft_plan"]) if session["draft_plan"] else None
+    confirmed_prefs = await preference_service.get_confirmed_preferences()
+    updated_plan, reply, model_label = requirement_service.chat_edit(
+        base_plan, request.message, session["chat_history"], confirmed_prefs.get("active_in_default"), request.provider
+    )
 
-    _chat_history = _chat_history + [
+    new_history = session["chat_history"] + [
         {"role": "user", "content": request.message},
-        {"role": "assistant", "content": reply},
+        {"role": "assistant", "content": reply, "model": model_label},
     ]
-    _draft_plan = updated_plan.model_dump()
-    _draft_timestamp = time.time()
-    _persist_now()
+    updated = _session_store.update_session(session["id"], updated_plan.model_dump(), new_history, _persist_now)
 
     return {
         "status": "success",
+        "session_id": updated["id"],
         "reply": reply,
-        "plan": _draft_plan,
-        "history": _chat_history,
+        "plan": updated["draft_plan"],
+        "history": updated["chat_history"],
     }
 
 
 @router.delete(
     "/plan/chat",
-    summary="Clear the requirement chat and draft SearchPlan (start over)",
+    summary="Clear a session's requirement chat and draft SearchPlan (reset it in place, keep the session)",
 )
-async def clear_chat_state():
-    global _draft_plan, _draft_timestamp, _chat_history
-    _draft_plan = None
-    _draft_timestamp = 0.0
-    _chat_history = []
-    _persist_now()
+async def clear_chat_state(session_id: Optional[str] = None):
+    session = _session_store.get(session_id) if session_id else _session_store.get_active()
+    if session is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No session with id {session_id}.")
+    _session_store.update_session(session["id"], None, [], _persist_now)
     return {"status": "success", "message": "Chat and draft plan cleared."}
 
 

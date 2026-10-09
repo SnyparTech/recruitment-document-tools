@@ -183,40 +183,39 @@ def test_chat_completion_with_retry_treats_null_content_as_failure_not_a_crash(m
     assert result is None
 
 
-def test_provider_chain_prioritizes_openai_first_when_configured(monkeypatch):
+def test_provider_chain_prioritizes_gemini_first_for_testing_when_configured(monkeypatch):
     from app.agents.requirement_agent import RequirementAgent
     from app.core.config import settings
 
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", "gemini-test")
     monkeypatch.setattr(settings, "OPENAI_API_KEY", "sk-test")
     monkeypatch.setattr(settings, "NVIDIA_NIM_KEY", "nvapi-test")
     monkeypatch.setattr(settings, "OPENROUTER_API_KEY", "sk-or-test")
     monkeypatch.setattr(settings, "GROQ_API_KEY", "gsk-test")
-    monkeypatch.setattr(settings, "GEMINI_API_KEY", "gemini-test")
 
     agent = RequirementAgent()
     chain = agent._provider_chain()
-    assert [c[0] for c in chain] == ["openai", "nvidia", "openrouter", "groq", "gemini"]
-    assert chain[0][1] == settings.OPENAI_API_URL
-    assert chain[0][3] == settings.OPENAI_MODEL == "gpt-4.1-mini"
+    assert [c[0] for c in chain] == ["gemini", "openai", "nvidia", "openrouter", "groq"]
+    assert chain[0][3] == getattr(settings, "GEMINI_MODEL", "gemini-1.5-flash")
 
 
-def test_provider_chain_prioritizes_nvidia_then_openrouter_then_groq_then_gemini(monkeypatch):
+def test_provider_chain_prioritizes_openai_then_nvidia_then_openrouter_then_groq_when_gemini_unset(monkeypatch):
     from app.agents.requirement_agent import RequirementAgent
     from app.core.config import settings
 
-    monkeypatch.setattr(settings, "OPENAI_API_KEY", None)
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", None)
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", "sk-test")
     monkeypatch.setattr(settings, "NVIDIA_NIM_KEY", "nvapi-test")
     monkeypatch.setattr(settings, "OPENROUTER_API_KEY", "sk-or-test")
     monkeypatch.setattr(settings, "GROQ_API_KEY", "gsk-test")
-    monkeypatch.setattr(settings, "GEMINI_API_KEY", "gemini-test")
 
     agent = RequirementAgent()
     chain = agent._provider_chain()
-    assert [c[0] for c in chain] == ["nvidia", "openrouter", "groq", "gemini"]
-    assert chain[0][1] == settings.NVIDIA_API_URL
-    assert chain[0][3] == settings.NVIDIA_MODEL
-    assert chain[1][1] == settings.OPENROUTER_API_URL
-    assert chain[1][3] == settings.OPENROUTER_MODEL
+    assert [c[0] for c in chain] == ["openai", "nvidia", "openrouter", "groq"]
+    assert chain[0][1] == settings.OPENAI_API_URL
+    assert chain[0][3] == settings.OPENAI_MODEL == "gpt-4.1-mini"
+    assert chain[1][1] == settings.NVIDIA_API_URL
+    assert chain[1][3] == settings.NVIDIA_MODEL
 
 
 def test_provider_chain_skips_providers_without_a_key(monkeypatch):
@@ -356,3 +355,101 @@ def test_broaden_plan_returns_false_when_already_maximally_broad():
     plan = SearchPlan(keywords={"required": ["Python"], "preferred": []}, active_in="30 days")
 
     assert agent.broaden_plan(plan) is False
+
+
+def test_preferred_active_in_default_overrides_hardcoded_default_when_unstated():
+    from app.agents.requirement_agent import RequirementAgent
+
+    agent = RequirementAgent()
+    plan = agent.generate_search_plan(
+        "Python developer in Bengaluru with 3-5 years experience", preferred_active_in_default="30 days"
+    )
+    assert plan.active_in == "30 days"
+
+
+def test_preferred_active_in_default_ignored_when_requirement_explicitly_states_one():
+    from app.agents.requirement_agent import RequirementAgent
+    from app.schemas.search_plan import SearchPlan
+
+    agent = RequirementAgent()
+    # Simulates an LLM that DID extract the JD's explicit mention (the
+    # rule-based fallback doesn't parse active_in from free text at all —
+    # that part is a pre-existing, separate characteristic, not what this
+    # test is checking).
+    fake_llm_plan = SearchPlan(active_in="7 days")
+    corrected = agent._post_process_plan(
+        fake_llm_plan,
+        "Only show candidates active in the last 7 days.",
+        preferred_active_in_default="30 days",
+    )
+    assert corrected.active_in == "7 days", "an explicit JD statement must win over a learned default"
+
+
+def test_no_preferred_active_in_default_falls_back_to_hardcoded_15_days():
+    from app.agents.requirement_agent import RequirementAgent
+
+    agent = RequirementAgent()
+    plan = agent.generate_search_plan("Python developer in Bengaluru with 3-5 years experience")
+    assert plan.active_in == "15 days"
+
+
+def test_only_provider_filter_restricts_chain_to_one_provider(monkeypatch):
+    from app.agents.requirement_agent import RequirementAgent
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", "gemini-test")
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", "sk-test")
+    monkeypatch.setattr(settings, "NVIDIA_NIM_KEY", "nvapi-test")
+    monkeypatch.setattr(settings, "OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.setattr(settings, "GROQ_API_KEY", "gsk-test")
+
+    agent = RequirementAgent()
+    chain = agent._provider_chain(only_provider="openai")
+    assert [c[0] for c in chain] == ["openai"]
+
+
+def test_only_provider_filter_returns_empty_when_that_provider_not_configured(monkeypatch):
+    from app.agents.requirement_agent import RequirementAgent
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", "gemini-test")
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", None)
+    monkeypatch.setattr(settings, "NVIDIA_NIM_KEY", None)
+    monkeypatch.setattr(settings, "OPENROUTER_API_KEY", None)
+    monkeypatch.setattr(settings, "GROQ_API_KEY", None)
+
+    agent = RequirementAgent()
+    assert agent._provider_chain(only_provider="openai") == []
+
+
+def test_configured_providers_lists_only_providers_with_a_key(monkeypatch):
+    from app.agents.requirement_agent import RequirementAgent
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", "gemini-test")
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", None)
+    monkeypatch.setattr(settings, "NVIDIA_NIM_KEY", "nvapi-test")
+    monkeypatch.setattr(settings, "OPENROUTER_API_KEY", None)
+    monkeypatch.setattr(settings, "GROQ_API_KEY", "gsk-test")
+
+    agent = RequirementAgent()
+    names = [p["name"] for p in agent.configured_providers()]
+    assert names == ["gemini", "nvidia", "groq"]
+
+
+def test_generate_search_plan_with_preferred_provider_not_configured_falls_back_to_rule_based(monkeypatch):
+    from app.agents.requirement_agent import RequirementAgent
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", None)
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", None)
+    monkeypatch.setattr(settings, "NVIDIA_NIM_KEY", None)
+    monkeypatch.setattr(settings, "OPENROUTER_API_KEY", None)
+    monkeypatch.setattr(settings, "GROQ_API_KEY", "gsk-test")  # configured, but NOT the requested provider
+
+    agent = RequirementAgent()
+    plan = agent.generate_search_plan(
+        "Python developer in Bengaluru with 3-5 years experience", preferred_provider="openai"
+    )
+    assert agent._last_model_label == "Rule-based (no LLM)", "must not silently use groq when openai was explicitly requested"
+    assert plan.current_location == ["Bengaluru"]

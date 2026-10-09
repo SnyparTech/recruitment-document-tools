@@ -42,17 +42,17 @@ def save_state(
     candidates: list,
     candidates_timestamp: float,
     search_id: Optional[str],
-    draft_plan: Optional[dict] = None,
-    draft_timestamp: float = 0.0,
-    chat_history: Optional[list] = None,
+    sessions: Optional[dict] = None,
+    active_session_id: Optional[str] = None,
 ) -> None:
     """Best-effort save; a write failure (e.g. read-only filesystem on some hosts)
     must never break the request that triggered it — log and move on.
 
-    draft_plan/chat_history back the requirement chat's "stage then apply"
-    flow (see api/search.py's /plan/chat) — a separate, unvalidated plan the
-    recruiter is still editing conversationally, distinct from `search_plan`
-    (the one the extension actually reads and applies to Resdex)."""
+    `sessions` backs the requirement chat's multi-session "stage then apply"
+    flow (see services/chat_session_service.py, api/search.py's
+    /search/sessions routes) — each session has its own draft SearchPlan +
+    chat history, separate from `search_plan` (the one the extension actually
+    reads and applies to Resdex)."""
     try:
         os.makedirs(_STATE_DIR, exist_ok=True)
         payload = {
@@ -61,9 +61,8 @@ def save_state(
             "candidates": candidates,
             "candidates_timestamp": candidates_timestamp,
             "search_id": search_id,
-            "draft_plan": draft_plan,
-            "draft_timestamp": draft_timestamp,
-            "chat_history": chat_history or [],
+            "sessions": sessions or {},
+            "active_session_id": active_session_id,
         }
         # Write to a temp file then rename, so a crash mid-write never leaves
         # a truncated/corrupt state file behind.

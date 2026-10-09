@@ -3,7 +3,8 @@ Tests for POST /search/plan/live-keywords — the extension reports keywords
 currently live in the Resdex form (including manual HR edits) so the
 website's draft keyword section stays in sync. One-way, extension -> backend,
 and must never touch _latest_search_plan or trigger a re-apply-to-Resdex
-(that's the opposite direction, PATCH /plan/keywords).
+(that's the opposite direction, PATCH /plan/keywords). Operates on the
+ACTIVE chat session's draft (see services/chat_session_service.py).
 """
 
 import os
@@ -19,16 +20,18 @@ client = TestClient(app)
 
 
 def _set_draft(keywords=None):
-    search_module._draft_plan = {
-        "keywords": keywords or {"required": [], "preferred": []},
-        "min_experience": None,
-    }
-    search_module._draft_timestamp = 0.0
+    active = search_module._session_store.get_active()
+    search_module._session_store.update_session(
+        active["id"],
+        {"keywords": keywords or {"required": [], "preferred": []}, "min_experience": None},
+        active["chat_history"],
+        lambda: None,
+    )
 
 
 def _clear_draft():
-    search_module._draft_plan = None
-    search_module._draft_timestamp = 0.0
+    active = search_module._session_store.get_active()
+    search_module._session_store.update_session(active["id"], None, [], lambda: None)
 
 
 def test_no_draft_yet_is_a_safe_no_op():
@@ -37,7 +40,7 @@ def test_no_draft_yet_is_a_safe_no_op():
     assert res.status_code == 200
     body = res.json()
     assert body["synced"] is False
-    assert search_module._draft_plan is None  # must not fabricate a draft out of nowhere
+    assert search_module._session_store.get_active()["draft_plan"] is None  # must not fabricate a draft out of nowhere
 
 
 def test_updates_existing_draft_keywords():
@@ -46,8 +49,9 @@ def test_updates_existing_draft_keywords():
     assert res.status_code == 200
     body = res.json()
     assert body["synced"] is True
-    assert search_module._draft_plan["keywords"]["required"] == ["Python", "Django"]
-    assert search_module._draft_plan["keywords"]["preferred"] == ["FastAPI"]
+    draft = search_module._session_store.get_active()["draft_plan"]
+    assert draft["keywords"]["required"] == ["Python", "Django"]
+    assert draft["keywords"]["preferred"] == ["FastAPI"]
     _clear_draft()
 
 

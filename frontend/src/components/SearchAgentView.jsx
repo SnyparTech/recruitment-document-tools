@@ -36,6 +36,25 @@ export default function SearchAgentView({ onCompileCandidate }) {
   const [isChatRestoring, setIsChatRestoring] = useState(true);
   const chatThreadRef = useRef(null);
 
+  // Multi-session chat: a recruiter can run several draft conversations
+  // ("New Chat") without losing earlier ones. See backend's
+  // /search/sessions routes + services/chat_session_service.py.
+  const [sessions, setSessions] = useState([]);
+  const [activeSessionId, setActiveSessionId] = useState(null);
+  const [isSwitchingSession, setIsSwitchingSession] = useState(false);
+
+  // Preference learning (Phase 2): a pattern the backend has observed
+  // repeatedly (see services/preference_service.py) and wants explicit
+  // yes/no confirmation on before applying it to future plans.
+  const [pendingPreference, setPendingPreference] = useState(null);
+  const [isRespondingToPreference, setIsRespondingToPreference] = useState(false);
+
+  // Model picker: "" = normal priority chain (auto-fallback across
+  // providers). Any other value pins every message in this chat to that one
+  // provider only — see backend's RequirementAgent._provider_chain(only_provider=...).
+  const [availableProviders, setAvailableProviders] = useState([]);
+  const [selectedProvider, setSelectedProvider] = useState('');
+
   // Which draft keywords HR currently wants marked mandatory (starred) —
   // staged locally until Apply, seeded from the draft's keywords.required
   // whenever the draft changes (new chat turn, or restored on mount).
@@ -314,16 +333,20 @@ export default function SearchAgentView({ onCompileCandidate }) {
     setChatMessages((prev) => [...prev, { role: 'user', content: text }]);
 
     try {
-      const resp = await fetch(`${API_BASE}/search/plan/chat`, {
+      const url = activeSessionId
+        ? `${API_BASE}/search/plan/chat?session_id=${activeSessionId}`
+        : `${API_BASE}/search/plan/chat`;
+      const resp = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text }),
+        body: JSON.stringify({ message: text, provider: selectedProvider || null }),
       });
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.detail?.message || data.detail || 'Chat request failed.');
 
       setChatMessages(data.history || []);
       setDraftPlan(data.plan || null);
+      fetchSessions();
     } catch (err) {
       console.error('Chat edit failed:', err);
       setChatError(err.message || 'Failed to reach the requirement chat.');
@@ -339,7 +362,10 @@ export default function SearchAgentView({ onCompileCandidate }) {
 
   const clearChat = async () => {
     try {
-      await fetch(`${API_BASE}/search/plan/chat`, { method: 'DELETE' });
+      const url = activeSessionId
+        ? `${API_BASE}/search/plan/chat?session_id=${activeSessionId}`
+        : `${API_BASE}/search/plan/chat`;
+      await fetch(url, { method: 'DELETE' });
     } catch (err) {
       console.warn('Failed to clear chat on server:', err);
     }
@@ -349,6 +375,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
     setChatError(null);
     setApplyMsg(null);
     setDraftMandatoryKeywords(new Set());
+    fetchSessions();
   };
 
   const toggleDraftMandatoryKeyword = (keyword) => {
@@ -375,7 +402,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
       const resp = await fetch(`${API_BASE}/search/plan`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ plan: planToApply, submit_search: applyMode === 'submit' }),
+        body: JSON.stringify({ plan: planToApply, submit_search: applyMode === 'submit', session_id: activeSessionId }),
       });
       const data = await resp.json();
       if (!resp.ok) {
@@ -390,6 +417,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
       setSearchResponse(data);
       setExecuteMode(applyMode);
       setApplyMsg({ ok: true, text: 'Applied — extension will auto-fill' + (applyMode === 'submit' ? ' AND submit the search' : '') + ' on the open Resdex tab.' });
+      fetchPendingPreference();
     } catch (err) {
       console.error('Apply to Resdex failed:', err);
       setApplyMsg({ ok: false, text: err.message || 'Failed to apply the draft plan.' });
@@ -465,6 +493,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
       const data = await resp.json();
       if (isInitialLoad) setChatMessages(data.history || []);
       setDraftPlan(data.plan || null);
+      setActiveSessionId(data.session_id || null);
     } catch (err) {
       console.warn('Failed to fetch requirement chat draft:', err);
     } finally {
@@ -472,13 +501,112 @@ export default function SearchAgentView({ onCompileCandidate }) {
     }
   }, [API_BASE]);
 
+  const fetchSessions = useCallback(async () => {
+    try {
+      const resp = await fetch(`${API_BASE}/search/sessions`);
+      if (!resp.ok) return;
+      const data = await resp.json();
+      setSessions(data.sessions || []);
+    } catch (err) {
+      console.warn('Failed to fetch chat sessions:', err);
+    }
+  }, [API_BASE]);
+
+  const startNewChat = async () => {
+    setIsSwitchingSession(true);
+    try {
+      const resp = await fetch(`${API_BASE}/search/sessions`, { method: 'POST' });
+      if (!resp.ok) throw new Error('Failed to start a new chat.');
+      const data = await resp.json();
+      setActiveSessionId(data.session.id);
+      setChatMessages([]);
+      setDraftPlan(null);
+      setChatInput('');
+      setChatError(null);
+      setApplyMsg(null);
+      setDraftMandatoryKeywords(new Set());
+      await fetchSessions();
+    } catch (err) {
+      setChatError(err.message || 'Failed to start a new chat.');
+    } finally {
+      setIsSwitchingSession(false);
+    }
+  };
+
+  const switchSession = async (sessionId) => {
+    if (sessionId === activeSessionId || isSwitchingSession) return;
+    setIsSwitchingSession(true);
+    try {
+      await fetch(`${API_BASE}/search/sessions/${sessionId}/activate`, { method: 'POST' });
+      const resp = await fetch(`${API_BASE}/search/plan/chat?session_id=${sessionId}`);
+      const data = await resp.json();
+      setActiveSessionId(sessionId);
+      setChatMessages(data.history || []);
+      setDraftPlan(data.plan || null);
+      setChatError(null);
+      setApplyMsg(null);
+      await fetchSessions();
+    } catch (err) {
+      setChatError(err.message || 'Failed to switch chat session.');
+    } finally {
+      setIsSwitchingSession(false);
+    }
+  };
+
+  const deleteSession = async (sessionId, e) => {
+    e.stopPropagation();
+    try {
+      await fetch(`${API_BASE}/search/sessions/${sessionId}`, { method: 'DELETE' });
+      if (sessionId === activeSessionId) {
+        await fetchDraftPlan(true);
+      }
+      await fetchSessions();
+    } catch (err) {
+      console.warn('Failed to delete session:', err);
+    }
+  };
+
+  const fetchPendingPreference = useCallback(async () => {
+    try {
+      const resp = await fetch(`${API_BASE}/search/preferences/pending`);
+      if (!resp.ok) return;
+      const data = await resp.json();
+      setPendingPreference(data.suggestion || null);
+    } catch (err) {
+      console.warn('Failed to fetch pending preference suggestion:', err);
+    }
+  }, [API_BASE]);
+
+  const respondToPreference = async (accept) => {
+    if (!pendingPreference) return;
+    setIsRespondingToPreference(true);
+    try {
+      const action = accept ? 'confirm' : 'reject';
+      await fetch(`${API_BASE}/search/preferences/${encodeURIComponent(pendingPreference.pattern_key)}/${action}`, {
+        method: 'POST',
+      });
+      setPendingPreference(null);
+    } catch (err) {
+      console.warn('Failed to respond to preference suggestion:', err);
+    } finally {
+      setIsRespondingToPreference(false);
+    }
+  };
+
   useEffect(() => {
     fetchDraftPlan(true);
+    fetchSessions();
+    fetchPendingPreference();
+    fetch(`${API_BASE}/search/providers`)
+      .then((r) => r.json())
+      .then((d) => setAvailableProviders(d.providers || []))
+      .catch(() => {});
     const intervalId = setInterval(() => {
-      if (!isChatSending) fetchDraftPlan(false);
+      if (!isChatSending && !isSwitchingSession) fetchDraftPlan(false);
+      fetchPendingPreference();
     }, RESULTS_POLL_INTERVAL_MS);
     return () => clearInterval(intervalId);
-  }, [fetchDraftPlan, isChatSending]);
+  }, [fetchDraftPlan, fetchSessions, fetchPendingPreference, isChatSending, isSwitchingSession, API_BASE]);
 
   // Auto-scroll the chat thread to the latest message.
   useEffect(() => {
@@ -487,13 +615,21 @@ export default function SearchAgentView({ onCompileCandidate }) {
     }
   }, [chatMessages]);
 
-  // Re-seed the draft mandatory-keyword selection whenever a (new or
-  // restored) draft plan arrives, from its keywords.required.
+  // Re-seed the draft mandatory-keyword selection whenever the SERVER'S
+  // required-keyword list actually changes content (new JD, chat edit, a
+  // live-Resdex sync) — NOT merely whenever draftPlan gets re-fetched.
+  // fetchDraftPlan() polls every 4s and returns a brand-new object each
+  // time even when nothing changed, so depending on the object reference
+  // (draftPlan?.keywords) re-ran this on every poll tick and silently wiped
+  // out any star the recruiter had just clicked, before they could hit
+  // Apply — the staged draft never visibly "took" the click.
+  const draftRequiredKey = JSON.stringify([...(draftPlan?.keywords?.required || [])].sort());
   useEffect(() => {
     const kw = draftPlan?.keywords;
     if (!kw) return;
     setDraftMandatoryKeywords(new Set(kw.required || []));
-  }, [draftPlan?.keywords]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftRequiredKey]);
 
   // Re-seed the applied-plan mandatory-keyword selection whenever a (new or
   // restored) applied plan arrives, from its keywords.required.
@@ -588,7 +724,58 @@ export default function SearchAgentView({ onCompileCandidate }) {
         </p>
       </div>
 
-      <div className="card">
+      <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+        {/* Chat sessions sidebar: switch between past conversations or start a new one */}
+        <div className="card" style={{ width: 220, flexShrink: 0, position: 'sticky', top: 16 }}>
+          <h2 className="card-title" style={{ fontSize: '1rem' }}>
+            <span>Chats</span>
+          </h2>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={startNewChat}
+            disabled={isSwitchingSession}
+            style={{ width: '100%', marginBottom: 10 }}
+          >
+            + New Chat
+          </button>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 420, overflowY: 'auto' }}>
+            {sessions.map((s) => (
+              <div
+                key={s.id}
+                onClick={() => switchSession(s.id)}
+                title={s.title}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 6,
+                  padding: '7px 10px',
+                  borderRadius: 7,
+                  fontSize: '0.78rem',
+                  cursor: 'pointer',
+                  background: s.id === activeSessionId ? 'rgba(79, 70, 229, 0.22)' : 'rgba(255,255,255,0.04)',
+                  border: `1px solid ${s.id === activeSessionId ? 'rgba(79, 70, 229, 0.45)' : 'rgba(255,255,255,0.08)'}`,
+                }}
+              >
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {s.title}
+                </span>
+                {sessions.length > 1 && (
+                  <span
+                    onClick={(e) => deleteSession(s.id, e)}
+                    title="Delete this chat"
+                    style={{ opacity: 0.5, cursor: 'pointer', fontSize: '0.9rem', lineHeight: 1, flexShrink: 0 }}
+                  >
+                    ×
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+
+      <div className="card" style={{ flex: 1, minWidth: 0 }}>
         <h2 className="card-title">
           <IconSearch size={22} color="var(--primary)" />
           <span>Requirement Chat</span>
@@ -597,6 +784,41 @@ export default function SearchAgentView({ onCompileCandidate }) {
           First message: paste a JD or describe the role. After that, just tell the assistant what to change
           — e.g. "remove SQL", "make React optional", "experience 3 to 6 years", "add Pune".
         </p>
+
+        {/* Preference learning: a pattern observed across past sessions, awaiting explicit confirmation */}
+        {pendingPreference && (
+          <div style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10,
+            padding: '10px 14px', marginBottom: 14, borderRadius: 8,
+            background: 'rgba(79, 70, 229, 0.12)', border: '1px solid rgba(79, 70, 229, 0.35)',
+            fontSize: '0.85rem',
+          }}>
+            <span>
+              You've widened the active-in window to <strong>{pendingPreference.observed_value}</strong> in{' '}
+              {pendingPreference.count} recent searches — default new searches to that instead of 15 days?
+            </span>
+            <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+              <button
+                type="button"
+                className="btn-secondary"
+                disabled={isRespondingToPreference}
+                onClick={() => respondToPreference(true)}
+                style={{ padding: '5px 12px' }}
+              >
+                Yes, default to it
+              </button>
+              <button
+                type="button"
+                className="btn-secondary"
+                disabled={isRespondingToPreference}
+                onClick={() => respondToPreference(false)}
+                style={{ padding: '5px 12px' }}
+              >
+                No
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Preset Chips */}
         {chatMessages.length === 0 && (
@@ -656,6 +878,11 @@ export default function SearchAgentView({ onCompileCandidate }) {
                   {m.role === 'user' ? 'You' : 'Assistant'}
                 </div>
                 {m.content}
+                {m.role === 'assistant' && m.model && (
+                  <div style={{ fontSize: '0.68rem', color: 'var(--text-secondary, #888)', opacity: 0.7, marginTop: 5 }}>
+                    {m.model}
+                  </div>
+                )}
               </div>
             ))
           )}
@@ -693,6 +920,26 @@ export default function SearchAgentView({ onCompileCandidate }) {
                 {chatMessages.length === 0 ? 'Paste Job Description / Requirement' : 'Your message'}
               </label>
               <div className="prompt-actions">
+                <select
+                  value={selectedProvider}
+                  onChange={(e) => setSelectedProvider(e.target.value)}
+                  title="Pin this chat to one specific model (no fallback to a different provider), or leave on Auto"
+                  style={{
+                    padding: '6px 10px',
+                    borderRadius: 6,
+                    fontSize: '0.78rem',
+                    background: 'rgba(255,255,255,0.04)',
+                    border: '1px solid rgba(255,255,255,0.12)',
+                    color: 'inherit',
+                  }}
+                >
+                  <option value="">Auto (priority order)</option>
+                  {availableProviders.map((p) => (
+                    <option key={p.name} value={p.name}>
+                      {p.name} ({p.model})
+                    </option>
+                  ))}
+                </select>
                 <button
                   type="button"
                   className="btn-upload-req-doc"
@@ -936,6 +1183,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
             <span>{error}</span>
           </div>
         )}
+      </div>
       </div>
 
       {/* Results View (last APPLIED plan) */}
