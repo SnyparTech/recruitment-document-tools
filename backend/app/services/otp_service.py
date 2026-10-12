@@ -11,6 +11,7 @@ Sends via Outlook/Office365 SMTP (stdlib smtplib — no new dependency).
 import logging
 import secrets
 import smtplib
+import socket
 import time
 from email.mime.text import MIMEText
 from typing import Dict, Tuple
@@ -41,7 +42,27 @@ def send_otp(settings, email: str, device_id: str) -> None:
     msg["To"] = email
 
     try:
-        with smtplib.SMTP(settings.OUTLOOK_SMTP_HOST, settings.OUTLOOK_SMTP_PORT, timeout=15) as server:
+        # Resolve to an IPv4 address explicitly and connect to that literal,
+        # rather than letting smtplib.SMTP resolve the hostname itself.
+        # Containerized hosts (e.g. Render) commonly have no outbound IPv6
+        # route; smtp.office365.com has AAAA records, and if getaddrinfo
+        # hands back an IPv6 address first, the connection fails immediately
+        # with "Network is unreachable" before any SMTP traffic is even
+        # attempted — nothing to do with credentials or firewall rules on
+        # port 587 itself.
+        #
+        # Connecting to the IP literal would normally break starttls()'s TLS
+        # verification (Office365's cert is issued for the hostname, and
+        # smtplib's starttls() uses whatever host you connected with as the
+        # SNI/verification name) — so after connecting to the IPv4 address,
+        # _host is reset back to the real hostname before starttls() runs,
+        # which is what smtplib actually reads for server_hostname.
+        addr_info = socket.getaddrinfo(settings.OUTLOOK_SMTP_HOST, settings.OUTLOOK_SMTP_PORT, socket.AF_INET, socket.SOCK_STREAM)
+        ipv4_host = addr_info[0][4][0]
+
+        with smtplib.SMTP(timeout=15) as server:
+            server.connect(ipv4_host, settings.OUTLOOK_SMTP_PORT)
+            server._host = settings.OUTLOOK_SMTP_HOST  # restore for correct TLS hostname verification
             server.starttls()
             server.login(settings.OUTLOOK_EMAIL, settings.OUTLOOK_PASSWORD)
             server.sendmail(settings.OUTLOOK_EMAIL, [email], msg.as_string())

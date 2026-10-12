@@ -88,7 +88,15 @@ class Settings(BaseSettings):
         "*.ngrok.io",
         "*",
     ]
-    RATE_LIMIT_PER_MINUTE: int = 120
+    # The dashboard polls 3 endpoints every 4s per open tab (~45 req/min
+    # baseline just from one idle tab) — now that core/security.py correctly
+    # sees each real visitor's own IP (see the --proxy-headers fix in
+    # Dockerfile), several coworkers behind the same office/NAT gateway
+    # share one bucket and can legitimately exceed a low per-IP ceiling just
+    # from background polling, not abuse (confirmed in prod logs: a burst of
+    # concurrent legitimate traffic from one office IP tripped this at 120).
+    # Raised with headroom for that; still bounded, still real DoS protection.
+    RATE_LIMIT_PER_MINUTE: int = 600
     MAX_PAYLOAD_SIZE_BYTES: int = 31457280
     ENABLE_SECURITY_HEADERS: bool = True
     ENABLE_DLP_LOG_MASKING: bool = True
