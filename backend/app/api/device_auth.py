@@ -20,7 +20,7 @@ class RequestOtpRequest(BaseModel):
 async def request_device_otp(payload: RequestOtpRequest):
     try:
         email = device_auth_service.normalize_and_validate_email(settings, payload.email)
-        otp_service.send_otp(settings, email, payload.device_id)
+        await otp_service.send_otp(settings, email, payload.device_id)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
     return {"status": "otp_sent", "email": email}

@@ -28,7 +28,7 @@ def _reset_device_store(monkeypatch, tmp_path):
 
 
 def _stub_send_otp(monkeypatch, captured):
-    def fake_send(settings, email, device_id):
+    async def fake_send(settings, email, device_id):
         code = "123456"
         otp_service._pending[email] = (code, device_id, __import__("time").time() + 600)
         captured["code"] = code

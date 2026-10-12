@@ -53,14 +53,15 @@ class Settings(BaseSettings):
     DEVICE_AUTH_ENABLED: bool = False
     AUTHORIZED_EMAIL_DOMAIN: str = "snypartech.com"
 
-    # Outlook/Office365 SMTP — sends the one-time OTP code used to verify a
-    # registering device's email actually belongs to them (see
-    # services/otp_service.py). OUTLOOK_PASSWORD should be an app password,
-    # not the account's normal login password. Never hardcode — env only.
-    OUTLOOK_SMTP_HOST: str = "smtp.office365.com"
-    OUTLOOK_SMTP_PORT: int = 587
-    OUTLOOK_EMAIL: Optional[str] = None
-    OUTLOOK_PASSWORD: Optional[str] = None
+    # Resend (https://resend.com) — sends the one-time OTP code used to
+    # verify a registering device's email actually belongs to them (see
+    # services/otp_service.py). HTTP API on port 443, not SMTP — Render's
+    # free web services block outbound SMTP (25/465/587) entirely, which is
+    # why this isn't Outlook SMTP anymore. RESEND_FROM_EMAIL's domain must
+    # be verified in Resend's dashboard before it can email anyone besides
+    # the Resend account owner — see otp_service.py's module docstring.
+    RESEND_API_KEY: Optional[str] = None
+    RESEND_FROM_EMAIL: str = "onboarding@resend.dev"
     DEVICE_OTP_TTL_SECONDS: int = 600
     ALLOWED_ORIGINS: list[str] = [
         "http://localhost:8002",
