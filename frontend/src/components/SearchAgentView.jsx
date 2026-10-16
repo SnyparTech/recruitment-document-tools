@@ -73,6 +73,8 @@ export default function SearchAgentView({ onCompileCandidate }) {
   // computed server-side against the active SearchPlan — see
   // candidate_ranking_service.py. `null` while we haven't polled yet.
   const [candidateResults, setCandidateResults] = useState(null);
+  const [candidatePage, setCandidatePage] = useState(1);
+  const CANDIDATES_PER_PAGE = 10;
   // NOTE: search_response.execution.executed is ALWAYS false from this API —
   // actual execution happens asynchronously via the extension polling
   // /search/active-plan, not synchronously in this request. So "did we ask
@@ -422,6 +424,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
       // only existed locally in draftMandatoryKeywords until apply-time.
       setDraftPlan(data.search_plan);
       setExecuteMode(applyMode);
+      setCandidatePage(1);
       setApplyMsg({ ok: true, text: 'Applied — extension will auto-fill' + (applyMode === 'submit' ? ' AND submit the search' : '') + ' on the open Resdex tab.' });
       fetchPendingPreference();
     } catch (err) {
@@ -1288,8 +1291,17 @@ export default function SearchAgentView({ onCompileCandidate }) {
                   </span>
                 )}
               </div>
+              {(() => {
+                const totalPages = Math.max(1, Math.ceil(candidateResults.count / CANDIDATES_PER_PAGE));
+                const page = Math.min(candidatePage, totalPages);
+                const pageCandidates = candidateResults.candidates.slice(
+                  (page - 1) * CANDIDATES_PER_PAGE,
+                  page * CANDIDATES_PER_PAGE
+                );
+                return (
+                  <>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {candidateResults.candidates.map((c, i) => (
+                {pageCandidates.map((c, i) => (
                   <div key={i} className="candidate-result-card">
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
                       <div>
@@ -1372,6 +1384,32 @@ export default function SearchAgentView({ onCompileCandidate }) {
                   </div>
                 ))}
               </div>
+              {totalPages > 1 && (
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 14, marginTop: 14 }}>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={() => setCandidatePage((p) => Math.max(1, p - 1))}
+                    disabled={page <= 1}
+                  >
+                    Previous
+                  </button>
+                  <span style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                    Page {page} of {totalPages}
+                  </span>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={() => setCandidatePage((p) => Math.min(totalPages, p + 1))}
+                    disabled={page >= totalPages}
+                  >
+                    Next
+                  </button>
+                </div>
+              )}
+                  </>
+                );
+              })()}
             </>
           )}
         </div>
