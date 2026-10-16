@@ -1301,14 +1301,14 @@ body {
 }
 
 .skill-pill.mandatory {
-  background: #FFFBEB;
-  border-color: #FCD34D;
-  color: #B45309;
+  background: var(--primary-purple);
+  border-color: var(--primary-purple);
+  color: #FFFFFF;
 }
 
 .skill-pill.mandatory:not(:disabled):hover {
-  border-color: #F59E0B;
-  box-shadow: 0 6px 16px rgba(245, 158, 11, 0.18);
+  border-color: var(--primary-purple-hover);
+  box-shadow: 0 6px 16px var(--primary-purple-shadow);
 }
 
 .skill-pill .pill-star {
