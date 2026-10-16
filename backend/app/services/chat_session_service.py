@@ -74,8 +74,8 @@ class ChatSessionStore:
             # didn't update the pointer) — fall back to most recently updated.
             self.active_session_id = max(self.sessions.values(), key=lambda s: s["updated_at"])["id"]
 
-    def _persist(self, persist_callback) -> None:
-        persist_callback()
+    async def _persist(self, persist_callback) -> None:
+        await persist_callback()
 
     def list_sessions(self) -> List[Dict[str, Any]]:
         return sorted(
@@ -99,21 +99,21 @@ class ChatSessionStore:
     def get(self, session_id: str) -> Optional[Dict[str, Any]]:
         return self.sessions.get(session_id)
 
-    def create_session(self, persist_callback) -> Dict[str, Any]:
+    async def create_session(self, persist_callback) -> Dict[str, Any]:
         session = _new_session_dict()
         self.sessions[session["id"]] = session
         self.active_session_id = session["id"]
-        self._persist(persist_callback)
+        await self._persist(persist_callback)
         return session
 
-    def set_active(self, session_id: str, persist_callback) -> Optional[Dict[str, Any]]:
+    async def set_active(self, session_id: str, persist_callback) -> Optional[Dict[str, Any]]:
         if session_id not in self.sessions:
             return None
         self.active_session_id = session_id
-        self._persist(persist_callback)
+        await self._persist(persist_callback)
         return self.sessions[session_id]
 
-    def update_session(
+    async def update_session(
         self, session_id: str, draft_plan: Optional[dict], chat_history: list, persist_callback
     ) -> Dict[str, Any]:
         session = self.sessions[session_id]
@@ -128,10 +128,10 @@ class ChatSessionStore:
         session["draft_timestamp"] = time.time()
         session["updated_at"] = session["draft_timestamp"]
         session["title"] = _derive_title(chat_history)  # "New chat" again if history is now empty (reset case)
-        self._persist(persist_callback)
+        await self._persist(persist_callback)
         return session
 
-    def delete_session(self, session_id: str, persist_callback) -> bool:
+    async def delete_session(self, session_id: str, persist_callback) -> bool:
         if session_id not in self.sessions:
             return False
         del self.sessions[session_id]
@@ -141,5 +141,5 @@ class ChatSessionStore:
             self.active_session_id = new_session["id"]
         elif self.active_session_id == session_id:
             self.active_session_id = max(self.sessions.values(), key=lambda s: s["updated_at"])["id"]
-        self._persist(persist_callback)
+        await self._persist(persist_callback)
         return True

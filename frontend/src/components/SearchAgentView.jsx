@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { getApiBase } from '../config';
+import { getApiBase, apiFetch } from '../config';
 import {
   IconSearch,
   IconBolt,
@@ -284,7 +284,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
     formData.append('file', file);
 
     try {
-      const resp = await fetch(`${API_BASE}/search/upload-requirement`, {
+      const resp = await apiFetch(`${API_BASE}/search/upload-requirement`, {
         method: 'POST',
         body: formData,
       });
@@ -336,7 +336,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
       const url = activeSessionId
         ? `${API_BASE}/search/plan/chat?session_id=${activeSessionId}`
         : `${API_BASE}/search/plan/chat`;
-      const resp = await fetch(url, {
+      const resp = await apiFetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: text, provider: selectedProvider || null }),
@@ -365,7 +365,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
       const url = activeSessionId
         ? `${API_BASE}/search/plan/chat?session_id=${activeSessionId}`
         : `${API_BASE}/search/plan/chat`;
-      await fetch(url, { method: 'DELETE' });
+      await apiFetch(url, { method: 'DELETE' });
     } catch (err) {
       console.warn('Failed to clear chat on server:', err);
     }
@@ -399,7 +399,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
     const planToApply = { ...draftPlan, keywords: { ...kw, required, preferred } };
 
     try {
-      const resp = await fetch(`${API_BASE}/search/plan`, {
+      const resp = await apiFetch(`${API_BASE}/search/plan`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ plan: planToApply, submit_search: applyMode === 'submit', session_id: activeSessionId }),
@@ -415,6 +415,12 @@ export default function SearchAgentView({ onCompileCandidate }) {
       }
 
       setSearchResponse(data);
+      // Keep the draft in sync with what actually got applied (server-echoed,
+      // schema-validated) — otherwise the Draft panel immediately reappears
+      // next to the Applied panel showing near-identical content, since
+      // draftPlan.keywords never picked up the required/preferred split that
+      // only existed locally in draftMandatoryKeywords until apply-time.
+      setDraftPlan(data.search_plan);
       setExecuteMode(applyMode);
       setApplyMsg({ ok: true, text: 'Applied — extension will auto-fill' + (applyMode === 'submit' ? ' AND submit the search' : '') + ' on the open Resdex tab.' });
       fetchPendingPreference();
@@ -428,7 +434,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
 
   const pollCandidateResults = useCallback(async () => {
     try {
-      const resp = await fetch(`${API_BASE}/search/results`);
+      const resp = await apiFetch(`${API_BASE}/search/results`);
       if (!resp.ok) return;
       const data = await resp.json();
       setCandidateResults(data);
@@ -456,7 +462,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
   useEffect(() => {
     (async () => {
       try {
-        const resp = await fetch(`${API_BASE}/search/active-plan`);
+        const resp = await apiFetch(`${API_BASE}/search/active-plan`);
         if (!resp.ok) return;
         const data = await resp.json();
         if (data.has_plan && data.plan) {
@@ -488,7 +494,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
   // send with a stale read.
   const fetchDraftPlan = useCallback(async (isInitialLoad = false) => {
     try {
-      const resp = await fetch(`${API_BASE}/search/plan/chat`);
+      const resp = await apiFetch(`${API_BASE}/search/plan/chat`);
       if (!resp.ok) return;
       const data = await resp.json();
       if (isInitialLoad) setChatMessages(data.history || []);
@@ -503,7 +509,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
 
   const fetchSessions = useCallback(async () => {
     try {
-      const resp = await fetch(`${API_BASE}/search/sessions`);
+      const resp = await apiFetch(`${API_BASE}/search/sessions`);
       if (!resp.ok) return;
       const data = await resp.json();
       setSessions(data.sessions || []);
@@ -515,7 +521,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
   const startNewChat = async () => {
     setIsSwitchingSession(true);
     try {
-      const resp = await fetch(`${API_BASE}/search/sessions`, { method: 'POST' });
+      const resp = await apiFetch(`${API_BASE}/search/sessions`, { method: 'POST' });
       if (!resp.ok) throw new Error('Failed to start a new chat.');
       const data = await resp.json();
       setActiveSessionId(data.session.id);
@@ -537,8 +543,8 @@ export default function SearchAgentView({ onCompileCandidate }) {
     if (sessionId === activeSessionId || isSwitchingSession) return;
     setIsSwitchingSession(true);
     try {
-      await fetch(`${API_BASE}/search/sessions/${sessionId}/activate`, { method: 'POST' });
-      const resp = await fetch(`${API_BASE}/search/plan/chat?session_id=${sessionId}`);
+      await apiFetch(`${API_BASE}/search/sessions/${sessionId}/activate`, { method: 'POST' });
+      const resp = await apiFetch(`${API_BASE}/search/plan/chat?session_id=${sessionId}`);
       const data = await resp.json();
       setActiveSessionId(sessionId);
       setChatMessages(data.history || []);
@@ -556,7 +562,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
   const deleteSession = async (sessionId, e) => {
     e.stopPropagation();
     try {
-      await fetch(`${API_BASE}/search/sessions/${sessionId}`, { method: 'DELETE' });
+      await apiFetch(`${API_BASE}/search/sessions/${sessionId}`, { method: 'DELETE' });
       if (sessionId === activeSessionId) {
         await fetchDraftPlan(true);
       }
@@ -568,7 +574,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
 
   const fetchPendingPreference = useCallback(async () => {
     try {
-      const resp = await fetch(`${API_BASE}/search/preferences/pending`);
+      const resp = await apiFetch(`${API_BASE}/search/preferences/pending`);
       if (!resp.ok) return;
       const data = await resp.json();
       setPendingPreference(data.suggestion || null);
@@ -582,7 +588,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
     setIsRespondingToPreference(true);
     try {
       const action = accept ? 'confirm' : 'reject';
-      await fetch(`${API_BASE}/search/preferences/${encodeURIComponent(pendingPreference.pattern_key)}/${action}`, {
+      await apiFetch(`${API_BASE}/search/preferences/${encodeURIComponent(pendingPreference.pattern_key)}/${action}`, {
         method: 'POST',
       });
       setPendingPreference(null);
@@ -597,7 +603,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
     fetchDraftPlan(true);
     fetchSessions();
     fetchPendingPreference();
-    fetch(`${API_BASE}/search/providers`)
+    apiFetch(`${API_BASE}/search/providers`)
       .then((r) => r.json())
       .then((d) => setAvailableProviders(d.providers || []))
       .catch(() => {});
@@ -658,7 +664,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
     setIsApplyingKeywords(true);
     setKeywordApplyMsg(null);
     try {
-      const resp = await fetch(`${API_BASE}/search/plan/keywords`, {
+      const resp = await apiFetch(`${API_BASE}/search/plan/keywords`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ required, preferred }),
@@ -679,7 +685,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
     setIsBroadening(true);
     setBroadenMsg(null);
     try {
-      const resp = await fetch(`${API_BASE}/search/plan/broaden`, { method: 'POST' });
+      const resp = await apiFetch(`${API_BASE}/search/plan/broaden`, { method: 'POST' });
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.detail?.message || data.detail || 'Failed to broaden search.');
 
@@ -714,6 +720,19 @@ export default function SearchAgentView({ onCompileCandidate }) {
     ? [...new Set([...(draftPlan.keywords.required || []), ...(draftPlan.keywords.preferred || [])])]
     : [];
 
+  // The Draft panel and the Applied panel below it render the same
+  // keywords/JSON shape — only show the Draft one while it's actually
+  // unapplied (or diverged from what's live), so a freshly-applied plan
+  // doesn't render twice in a row.
+  const planSignature = (plan) => {
+    if (!plan) return null;
+    const clean = {};
+    Object.keys(plan).sort().forEach((k) => { if (!k.startsWith('_')) clean[k] = plan[k]; });
+    return JSON.stringify(clean);
+  };
+  const hasPendingDraftChanges =
+    !!draftPlan && planSignature(draftPlan) !== planSignature(searchResponse?.search_plan);
+
   return (
     <div>
       <div className="hero-section">
@@ -745,18 +764,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
                 key={s.id}
                 onClick={() => switchSession(s.id)}
                 title={s.title}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: 6,
-                  padding: '7px 10px',
-                  borderRadius: 7,
-                  fontSize: '0.78rem',
-                  cursor: 'pointer',
-                  background: s.id === activeSessionId ? 'rgba(79, 70, 229, 0.22)' : 'rgba(255,255,255,0.04)',
-                  border: `1px solid ${s.id === activeSessionId ? 'rgba(79, 70, 229, 0.45)' : 'rgba(255,255,255,0.08)'}`,
-                }}
+                className={`session-chip${s.id === activeSessionId ? ' active' : ''}`}
               >
                 <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {s.title}
@@ -765,7 +773,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
                   <span
                     onClick={(e) => deleteSession(s.id, e)}
                     title="Delete this chat"
-                    style={{ opacity: 0.5, cursor: 'pointer', fontSize: '0.9rem', lineHeight: 1, flexShrink: 0 }}
+                    className="session-chip-delete"
                   >
                     ×
                   </span>
@@ -777,7 +785,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
 
       <div className="card" style={{ flex: 1, minWidth: 0 }}>
         <h2 className="card-title">
-          <IconSearch size={22} color="var(--primary)" />
+          <IconSearch size={22} color="var(--primary-purple)" />
           <span>Requirement Chat</span>
         </h2>
         <p className="card-subtitle">
@@ -839,19 +847,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
         {/* Chat thread */}
         <div
           ref={chatThreadRef}
-          className="chat-thread"
-          style={{
-            maxHeight: 360,
-            overflowY: 'auto',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 10,
-            padding: chatMessages.length ? '14px' : '0',
-            border: chatMessages.length ? '1px solid rgba(255,255,255,0.08)' : 'none',
-            borderRadius: 8,
-            background: chatMessages.length ? 'rgba(255,255,255,0.02)' : 'transparent',
-            marginBottom: 14,
-          }}
+          className={`chat-thread${chatMessages.length ? ' has-messages' : ''}`}
         >
           {isChatRestoring ? (
             <p className="card-subtitle" style={{ margin: 0 }}>Restoring chat...</p>
@@ -861,25 +857,13 @@ export default function SearchAgentView({ onCompileCandidate }) {
             </p>
           ) : (
             chatMessages.map((m, i) => (
-              <div
-                key={i}
-                style={{
-                  alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start',
-                  maxWidth: '85%',
-                  background: m.role === 'user' ? 'rgba(79, 70, 229, 0.18)' : 'rgba(255,255,255,0.05)',
-                  border: `1px solid ${m.role === 'user' ? 'rgba(79, 70, 229, 0.35)' : 'rgba(255,255,255,0.1)'}`,
-                  borderRadius: 10,
-                  padding: '8px 12px',
-                  fontSize: '0.88rem',
-                  whiteSpace: 'pre-wrap',
-                }}
-              >
-                <div style={{ fontSize: '0.68rem', fontWeight: 700, opacity: 0.6, marginBottom: 3 }}>
+              <div key={i} className={`chat-bubble ${m.role === 'user' ? 'user' : 'assistant'}`}>
+                <div className="chat-bubble-role">
                   {m.role === 'user' ? 'You' : 'Assistant'}
                 </div>
                 {m.content}
                 {m.role === 'assistant' && m.model && (
-                  <div style={{ fontSize: '0.68rem', color: 'var(--text-secondary, #888)', opacity: 0.7, marginTop: 5 }}>
+                  <div className="chat-bubble-model">
                     {m.model}
                   </div>
                 )}
@@ -887,8 +871,11 @@ export default function SearchAgentView({ onCompileCandidate }) {
             ))
           )}
           {isChatSending && (
-            <div style={{ alignSelf: 'flex-start', fontSize: '0.8rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span className="spinner-light-sm"></span> Thinking...
+            <div className="chat-thinking-indicator">
+              <span className="bounce-dots">
+                <span></span><span></span><span></span>
+              </span>
+              Thinking...
             </div>
           )}
         </div>
@@ -924,14 +911,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
                   value={selectedProvider}
                   onChange={(e) => setSelectedProvider(e.target.value)}
                   title="Pin this chat to one specific model (no fallback to a different provider), or leave on Auto"
-                  style={{
-                    padding: '6px 10px',
-                    borderRadius: 6,
-                    fontSize: '0.78rem',
-                    background: 'rgba(255,255,255,0.04)',
-                    border: '1px solid rgba(255,255,255,0.12)',
-                    color: 'inherit',
-                  }}
+                  className="model-picker-select"
                 >
                   <option value="">Auto (priority order)</option>
                   {availableProviders.map((p) => (
@@ -1046,7 +1026,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
           >
             {isChatSending ? (
               <>
-                <div className="spinner"></div>
+                <div className="spinner-light"></div>
                 <span>Sending...</span>
               </>
             ) : (
@@ -1058,15 +1038,10 @@ export default function SearchAgentView({ onCompileCandidate }) {
           </button>
         </form>
 
-        {/* Draft plan keyword pills + Apply-to-Resdex */}
-        {draftPlan && (
-          <div style={{
-            marginTop: 20,
-            background: 'rgba(255,255,255,0.03)',
-            border: '1px solid rgba(255,255,255,0.08)',
-            padding: '14px',
-            borderRadius: '8px',
-          }}>
+        {/* Draft plan keyword pills + Apply-to-Resdex — hidden once applied
+            and unchanged (see Applied SearchPlan panel below instead) */}
+        {draftPlan && hasPendingDraftChanges && (
+          <div className="subtle-panel" style={{ marginTop: 20 }}>
             <div style={{ fontWeight: 700, marginBottom: 4 }}>Draft keywords</div>
             <p className="card-subtitle" style={{ marginTop: 0, marginBottom: 10 }}>
               Star the keywords that must be mandatory on Resdex. Unstarred ones apply as optional. This only
@@ -1082,18 +1057,10 @@ export default function SearchAgentView({ onCompileCandidate }) {
                       key={kw}
                       type="button"
                       onClick={() => toggleDraftMandatoryKeyword(kw)}
-                      className="skill-pill"
-                      style={{
-                        cursor: 'pointer',
-                        border: isMandatory ? '1px solid #F59E0B' : '1px solid rgba(255,255,255,0.15)',
-                        background: isMandatory ? 'rgba(245, 158, 11, 0.12)' : 'transparent',
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: 5,
-                      }}
+                      className={`skill-pill${isMandatory ? ' mandatory' : ''}`}
                       title={isMandatory ? 'Mandatory — click to make optional' : 'Optional — click to make mandatory'}
                     >
-                      <span>{isMandatory ? '★' : '☆'}</span>
+                      <span className="pill-star">{isMandatory ? '★' : '☆'}</span>
                       {kw}
                     </button>
                   );
@@ -1143,7 +1110,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
               >
                 {isApplying ? (
                   <>
-                    <div className="spinner"></div>
+                    <div className="spinner-light"></div>
                     <span>Applying...</span>
                   </>
                 ) : (
@@ -1190,7 +1157,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
       {searchResponse && (
         <div className="card">
           <h3 className="card-title">
-            <IconClipboard size={20} color="var(--primary)" />
+            <IconClipboard size={20} color="var(--primary-purple)" />
             <span>Applied SearchPlan & Execution Status</span>
             <span style={{
               fontSize: '0.75rem',
@@ -1213,10 +1180,10 @@ export default function SearchAgentView({ onCompileCandidate }) {
               borderRadius: '8px',
               marginBottom: '16px'
             }}>
-              <div style={{ fontWeight: 700, color: 'var(--primary)', marginBottom: '4px' }}>
+              <div style={{ fontWeight: 700, color: 'var(--primary-purple)', marginBottom: '4px' }}>
                 Execution Report
               </div>
-              <div style={{ fontSize: '0.88rem', color: 'var(--text-secondary)' }}>
+              <div style={{ fontSize: '0.88rem', color: 'var(--text-muted)' }}>
                 {searchResponse.execution.message}
               </div>
               {searchResponse.execution.fields_interacted?.length > 0 && (
@@ -1236,13 +1203,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
           {searchResponse.search_plan.keywords &&
             (searchResponse.search_plan.keywords.required?.length > 0 ||
               searchResponse.search_plan.keywords.preferred?.length > 0) && (
-            <div style={{
-              background: 'rgba(255,255,255,0.03)',
-              border: '1px solid rgba(255,255,255,0.08)',
-              padding: '14px',
-              borderRadius: '8px',
-              marginBottom: '16px',
-            }}>
+            <div className="subtle-panel" style={{ marginBottom: '16px' }}>
               <div style={{ fontWeight: 700, marginBottom: 4 }}>Mandatory keywords</div>
               <p className="card-subtitle" style={{ marginTop: 0, marginBottom: 10 }}>
                 Star the keywords Resdex must require. Unstarred ones stay in the search as optional. Changing this
@@ -1259,18 +1220,10 @@ export default function SearchAgentView({ onCompileCandidate }) {
                       key={kw}
                       type="button"
                       onClick={() => toggleMandatoryKeyword(kw)}
-                      className="skill-pill"
-                      style={{
-                        cursor: 'pointer',
-                        border: isMandatory ? '1px solid #F59E0B' : '1px solid rgba(255,255,255,0.15)',
-                        background: isMandatory ? 'rgba(245, 158, 11, 0.12)' : 'transparent',
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: 5,
-                      }}
+                      className={`skill-pill${isMandatory ? ' mandatory' : ''}`}
                       title={isMandatory ? 'Mandatory — click to make optional' : 'Optional — click to make mandatory'}
                     >
-                      <span>{isMandatory ? '★' : '☆'}</span>
+                      <span className="pill-star">{isMandatory ? '★' : '☆'}</span>
                       {kw}
                     </button>
                   );
@@ -1304,9 +1257,9 @@ export default function SearchAgentView({ onCompileCandidate }) {
       {isPollingResults && (
         <div className="card">
           <h3 className="card-title">
-            <IconSearch size={20} color="var(--primary)" />
+            <IconSearch size={20} color="var(--primary-purple)" />
             <span>Candidates Found on Resdex</span>
-            {isPollingResults && <span className="spinner-light-sm" style={{ marginLeft: 4 }}></span>}
+            {isPollingResults && <span className="spinner-dark-sm" style={{ marginLeft: 4 }}></span>}
           </h3>
 
           {!candidateResults || candidateResults.count === 0 ? (
@@ -1337,15 +1290,11 @@ export default function SearchAgentView({ onCompileCandidate }) {
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                 {candidateResults.candidates.map((c, i) => (
-                  <div key={i} style={{
-                    border: '1px solid rgba(255,255,255,0.08)',
-                    borderRadius: 8,
-                    padding: 14,
-                  }}>
+                  <div key={i} className="candidate-result-card">
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8 }}>
                       <div>
                         <div style={{ fontWeight: 700 }}>{c.name}</div>
-                        <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
+                        <div style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>
                           {[c.title, c.company, c.location].filter(Boolean).join(' • ') || 'No additional details extracted'}
                         </div>
                       </div>
@@ -1355,18 +1304,18 @@ export default function SearchAgentView({ onCompileCandidate }) {
                             <div style={{ fontWeight: 800, fontSize: '1.1rem', color: c.match_score >= 70 ? '#10B981' : c.match_score >= 40 ? '#F59E0B' : '#F43F5E' }}>
                               {c.match_score}%
                             </div>
-                            <div style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>
+                            <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
                               {c.data_completeness}% data completeness
                             </div>
                           </>
                         ) : (
-                          <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Not yet scored</span>
+                          <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Not yet scored</span>
                         )}
                       </div>
                     </div>
 
                     {(c.experience || c.education || c.notice_period || c.profile_url) && (
-                      <div style={{ marginTop: 8, fontSize: '0.8rem', color: 'var(--text-secondary)', display: 'flex', flexWrap: 'wrap', gap: '4px 14px' }}>
+                      <div style={{ marginTop: 8, fontSize: '0.8rem', color: 'var(--text-muted)', display: 'flex', flexWrap: 'wrap', gap: '4px 14px' }}>
                         {c.experience && <span><strong>Experience:</strong> {c.experience}</span>}
                         {c.education && <span><strong>Education:</strong> {c.education}</span>}
                         {c.notice_period && <span><strong>Notice:</strong> {c.notice_period}</span>}
@@ -1376,7 +1325,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
 
                     {c.skills?.length > 0 && (
                       <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
-                        <strong style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Skills on profile:</strong>
+                        <strong style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Skills on profile:</strong>
                         {c.skills.map((sk, si) => (
                           <span key={`s-${si}`} className="skill-pill" style={{ fontSize: '0.72rem' }}>{sk}</span>
                         ))}
@@ -1387,9 +1336,9 @@ export default function SearchAgentView({ onCompileCandidate }) {
                       <div style={{
                         marginTop: 8,
                         fontSize: '0.8rem',
-                        color: 'var(--text-secondary)',
+                        color: 'var(--text-muted)',
                         fontStyle: 'italic',
-                        borderLeft: '2px solid var(--primary)',
+                        borderLeft: '2px solid var(--primary-purple)',
                         paddingLeft: 8,
                       }}>
                         {c.ai_summary}
@@ -1405,7 +1354,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
                           <span key={`x-${mi}`} className="skill-pill" style={{ fontSize: '0.72rem', color: '#F43F5E' }}>✗ {m}</span>
                         ))}
                         {c.unavailable_info?.map((u, ui) => (
-                          <span key={`u-${ui}`} className="skill-pill" style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }} title="Requested in SearchPlan but no data was extracted for this candidate">? {u}</span>
+                          <span key={`u-${ui}`} className="skill-pill" style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }} title="Requested in SearchPlan but no data was extracted for this candidate">? {u}</span>
                         ))}
                       </div>
                     )}

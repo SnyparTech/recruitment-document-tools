@@ -1,3 +1,4 @@
+import asyncio
 import io
 import logging
 import os
@@ -10,6 +11,7 @@ import fitz  # PyMuPDF
 import docx
 
 from app.core.device_auth import verify_device
+from app.core.web_auth import verify_website_session
 
 from app.schemas.requirement import (
     CandidateSearchRequest,
@@ -28,7 +30,13 @@ from app.services import preference_service
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/search", tags=["Candidate Search"])
+# Website-facing endpoints — every route on this router requires a logged-in
+# website session (see core/web_auth.py). The 3 extension-facing routes the
+# Chrome extension itself calls live on device_router below instead, gated
+# by verify_device (X-Device-Id/X-Device-Token), since the extension has no
+# browser cookie to present.
+router = APIRouter(prefix="/search", tags=["Candidate Search"], dependencies=[Depends(verify_website_session)])
+device_router = APIRouter(prefix="/search", tags=["Candidate Search"])
 
 requirement_service = RequirementService()
 
@@ -39,8 +47,10 @@ MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
 # NOTE: same single-tenant, process-global storage pattern documented below —
 # known limitation (see audit P0/P1 follow-up on session isolation), not
 # addressed in this change. What IS addressed: these globals are now backed
-# by a JSON file (state_persistence) so a backend restart no longer silently
-# loses the recruiter's in-progress plan/candidates.
+# by MongoDB (state_persistence) so a backend restart OR a Render redeploy
+# (which wipes the container's local disk entirely — the actual cause of a
+# real "my chat sessions disappeared" report) no longer loses the
+# recruiter's in-progress plan/candidates/chat sessions.
 _persisted = state_persistence.load_state()
 _latest_search_plan = _persisted.get("search_plan")
 _latest_plan_timestamp = _persisted.get("plan_timestamp") or 0.0
@@ -59,8 +69,14 @@ _latest_search_id: Optional[str] = _persisted.get("search_id")
 _session_store = ChatSessionStore()
 
 
-def _persist_now() -> None:
-    state_persistence.save_state(
+async def _persist_now() -> None:
+    # Runs the blocking MongoDB write on a thread so a slow/unreachable
+    # Atlas connection can't stall the event loop for every other concurrent
+    # request — same reasoning as preference_service.py's dedicated
+    # short-timeout client, applied here via asyncio.to_thread instead since
+    # this module intentionally stays synchronous (see its own docstring).
+    await asyncio.to_thread(
+        state_persistence.save_state,
         search_plan=_latest_search_plan,
         plan_timestamp=_latest_plan_timestamp,
         candidates=[c.model_dump() for c in _latest_candidates],
@@ -71,7 +87,7 @@ def _persist_now() -> None:
     )
 
 
-@router.get(
+@device_router.get(
     "/active-plan",
     summary="Get active SearchPlan for Naukri Resdex browser auto-fill",
     dependencies=[Depends(verify_device)],
@@ -135,7 +151,7 @@ async def search_candidates(
     plan_dict["_submit_search"] = request.submit_search
     _latest_search_plan = plan_dict
     _latest_plan_timestamp = time.time()
-    _persist_now()
+    await _persist_now()
 
     msg = "SearchPlan generated. Extension will auto-fill the form."
     if request.submit_search:
@@ -193,7 +209,7 @@ async def store_search_plan(
     plan_dict["_submit_search"] = request.submit_search
     _latest_search_plan = plan_dict
     _latest_plan_timestamp = time.time()
-    _persist_now()
+    await _persist_now()
 
     if request.session_id:
         session = _session_store.get(request.session_id)
@@ -221,7 +237,7 @@ async def store_search_plan(
     )
 
 
-@router.post(
+@device_router.post(
     "/results",
     status_code=status.HTTP_200_OK,
     summary="Submit candidates scraped from the Resdex results page",
@@ -255,7 +271,7 @@ async def submit_candidate_results(request: SubmitCandidateResultsRequest):
         )
 
     if not request.candidates:
-        _persist_now()  # search_id/reset above may have changed state even with an empty batch
+        await _persist_now()  # search_id/reset above may have changed state even with an empty batch
         return {
             "status": "success",
             "message": "No candidates in this batch (nothing to merge).",
@@ -264,7 +280,7 @@ async def submit_candidate_results(request: SubmitCandidateResultsRequest):
 
     _latest_candidates = merge_candidates(_latest_candidates, request.candidates)
     _latest_candidates_timestamp = time.time()
-    _persist_now()
+    await _persist_now()
 
     return {
         "status": "success",
@@ -304,7 +320,7 @@ async def clear_candidate_results():
     global _latest_candidates, _latest_candidates_timestamp
     _latest_candidates = []
     _latest_candidates_timestamp = 0.0
-    _persist_now()
+    await _persist_now()
     return {"status": "success", "message": "Candidate results cleared."}
 
 
@@ -342,7 +358,7 @@ async def update_plan_keyword_mandatory(request: UpdateKeywordMandatoryRequest):
     _latest_search_plan["_submit_search"] = True
     _latest_search_plan["_keyword_sync_only"] = True
     _latest_plan_timestamp = time.time()
-    _persist_now()
+    await _persist_now()
 
     return {
         "status": "success",
@@ -386,7 +402,7 @@ async def broaden_search_plan():
     _latest_search_plan["_submit_search"] = True
     _latest_search_plan["_broaden_search"] = True
     _latest_plan_timestamp = time.time()
-    _persist_now()
+    await _persist_now()
 
     return {
         "status": "success",
@@ -400,7 +416,7 @@ class LiveResdexKeywordsRequest(BaseModel):
     preferred: List[str] = Field(default_factory=list, description="Currently present, non-starred keyword chips in Resdex")
 
 
-@router.post(
+@device_router.post(
     "/plan/live-keywords",
     status_code=status.HTTP_200_OK,
     summary="Extension reports the keywords currently live in the Resdex form, so the website draft stays in sync",
@@ -427,7 +443,7 @@ async def report_live_keywords(request: LiveResdexKeywordsRequest):
     kw["required"] = request.required
     kw["preferred"] = request.preferred
     active["draft_plan"]["keywords"] = kw
-    _session_store.update_session(active["id"], active["draft_plan"], active["chat_history"], _persist_now)
+    await _session_store.update_session(active["id"], active["draft_plan"], active["chat_history"], _persist_now)
 
     return {"status": "success", "synced": True, "timestamp": active["draft_timestamp"]}
 
@@ -460,13 +476,13 @@ async def list_sessions():
 
 @router.post("/sessions", summary="Start a new chat session ('New Chat') without losing earlier ones")
 async def create_session():
-    session = _session_store.create_session(_persist_now)
+    session = await _session_store.create_session(_persist_now)
     return {"status": "success", "session": session}
 
 
 @router.post("/sessions/{session_id}/activate", summary="Switch the active chat session")
 async def activate_session(session_id: str):
-    session = _session_store.set_active(session_id, _persist_now)
+    session = await _session_store.set_active(session_id, _persist_now)
     if session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No session with id {session_id}.")
     return {"status": "success", "session": session}
@@ -474,7 +490,7 @@ async def activate_session(session_id: str):
 
 @router.delete("/sessions/{session_id}", summary="Delete a chat session")
 async def delete_session(session_id: str):
-    deleted = _session_store.delete_session(session_id, _persist_now)
+    deleted = await _session_store.delete_session(session_id, _persist_now)
     if not deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No session with id {session_id}.")
     return {"status": "success", "active_session_id": _session_store.active_session_id}
@@ -555,7 +571,7 @@ async def chat_edit_plan(request: ChatEditRequest, session_id: Optional[str] = N
         {"role": "user", "content": request.message},
         {"role": "assistant", "content": reply, "model": model_label},
     ]
-    updated = _session_store.update_session(session["id"], updated_plan.model_dump(), new_history, _persist_now)
+    updated = await _session_store.update_session(session["id"], updated_plan.model_dump(), new_history, _persist_now)
 
     return {
         "status": "success",
@@ -574,7 +590,7 @@ async def clear_chat_state(session_id: Optional[str] = None):
     session = _session_store.get(session_id) if session_id else _session_store.get_active()
     if session is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No session with id {session_id}.")
-    _session_store.update_session(session["id"], None, [], _persist_now)
+    await _session_store.update_session(session["id"], None, [], _persist_now)
     return {"status": "success", "message": "Chat and draft plan cleared."}
 
 

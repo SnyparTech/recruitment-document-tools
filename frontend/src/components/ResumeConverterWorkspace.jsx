@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { getApiBase } from '../config';
+import { getApiBase, apiFetch } from '../config';
 import {
   IconDocument,
   IconCheck,
@@ -93,7 +93,7 @@ export default function ResumeConverterWorkspace() {
       // Step 1 -> Step 2 transition
       setCurrentStep(2); // Validating file
 
-      const res = await fetch(`${apiBase}/api/resume/upload`, {
+      const res = await apiFetch(`${apiBase}/api/resume/upload`, {
         method: 'POST',
         body: formData,
       });
@@ -140,7 +140,7 @@ export default function ResumeConverterWorkspace() {
       setCurrentStep(6);
 
       // Trigger conversion endpoint
-      const convertPromise = fetch(`${apiBase}/api/resume/convert`, {
+      const convertPromise = apiFetch(`${apiBase}/api/resume/convert`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ upload_id: uploadData.upload_id }),

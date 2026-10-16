@@ -1,10 +1,18 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { getApiBase } from '../config';
+import { getApiBase, apiFetch } from '../config';
 import DossierResultCard from './DossierResultCard';
 import ConvertedResumePreviewModal from './ConvertedResumePreviewModal';
-import { IconSparkles, IconCheck, IconEye } from '../components/Icons';
+import ResumeConverterWorkspace from '../components/ResumeConverterWorkspace';
+import { IconSparkles, IconCheck, IconEye, IconDocument } from '../components/Icons';
 
 export default function DossierUploadWorkspace({ initialCandidate, onBack }) {
+  // Lets this tab also host the standalone Resume Converter (LaTeX/DOCX +
+  // audit score) without a separate top-level nav entry — the dossier's own
+  // Resume slot already has a SCOPED AI-conversion flow feeding the dossier
+  // pipeline specifically; this is the fuller, standalone tool for when a
+  // recruiter just wants a converted resume file, not a full dossier.
+  const [viewMode, setViewMode] = useState('dossier'); // 'dossier' | 'converter'
+
   const [photo, setPhoto] = useState(null);
   const [photoPreview, setPhotoPreview] = useState(null);
   const [idProof, setIdProof] = useState(null);
@@ -104,7 +112,7 @@ export default function DossierUploadWorkspace({ initialCandidate, onBack }) {
 
     try {
       // 1. Upload to resume converter endpoint
-      const uploadRes = await fetch(`${API_BASE}/api/resume/upload`, {
+      const uploadRes = await apiFetch(`${API_BASE}/api/resume/upload`, {
         method: 'POST',
         body: formData,
       });
@@ -137,7 +145,7 @@ export default function DossierUploadWorkspace({ initialCandidate, onBack }) {
     setErrorMessage(null);
 
     try {
-      const convertRes = await fetch(`${API_BASE}/api/resume/convert`, {
+      const convertRes = await apiFetch(`${API_BASE}/api/resume/convert`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ upload_id: uploadId }),
@@ -151,7 +159,7 @@ export default function DossierUploadWorkspace({ initialCandidate, onBack }) {
       const convertData = await convertRes.json();
 
       // Fetch full preview details
-      const previewRes = await fetch(`${API_BASE}/api/resume/preview/${convertData.task_id}`);
+      const previewRes = await apiFetch(`${API_BASE}/api/resume/preview/${convertData.task_id}`);
       const previewData = previewRes.ok ? await previewRes.json() : convertData;
 
       const combinedData = {
@@ -182,7 +190,7 @@ export default function DossierUploadWorkspace({ initialCandidate, onBack }) {
     setErrorMessage(null);
 
     try {
-      const ocrRes = await fetch(`${API_BASE}/api/resume/ocr`, {
+      const ocrRes = await apiFetch(`${API_BASE}/api/resume/ocr`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ upload_id: ocrPrompt.uploadId }),
@@ -228,7 +236,7 @@ export default function DossierUploadWorkspace({ initialCandidate, onBack }) {
     setErrorMessage(null);
 
     try {
-      const convertRes = await fetch(`${API_BASE}/api/resume/convert`, {
+      const convertRes = await apiFetch(`${API_BASE}/api/resume/convert`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ upload_id: aiConversionData.upload_id }),
@@ -240,7 +248,7 @@ export default function DossierUploadWorkspace({ initialCandidate, onBack }) {
       }
 
       const convertData = await convertRes.json();
-      const previewRes = await fetch(`${API_BASE}/api/resume/preview/${convertData.task_id}`);
+      const previewRes = await apiFetch(`${API_BASE}/api/resume/preview/${convertData.task_id}`);
       const previewData = previewRes.ok ? await previewRes.json() : convertData;
 
       setAiConversionData((prev) => ({
@@ -261,7 +269,7 @@ export default function DossierUploadWorkspace({ initialCandidate, onBack }) {
 
     setIsConfirming(true);
     try {
-      const docxRes = await fetch(`${API_BASE}/api/resume/download/${aiConversionData.task_id}/docx`);
+      const docxRes = await apiFetch(`${API_BASE}/api/resume/download/${aiConversionData.task_id}/docx`);
       if (!docxRes.ok) {
         throw new Error('Failed to download converted DOCX.');
       }
@@ -321,7 +329,7 @@ export default function DossierUploadWorkspace({ initialCandidate, onBack }) {
     if (recruiterNotes.trim()) formData.append('recruiter_notes', recruiterNotes.trim());
 
     try {
-      const response = await fetch(`${API_BASE}/dossier/compile`, {
+      const response = await apiFetch(`${API_BASE}/dossier/compile`, {
         method: 'POST',
         body: formData,
       });
@@ -355,6 +363,31 @@ export default function DossierUploadWorkspace({ initialCandidate, onBack }) {
 
   return (
     <div className="workspace-container">
+      {/* Mode toggle: full Dossier Compiler vs. standalone Resume Converter.
+          Both live under this one "Dossier Compiler" nav tab — no separate
+          top-level entry for the converter. */}
+      <div className="dossier-mode-toggle">
+        <button
+          type="button"
+          className={`mode-toggle-btn ${viewMode === 'dossier' ? 'active' : ''}`}
+          onClick={() => setViewMode('dossier')}
+        >
+          <IconSparkles size={15} />
+          <span>Compile Full Dossier</span>
+        </button>
+        <button
+          type="button"
+          className={`mode-toggle-btn ${viewMode === 'converter' ? 'active' : ''}`}
+          onClick={() => setViewMode('converter')}
+        >
+          <IconDocument size={15} />
+          <span>Just Convert a Resume</span>
+        </button>
+      </div>
+
+      {viewMode === 'converter' ? (
+        <ResumeConverterWorkspace />
+      ) : (
       <div className="workspace-card">
         {/* Top Bar: Back link + 3-step wizard */}
         <div className="workspace-top-bar">
@@ -934,17 +967,20 @@ export default function DossierUploadWorkspace({ initialCandidate, onBack }) {
           </>
         )}
       </div>
+      )}
 
-      {/* AI Converted Resume Preview & Confirmation Modal */}
-      <ConvertedResumePreviewModal
-        isOpen={showAiPreviewModal}
-        conversionData={aiConversionData}
-        isRegenerating={isRegenerating}
-        isConfirming={isConfirming}
-        onConfirm={handleConfirmAiConversion}
-        onRegenerate={handleRegenerateAiConversion}
-        onCancel={handleCancelAiConversion}
-      />
+      {/* AI Converted Resume Preview & Confirmation Modal — dossier mode only */}
+      {viewMode === 'dossier' && (
+        <ConvertedResumePreviewModal
+          isOpen={showAiPreviewModal}
+          conversionData={aiConversionData}
+          isRegenerating={isRegenerating}
+          isConfirming={isConfirming}
+          onConfirm={handleConfirmAiConversion}
+          onRegenerate={handleRegenerateAiConversion}
+          onCancel={handleCancelAiConversion}
+        />
+      )}
 
       {/* Scanned/Image Resume -> OCR Decision Modal */}
       {ocrPrompt && (

@@ -14,17 +14,25 @@ async function getDeviceId() {
   return generated;
 }
 
+async function getDeviceToken() {
+  const stored = await chrome.storage.local.get("snypar_device_token");
+  return stored.snypar_device_token || null;
+}
+
 async function checkBackendStatus() {
   const dot = document.getElementById("dot");
   const text = document.getElementById("status-text");
   const authBox = document.getElementById("device-auth-box");
   const deviceId = await getDeviceId();
+  const deviceToken = await getDeviceToken();
+  const headers = { "X-Device-Id": deviceId };
+  if (deviceToken) headers["X-Device-Token"] = deviceToken;
   let connected = false;
   let unauthorized = false;
 
   for (const base of BACKEND_BASES) {
     try {
-      const res = await fetch(base + "/search/active-plan", { headers: { "X-Device-Id": deviceId } });
+      const res = await fetch(base + "/search/active-plan", { headers });
       if (res.status === 403) {
         unauthorized = true;
         connected = true;
@@ -45,77 +53,41 @@ async function checkBackendStatus() {
     text.innerText = "Server Offline";
   } else if (unauthorized) {
     dot.className = "dot offline";
-    text.innerText = "Device Not Authorized";
+    text.innerText = "Device Not Paired";
     authBox.className = "visible";
   }
 }
 
-document.getElementById("send-otp-btn").addEventListener("click", async () => {
+document.getElementById("pair-btn").addEventListener("click", async () => {
   const msg = document.getElementById("device-auth-msg");
-  const email = document.getElementById("device-email-input").value.trim();
-  if (!email) {
+  const code = document.getElementById("pairing-code-input").value.trim();
+  if (!code) {
     msg.className = "error";
-    msg.innerText = "Enter your work email.";
+    msg.innerText = "Enter the pairing code from the website.";
     return;
   }
   const deviceId = await getDeviceId();
   msg.className = "";
-  msg.innerText = "Sending code...";
+  msg.innerText = "Pairing...";
 
   for (const base of BACKEND_BASES) {
     try {
-      const res = await fetch(base + "/auth/request-device-otp", {
+      const res = await fetch(base + "/auth/pair-device", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, device_id: deviceId }),
+        body: JSON.stringify({ code, device_id: deviceId }),
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
+        await chrome.storage.local.set({ snypar_device_token: data.device_token });
         msg.className = "success";
-        msg.innerText = "Code sent. Check your inbox.";
-        document.getElementById("device-otp-input").style.display = "block";
-        document.getElementById("activate-btn").style.display = "block";
-        return;
-      }
-      msg.className = "error";
-      msg.innerText = (data && data.detail) || "Could not send code.";
-      return;
-    } catch (e) {}
-  }
-  msg.className = "error";
-  msg.innerText = "Could not reach the server.";
-});
-
-document.getElementById("activate-btn").addEventListener("click", async () => {
-  const msg = document.getElementById("device-auth-msg");
-  const email = document.getElementById("device-email-input").value.trim();
-  const otp = document.getElementById("device-otp-input").value.trim();
-  if (!otp) {
-    msg.className = "error";
-    msg.innerText = "Enter the code sent to your email.";
-    return;
-  }
-  const deviceId = await getDeviceId();
-  msg.className = "";
-  msg.innerText = "Activating...";
-
-  for (const base of BACKEND_BASES) {
-    try {
-      const res = await fetch(base + "/auth/register-device", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, device_id: deviceId, otp }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok) {
-        msg.className = "success";
-        msg.innerText = "Device activated. Reopen this popup.";
+        msg.innerText = "Device paired. Reopen this popup.";
         document.getElementById("device-auth-box").className = "";
         checkBackendStatus();
         return;
       }
       msg.className = "error";
-      msg.innerText = (data && data.detail) || "Activation failed.";
+      msg.innerText = (data && data.detail) || "Pairing failed.";
       return;
     } catch (e) {}
   }

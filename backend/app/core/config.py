@@ -44,13 +44,14 @@ class Settings(BaseSettings):
     # Security, Isolation & DLP Configuration
     LOCAL_API_KEY: Optional[str] = None
 
-    # Device-lock for the Chrome extension: registration is gated by company
-    # email (must end @AUTHORIZED_EMAIL_DOMAIN), one device per email — see
-    # services/device_auth_service.py and POST /auth/register-device. OFF by
-    # default so deploying this doesn't instantly lock everyone out with zero
-    # devices registered — set DEVICE_AUTH_ENABLED=True in .env once you've
-    # registered your own device (or are ready to).
-    DEVICE_AUTH_ENABLED: bool = False
+    # Gates BOTH the website login (api/device_auth.py's /auth/login/*) and
+    # the extension device-pairing it feeds (core/device_auth.py's
+    # verify_device) — one switch, since a device can only ever be paired
+    # via a prior website login now. Email is gated to AUTHORIZED_EMAIL_DOMAIN.
+    # OFF by default so deploying this doesn't instantly lock everyone out
+    # before Resend/Mongo are configured — set AUTH_ENABLED=True in .env once
+    # ready.
+    AUTH_ENABLED: bool = False
     AUTHORIZED_EMAIL_DOMAIN: str = "snypartech.com"
 
     # Resend (https://resend.com) — sends the one-time OTP code used to

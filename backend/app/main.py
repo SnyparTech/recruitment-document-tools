@@ -17,6 +17,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.api.dossier import router as dossier_router
 from app.api.resume_converter import router as resume_converter_router
 from app.api.search import router as search_router
+from app.api.search import device_router as search_device_router
 from app.api.gmail import router as gmail_router
 from app.api.jobs import router as jobs_router
 from app.api.whatsapp import router as whatsapp_router
@@ -181,6 +182,7 @@ async def generic_exception_handler(request: Request, exc: Exception):
 # 5. Include API Routers
 # ------------------------------------------------------------------------------
 app.include_router(search_router)
+app.include_router(search_device_router)
 app.include_router(dossier_router)
 app.include_router(resume_converter_router)
 app.include_router(gmail_router)

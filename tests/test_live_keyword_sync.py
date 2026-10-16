@@ -7,6 +7,7 @@ and must never touch _latest_search_plan or trigger a re-apply-to-Resdex
 ACTIVE chat session's draft (see services/chat_session_service.py).
 """
 
+import asyncio
 import os
 import sys
 
@@ -19,19 +20,23 @@ from app.api import search as search_module
 client = TestClient(app)
 
 
+async def _noop_persist() -> None:
+    return None
+
+
 def _set_draft(keywords=None):
     active = search_module._session_store.get_active()
-    search_module._session_store.update_session(
+    asyncio.run(search_module._session_store.update_session(
         active["id"],
         {"keywords": keywords or {"required": [], "preferred": []}, "min_experience": None},
         active["chat_history"],
-        lambda: None,
-    )
+        _noop_persist,
+    ))
 
 
 def _clear_draft():
     active = search_module._session_store.get_active()
-    search_module._session_store.update_session(active["id"], None, [], lambda: None)
+    asyncio.run(search_module._session_store.update_session(active["id"], None, [], _noop_persist))
 
 
 def test_no_draft_yet_is_a_safe_no_op():

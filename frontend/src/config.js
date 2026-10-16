@@ -22,3 +22,10 @@ export const setApiBase = (url) => {
   const clean = (url || '').trim().replace(/\/+$/, '');
   localStorage.setItem('PROFILE_BOT_API_BASE', clean);
 };
+
+// Thin wrapper around fetch() that always sends the website session cookie
+// (see backend core/web_auth.py) — required because the frontend (Vercel)
+// and backend (Render) are different origins, and a cross-site request
+// without credentials: 'include' silently drops the cookie, not an error.
+export const apiFetch = (url, options = {}) =>
+  fetch(url, { ...options, credentials: 'include' });

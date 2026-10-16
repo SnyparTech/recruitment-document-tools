@@ -2,6 +2,7 @@
 Tests for multi-session requirement chat: POST/GET/DELETE /search/sessions,
 POST /search/sessions/{id}/activate, and session_id-scoped /search/plan/chat.
 """
+import asyncio
 import os
 import sys
 
@@ -14,10 +15,14 @@ from app.api import search as search_module
 client = TestClient(app)
 
 
+async def _noop_persist() -> None:
+    return None
+
+
 def _reset_to_one_empty_session():
     store = search_module._session_store
     for sid in list(store.sessions.keys()):
-        store.delete_session(sid, lambda: None)
+        asyncio.run(store.delete_session(sid, _noop_persist))
     # delete_session always leaves at least one empty session behind.
 
 

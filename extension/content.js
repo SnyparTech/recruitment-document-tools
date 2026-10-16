@@ -42,12 +42,12 @@ function isOnFormPage() {
   return !isOnResultsPage() && !isOnPreviewPage();
 }
 
-// Device lock: a random id generated once per install (chrome.storage.local
-// so it survives page reloads/navigations) and sent on every backend call.
-// The backend only enforces this if DEVICE_REGISTRATION_TOKENS is configured
-// server-side — until this device redeems a one-time token via the popup's
-// "Activate this device" field, the backend rejects it with 403. See
-// backend/app/core/device_auth.py.
+// Device identity: a random id generated once per install (chrome.storage.local
+// so it survives page reloads/navigations), sent on every backend call as
+// X-Device-Id. Pairing proof is the separate, long-lived X-Device-Token,
+// obtained once via a pairing code from a real website login (see popup.js's
+// "Pair this device" flow and backend/app/core/device_auth.py) — there is no
+// standalone email+OTP flow on the extension side anymore.
 let _cachedDeviceId = null;
 async function getDeviceId() {
   if (_cachedDeviceId) return _cachedDeviceId;
@@ -66,14 +66,31 @@ async function getDeviceId() {
   }
 }
 
-async function fetchFromBackend(path) {
+async function getDeviceToken() {
+  try {
+    const stored = await chrome.storage.local.get("snypar_device_token");
+    return stored.snypar_device_token || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function authHeaders() {
   const deviceId = await getDeviceId();
-  const headers = deviceId ? { "X-Device-Id": deviceId } : {};
+  const deviceToken = await getDeviceToken();
+  const headers = {};
+  if (deviceId) headers["X-Device-Id"] = deviceId;
+  if (deviceToken) headers["X-Device-Token"] = deviceToken;
+  return headers;
+}
+
+async function fetchFromBackend(path) {
+  const headers = await authHeaders();
   for (const base of BACKEND_BASE_URLS) {
     try {
       const res = await fetch(base + path, { headers });
       if (res.status === 403) {
-        console.warn("[Snypar Bot] This device is not authorized. Activate it from the extension popup.");
+        console.warn("[Snypar Bot] This device is not paired. Pair it from the extension popup.");
         return null;
       }
       if (res.ok) return await res.json();
@@ -83,9 +100,7 @@ async function fetchFromBackend(path) {
 }
 
 async function postToBackend(path, body) {
-  const deviceId = await getDeviceId();
-  const headers = { "Content-Type": "application/json" };
-  if (deviceId) headers["X-Device-Id"] = deviceId;
+  const headers = { "Content-Type": "application/json", ...(await authHeaders()) };
   for (const base of BACKEND_BASE_URLS) {
     try {
       const res = await fetch(base + path, {
@@ -94,7 +109,7 @@ async function postToBackend(path, body) {
         body: JSON.stringify(body),
       });
       if (res.status === 403) {
-        console.warn("[Snypar Bot] This device is not authorized. Activate it from the extension popup.");
+        console.warn("[Snypar Bot] This device is not paired. Pair it from the extension popup.");
         return null;
       }
       if (res.ok) return await res.json();

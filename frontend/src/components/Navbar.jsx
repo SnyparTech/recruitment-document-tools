@@ -1,11 +1,13 @@
 import React, { useState } from 'react';
 import { getApiBase, setApiBase } from '../config';
 import { IconTarget, IconUser, IconDocument, IconEdit, IconSparkles } from './Icons';
+import PairingCodeModal from './PairingCodeModal';
 
-export default function Navbar({ activeTab, setActiveTab }) {
+export default function Navbar({ activeTab, setActiveTab, authEmail, onLogout }) {
   const [currentBase, setCurrentBase] = useState(getApiBase());
   const [isEditing, setIsEditing] = useState(false);
   const [inputVal, setInputVal] = useState(currentBase);
+  const [showPairingModal, setShowPairingModal] = useState(false);
 
   const handleSave = () => {
     const clean = inputVal.trim();
@@ -61,8 +63,19 @@ export default function Navbar({ activeTab, setActiveTab }) {
         </button>
       </div>
 
-      {/* Right Side: Backend Connection & Edit */}
+      {/* Right Side: Account, Backend Connection & Edit */}
       <div className="nav-status-top">
+        {authEmail && (
+          <div className="nav-account-chip">
+            <span className="nav-account-email" title={authEmail}>{authEmail}</span>
+            <button type="button" className="btn-nav-pair" onClick={() => setShowPairingModal(true)}>
+              Pair Extension
+            </button>
+            <button type="button" className="btn-nav-logout" onClick={onLogout} title="Log out">
+              ⎋
+            </button>
+          </div>
+        )}
         <span className="status-dot-green"></span>
         {isEditing ? (
           <div className="nav-status-edit-box">
@@ -100,6 +113,8 @@ export default function Navbar({ activeTab, setActiveTab }) {
           </div>
         )}
       </div>
+
+      {showPairingModal && <PairingCodeModal onClose={() => setShowPairingModal(false)} />}
     </header>
   );
 }
