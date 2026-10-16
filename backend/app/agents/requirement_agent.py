@@ -26,6 +26,60 @@ GROQ_FALLBACK_MODELS = [
 ]
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 
+# Live quota snapshot per provider, for the chat UI's model picker (GET
+# /search/providers). Only Groq's API actually returns rate-limit headers
+# (x-ratelimit-*) — confirmed live against Gemini/OpenRouter/NVIDIA, none of
+# which expose anything like it. Rather than fake numbers for providers that
+# don't report real quota, this stays empty for them and the frontend simply
+# shows nothing — a missing stat is honest; a invented one isn't.
+_rate_limit_snapshots: Dict[str, Dict[str, Any]] = {}
+
+
+def _parse_groq_reset_duration(value: Optional[str]) -> Optional[float]:
+    """Groq's x-ratelimit-reset-* headers look like '2m59.56s', '56.5s', or
+    '547ms' — not a standard duration format, so no stdlib parser covers it."""
+    if not value:
+        return None
+    if value.endswith("ms"):
+        try:
+            return float(value[:-2]) / 1000
+        except ValueError:
+            return None
+    total, matched = 0.0, False
+    for amount, unit in re.findall(r"([\d.]+)(h|m|s)", value):
+        matched = True
+        total += float(amount) * {"h": 3600, "m": 60, "s": 1}[unit]
+    return total if matched else None
+
+
+def _record_rate_limit_snapshot(provider_name: str, headers) -> None:
+    limit_req, remaining_req = headers.get("x-ratelimit-limit-requests"), headers.get("x-ratelimit-remaining-requests")
+    limit_tok, remaining_tok = headers.get("x-ratelimit-limit-tokens"), headers.get("x-ratelimit-remaining-tokens")
+    if limit_req is None and limit_tok is None:
+        return  # this provider doesn't report quota — leave any prior snapshot alone
+
+    now = time.time()
+    snapshot: Dict[str, Any] = {}
+    if limit_req is not None and remaining_req is not None:
+        reset_in = _parse_groq_reset_duration(headers.get("x-ratelimit-reset-requests"))
+        snapshot["requests"] = {
+            "limit": int(limit_req),
+            "remaining": int(remaining_req),
+            "reset_at": now + reset_in if reset_in is not None else None,
+        }
+    if limit_tok is not None and remaining_tok is not None:
+        reset_in = _parse_groq_reset_duration(headers.get("x-ratelimit-reset-tokens"))
+        snapshot["tokens"] = {
+            "limit": int(limit_tok),
+            "remaining": int(remaining_tok),
+            "reset_at": now + reset_in if reset_in is not None else None,
+        }
+    _rate_limit_snapshots[provider_name] = snapshot
+
+
+def get_rate_limit_snapshot(provider_name: str) -> Optional[Dict[str, Any]]:
+    return _rate_limit_snapshots.get(provider_name)
+
 
 def _chat_completion_with_retry(
     client: httpx.Client,
@@ -33,6 +87,7 @@ def _chat_completion_with_retry(
     headers: Dict[str, str],
     payload: Dict[str, Any],
     models_to_try: List[str],
+    provider_name: Optional[str] = None,
 ) -> Optional[str]:
     """
     Posts `payload` to `api_url`, trying each model in `models_to_try` in
@@ -45,6 +100,8 @@ def _chat_completion_with_retry(
         for attempt in range(2):
             try:
                 response = client.post(api_url, headers=headers, json=attempt_payload)
+                if provider_name:
+                    _record_rate_limit_snapshot(provider_name, response.headers)
             except Exception as exc:
                 # str(exc) can be empty for some exceptions (e.g.
                 # httpx.ReadTimeout has no message unless constructed with
@@ -357,10 +414,17 @@ class RequirementAgent:
             chain = [c for c in chain if c[0] == only_provider]
         return chain
 
-    def configured_providers(self) -> List[Dict[str, str]]:
+    def configured_providers(self) -> List[Dict[str, Any]]:
         """For GET /search/providers — which providers the chat's model
-        picker can actually offer (only ones with a configured key)."""
-        return [{"name": c[0], "model": c[3]} for c in self._provider_chain()]
+        picker can actually offer (only ones with a configured key).
+        rate_limit is None until that provider has actually been called at
+        least once this process lifetime (snapshot comes from live response
+        headers, not a guess) — and stays None forever for providers whose
+        API doesn't report quota at all (see get_rate_limit_snapshot)."""
+        return [
+            {"name": c[0], "model": c[3], "rate_limit": get_rate_limit_snapshot(c[0])}
+            for c in self._provider_chain()
+        ]
 
     def _call_llm_as_hr(self, requirement: str, preferred_provider: Optional[str] = None) -> Optional[SearchPlan]:
         """
@@ -453,7 +517,7 @@ Rules:
 
             try:
                 with httpx.Client(timeout=30.0) as client:
-                    content = _chat_completion_with_retry(client, api_url, headers, payload, models_to_try)
+                    content = _chat_completion_with_retry(client, api_url, headers, payload, models_to_try, provider_name)
                     if content is None:
                         logger.warning(f"Provider '{provider_name}' failed entirely; trying next provider in chain.")
                         continue
@@ -1602,7 +1666,7 @@ Rules:
 
             try:
                 with httpx.Client(timeout=30.0) as client:
-                    content = _chat_completion_with_retry(client, api_url, headers, payload, models_to_try)
+                    content = _chat_completion_with_retry(client, api_url, headers, payload, models_to_try, provider_name)
                     if content is None:
                         logger.warning(f"Chat-edit provider '{provider_name}' failed entirely; trying next provider in chain.")
                         continue

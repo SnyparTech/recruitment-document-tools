@@ -3732,3 +3732,61 @@ body {
   margin-top: 10px;
   text-align: center;
 }
+
+/* ==============================================================================
+   RATE LIMIT BADGES — live Groq quota (%+reset countdown) in the model
+   picker row. Only rendered for providers whose API actually reports quota
+   (see requirement_agent.py's get_rate_limit_snapshot) — no fake numbers.
+   ============================================================================== */
+.rate-limit-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.rate-limit-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  background: #F8FAFC;
+  border: 1px solid var(--border-subtle);
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.rate-limit-name {
+  font-weight: 700;
+  color: var(--text-main);
+  text-transform: capitalize;
+}
+
+.rate-limit-bar-track {
+  width: 44px;
+  height: 5px;
+  border-radius: var(--radius-full);
+  background: #E2E8F0;
+  overflow: hidden;
+}
+
+.rate-limit-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: var(--radius-full);
+  background: #10B981;
+  transition: width 0.3s ease;
+}
+
+.rate-limit-warn .rate-limit-bar-fill { background: #F59E0B; }
+.rate-limit-low .rate-limit-bar-fill { background: #EF4444; }
+
+.rate-limit-pct {
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.rate-limit-reset {
+  color: var(--text-light);
+}

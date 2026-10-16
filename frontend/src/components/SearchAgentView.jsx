@@ -54,6 +54,22 @@ export default function SearchAgentView({ onCompileCandidate }) {
   // provider only — see backend's RequirementAgent._provider_chain(only_provider=...).
   const [availableProviders, setAvailableProviders] = useState([]);
   const [selectedProvider, setSelectedProvider] = useState('');
+  // Ticks every second purely to re-render the rate-limit reset countdown
+  // below the model picker — the snapshot itself only updates from
+  // fetchProviders() polling, this just keeps the displayed "Xm Ys" live.
+  const [rateLimitClockTick, setRateLimitClockTick] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setRateLimitClockTick(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  const formatResetCountdown = (resetAtEpochSeconds) => {
+    if (!resetAtEpochSeconds) return null;
+    const remainingMs = resetAtEpochSeconds * 1000 - rateLimitClockTick;
+    if (remainingMs <= 0) return '0:00';
+    const totalSec = Math.ceil(remainingMs / 1000);
+    return `${Math.floor(totalSec / 60)}:${String(totalSec % 60).padStart(2, '0')}`;
+  };
 
   // Which draft keywords HR currently wants marked mandatory (starred) —
   // staged locally until Apply, seeded from the draft's keywords.required
@@ -602,20 +618,28 @@ export default function SearchAgentView({ onCompileCandidate }) {
     }
   };
 
-  useEffect(() => {
-    fetchDraftPlan(true);
-    fetchSessions();
-    fetchPendingPreference();
+  const fetchProviders = useCallback(() => {
     apiFetch(`${API_BASE}/search/providers`)
       .then((r) => r.json())
       .then((d) => setAvailableProviders(d.providers || []))
       .catch(() => {});
+  }, [API_BASE]);
+
+  useEffect(() => {
+    fetchDraftPlan(true);
+    fetchSessions();
+    fetchPendingPreference();
+    fetchProviders();
     const intervalId = setInterval(() => {
       if (!isChatSending && !isSwitchingSession) fetchDraftPlan(false);
       fetchPendingPreference();
+      // Rate-limit snapshots (shown in the model picker) only update after a
+      // real LLM call — re-poll so the %/timer reflects the latest headers,
+      // not just whatever was true when this component first mounted.
+      fetchProviders();
     }, RESULTS_POLL_INTERVAL_MS);
     return () => clearInterval(intervalId);
-  }, [fetchDraftPlan, fetchSessions, fetchPendingPreference, isChatSending, isSwitchingSession, API_BASE]);
+  }, [fetchDraftPlan, fetchSessions, fetchPendingPreference, fetchProviders, isChatSending, isSwitchingSession, API_BASE]);
 
   // Auto-scroll the chat thread to the latest message.
   useEffect(() => {
@@ -955,6 +979,27 @@ export default function SearchAgentView({ onCompileCandidate }) {
                 )}
               </div>
             </div>
+
+            {availableProviders.some((p) => p.rate_limit?.requests) && (
+              <div className="rate-limit-badges">
+                {availableProviders.filter((p) => p.rate_limit?.requests).map((p) => {
+                  const { limit, remaining, reset_at } = p.rate_limit.requests;
+                  const pct = Math.max(0, Math.min(100, Math.round((remaining / limit) * 100)));
+                  const level = pct > 50 ? 'ok' : pct > 20 ? 'warn' : 'low';
+                  const countdown = formatResetCountdown(reset_at);
+                  return (
+                    <div key={p.name} className={`rate-limit-badge rate-limit-${level}`} title={`${remaining} of ${limit} requests remaining`}>
+                      <span className="rate-limit-name">{p.name}</span>
+                      <span className="rate-limit-bar-track">
+                        <span className="rate-limit-bar-fill" style={{ width: `${pct}%` }} />
+                      </span>
+                      <span className="rate-limit-pct">{pct}%</span>
+                      {countdown && <span className="rate-limit-reset">resets in {countdown}</span>}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
 
             {uploadedDoc && (
               <div className="doc-requirement-banner">
