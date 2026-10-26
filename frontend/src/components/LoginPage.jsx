@@ -71,9 +71,7 @@ export default function LoginPage({ onLoggedIn }) {
     <div className="login-page-wrapper">
       <div className="login-card">
         <div className="login-brand">
-          <div className="brand-ring-icon" style={{ width: '44px', height: '44px' }}>
-            <div className="brand-ring-inner" style={{ width: '24px', height: '24px' }}></div>
-          </div>
+          <img src="/logo.png" alt="" className="brand-logo-img" width="44" height="44" />
           <span className="brand-name" style={{ fontSize: '1.3rem' }}>Profile Bot AI</span>
         </div>
 

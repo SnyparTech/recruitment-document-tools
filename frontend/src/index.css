@@ -150,22 +150,9 @@ body {
   gap: 12px;
 }
 
-.brand-ring-icon {
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
-  background: conic-gradient(from 180deg at 50% 50%, #4F46E5 0deg, #818CF8 180deg, #06B6D4 360deg);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  box-shadow: 0 4px 12px rgba(79, 70, 229, 0.25);
-}
-
-.brand-ring-inner {
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: #FFFFFF;
+.brand-logo-img {
+  object-fit: contain;
+  flex-shrink: 0;
 }
 
 .brand-name {
@@ -2124,14 +2111,9 @@ body {
     padding: 0 10px;
   }
 
-  .brand-ring-icon {
+  .brand-logo-img {
     width: 28px;
     height: 28px;
-  }
-
-  .brand-ring-inner {
-    width: 14px;
-    height: 14px;
   }
 
   .brand-name {

@@ -23,9 +23,7 @@ export default function Navbar({ activeTab, setActiveTab, authEmail, onLogout })
     <header className="navbar-top">
       {/* Brand */}
       <div className="nav-brand-top">
-        <div className="brand-ring-icon" style={{ width: '32px', height: '32px' }}>
-          <div className="brand-ring-inner" style={{ width: '18px', height: '18px' }}></div>
-        </div>
+        <img src="/logo.png" alt="" className="brand-logo-img" width="32" height="32" />
         <div>
           <span className="brand-name" style={{ fontSize: '1.15rem' }}>Profile Bot AI</span>
         </div>
