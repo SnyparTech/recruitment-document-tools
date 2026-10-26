@@ -43,6 +43,7 @@ class RequirementService:
         history: Optional[List[Dict[str, str]]] = None,
         preferred_active_in_default: Optional[str] = None,
         preferred_provider: Optional[str] = None,
+        known_facts: Optional[List[str]] = None,
     ) -> Tuple[SearchPlan, str, Optional[str]]:
         """
         Requirement chat: first turn (no current_plan) parses `message` as a
@@ -55,8 +56,11 @@ class RequirementService:
 
         preferred_provider: the recruiter's explicit model choice from the
         chat UI's model picker, or None for the normal priority chain.
+        known_facts: standing rules from services/knowledge_service.py,
+        applied to this call and possibly added to by it — after calling,
+        check self.agent._last_remembered_fact for a new one to persist.
         """
         logger.info(f"Chat edit: {message[:60]}...")
         return self.agent.generate_chat_reply(
-            current_plan, message, history, preferred_active_in_default, preferred_provider
+            current_plan, message, history, preferred_active_in_default, preferred_provider, known_facts
         )

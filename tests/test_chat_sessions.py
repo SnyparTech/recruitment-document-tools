@@ -11,8 +11,52 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 from fastapi.testclient import TestClient
 from app.main import app
 from app.api import search as search_module
+from app.services import knowledge_service
 
 client = TestClient(app)
+
+
+class _FakeKnowledgeCollection:
+    """In-memory double for knowledge_service's Motor collection — avoids
+    hitting the real MongoDB configured in .env for this integration test,
+    same reasoning as test_knowledge_service.py's FakeCollection."""
+
+    def __init__(self):
+        self.docs = {}
+
+    async def insert_one(self, doc):
+        from bson import ObjectId
+        oid = ObjectId()
+        self.docs[str(oid)] = {**doc, "_id": oid}
+        return type("R", (), {"inserted_id": oid})()
+
+    def find(self):
+        docs = sorted(self.docs.values(), key=lambda d: d["created_at"], reverse=True)
+
+        class _Cursor:
+            def sort(self, *a, **k):
+                return self
+
+            def limit(self, *a, **k):
+                return self
+
+            def __aiter__(self):
+                self._it = iter(docs)
+                return self
+
+            async def __anext__(self):
+                try:
+                    return next(self._it)
+                except StopIteration:
+                    raise StopAsyncIteration
+
+        return _Cursor()
+
+    async def delete_one(self, filter_):
+        key = str(filter_["_id"])
+        existed = key in self.docs
+        self.docs.pop(key, None)
+        return type("R", (), {"deleted_count": 1 if existed else 0})()
 
 
 async def _noop_persist() -> None:
@@ -101,6 +145,42 @@ def test_deleting_the_only_session_leaves_a_fresh_empty_one():
 
     assert len(search_module._session_store.sessions) == 1
     assert search_module._session_store.active_session_id != only_id
+
+
+def test_chat_edit_remembers_a_flagged_fact_and_it_shows_up_in_knowledge_base(monkeypatch):
+    """Simulates the LLM flagging a durable rule via generate_chat_reply's
+    known_facts/._last_remembered_fact contract (see requirement_agent.py's
+    "remember" JSON field) — without a real LLM call, same as the rest of
+    this file's rule-based-fallback tests."""
+    _reset_to_one_empty_session()
+    fake_knowledge_collection = _FakeKnowledgeCollection()
+    monkeypatch.setattr(knowledge_service, "get_collection", lambda: fake_knowledge_collection)
+    agent = search_module.requirement_service.agent
+
+    from app.schemas.search_plan import SearchPlan
+
+    def fake_generate_chat_reply(current_plan, message, history, preferred_active_in_default, preferred_provider, known_facts=None):
+        agent._last_remembered_fact = "Monthly salary x12 = annual CTC"
+        return SearchPlan(), "Got it, I'll remember that.", "fake-provider"
+
+    monkeypatch.setattr(agent, "generate_chat_reply", fake_generate_chat_reply)
+
+    res = client.post("/search/plan/chat", json={"message": "From now on, monthly salary x12 = annual CTC"})
+    assert res.status_code == 200
+    assert res.json()["remembered_fact"] == "Monthly salary x12 = annual CTC"
+
+    listed = client.get("/search/knowledge").json()["facts"]
+    assert any(f["text"] == "Monthly salary x12 = annual CTC" for f in listed)
+    fact_id = next(f["id"] for f in listed if f["text"] == "Monthly salary x12 = annual CTC")
+
+    deleted = client.delete(f"/search/knowledge/{fact_id}")
+    assert deleted.status_code == 200
+    assert not any(f["id"] == fact_id for f in client.get("/search/knowledge").json()["facts"])
+
+
+def test_delete_unknown_knowledge_fact_returns_404():
+    res = client.delete("/search/knowledge/000000000000000000000000")
+    assert res.status_code == 404
 
 
 def test_clear_chat_resets_session_in_place_without_removing_it_from_the_list():

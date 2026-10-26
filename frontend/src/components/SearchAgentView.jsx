@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { getApiBase, apiFetch } from '../config';
+import KnowledgeBaseModal from './KnowledgeBaseModal';
 import {
   IconSearch,
   IconBolt,
@@ -32,6 +33,8 @@ export default function SearchAgentView({ onCompileCandidate }) {
   const [chatInput, setChatInput] = useState('');
   const [isChatSending, setIsChatSending] = useState(false);
   const [chatError, setChatError] = useState(null);
+  const [rememberedBanner, setRememberedBanner] = useState(null);
+  const [showKnowledgeBase, setShowKnowledgeBase] = useState(false);
   const [draftPlan, setDraftPlan] = useState(null);
   const [isChatRestoring, setIsChatRestoring] = useState(true);
   const chatThreadRef = useRef(null);
@@ -364,6 +367,10 @@ export default function SearchAgentView({ onCompileCandidate }) {
 
       setChatMessages(data.history || []);
       setDraftPlan(data.plan || null);
+      if (data.remembered_fact) {
+        setRememberedBanner(data.remembered_fact);
+        setTimeout(() => setRememberedBanner(null), 6000);
+      }
       fetchSessions();
     } catch (err) {
       console.error('Chat edit failed:', err);
@@ -785,6 +792,15 @@ export default function SearchAgentView({ onCompileCandidate }) {
           >
             + New Chat
           </button>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => setShowKnowledgeBase(true)}
+            style={{ width: '100%', marginBottom: 10 }}
+            title="Facts/rules you've told the assistant to remember across all chats"
+          >
+            🧠 Knowledge Base
+          </button>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 420, overflowY: 'auto' }}>
             {sessions.map((s) => (
               <div
@@ -906,6 +922,13 @@ export default function SearchAgentView({ onCompileCandidate }) {
             </div>
           )}
         </div>
+
+        {rememberedBanner && (
+          <div className="remembered-fact-banner">
+            📌 Remembered for future chats: "{rememberedBanner}"
+            <button type="button" className="btn-dismiss-banner" onClick={() => setRememberedBanner(null)}>✕</button>
+          </div>
+        )}
 
         {chatError && (
           <div className="inline-error" style={{ marginBottom: '10px' }}>
@@ -1459,6 +1482,8 @@ export default function SearchAgentView({ onCompileCandidate }) {
           )}
         </div>
       )}
+
+      {showKnowledgeBase && <KnowledgeBaseModal onClose={() => setShowKnowledgeBase(false)} />}
     </div>
   );
 }

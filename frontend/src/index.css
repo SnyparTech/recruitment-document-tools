@@ -3790,3 +3790,59 @@ body {
 .rate-limit-reset {
   color: var(--text-light);
 }
+
+/* ==============================================================================
+   KNOWLEDGE BASE — remembered facts/rules captured mid-chat (see
+   services/knowledge_service.py), shown transparently rather than retained
+   silently: a banner confirms the moment one's captured, and a modal lists
+   everything with a one-click "Forget".
+   ============================================================================== */
+.remembered-fact-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--primary-purple-light);
+  border: 1px solid #C7D2FE;
+  color: #3730A3;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  font-size: 0.85rem;
+  margin-bottom: 12px;
+}
+
+.btn-dismiss-banner {
+  margin-left: auto;
+  background: transparent;
+  border: none;
+  color: #6366F1;
+  font-size: 0.8rem;
+  padding: 2px 6px;
+}
+
+.knowledge-base-dialog {
+  max-width: 520px;
+}
+
+.knowledge-fact-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.knowledge-fact-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: #F8FAFC;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+}
+
+.knowledge-fact-text {
+  font-size: 0.86rem;
+  color: var(--text-main);
+  line-height: 1.4;
+}

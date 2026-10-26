@@ -27,6 +27,7 @@ from app.services.candidate_ranking_service import rank_candidates
 from app.services import state_persistence
 from app.services.chat_session_service import ChatSessionStore
 from app.services import preference_service
+from app.services import knowledge_service
 
 logger = logging.getLogger(__name__)
 
@@ -524,6 +525,25 @@ async def reject_preference(pattern_key: str):
     return {"status": "success"}
 
 
+# ─── Cross-session knowledge base (see services/knowledge_service.py) ──────
+# Durable facts/rules the LLM flags during a chat edit (a salary-conversion
+# formula, a standing exclusion rule) — applied to every future chat, and
+# always visible/removable here rather than silently retained forever.
+
+@router.get("/knowledge", summary="List remembered facts/rules the recruiter has stated in past chats")
+async def list_knowledge():
+    facts = await knowledge_service.list_facts()
+    return {"status": "success", "facts": facts}
+
+
+@router.delete("/knowledge/{fact_id}", summary="Forget a remembered fact/rule")
+async def delete_knowledge(fact_id: str):
+    ok = await knowledge_service.delete_fact(fact_id)
+    if not ok:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No remembered fact with id {fact_id}.")
+    return {"status": "success"}
+
+
 @router.get(
     "/plan/chat",
     summary="Get the requirement chat history and current (unapplied) draft SearchPlan for a session",
@@ -563,9 +583,18 @@ async def chat_edit_plan(request: ChatEditRequest, session_id: Optional[str] = N
 
     base_plan = SearchPlan(**session["draft_plan"]) if session["draft_plan"] else None
     confirmed_prefs = await preference_service.get_confirmed_preferences()
+    known_facts = [f["text"] for f in await knowledge_service.list_facts()]
     updated_plan, reply, model_label = requirement_service.chat_edit(
-        base_plan, request.message, session["chat_history"], confirmed_prefs.get("active_in_default"), request.provider
+        base_plan, request.message, session["chat_history"], confirmed_prefs.get("active_in_default"),
+        request.provider, known_facts,
     )
+
+    # The LLM may have flagged this message as stating a durable rule worth
+    # remembering for future chats (see RequirementAgent's "remember" JSON
+    # field) — persist it and echo it back so it's never silently retained.
+    remembered_fact = requirement_service.agent._last_remembered_fact
+    if remembered_fact:
+        await knowledge_service.add_fact(remembered_fact, session["id"])
 
     new_history = session["chat_history"] + [
         {"role": "user", "content": request.message},
@@ -579,6 +608,7 @@ async def chat_edit_plan(request: ChatEditRequest, session_id: Optional[str] = N
         "reply": reply,
         "plan": updated["draft_plan"],
         "history": updated["chat_history"],
+        "remembered_fact": remembered_fact,
     }
 
 

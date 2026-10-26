@@ -22,6 +22,7 @@ can't stall the whole event loop — same reasoning as preference_service.py's
 dedicated short-timeout client).
 """
 import logging
+import time
 from typing import Any, Dict, Optional
 
 from pymongo import MongoClient
@@ -33,8 +34,21 @@ logger = logging.getLogger(__name__)
 COLLECTION_NAME = "app_state"
 DOC_ID = "search_state"
 _TIMEOUT_MS = 3000
+_LOAD_RETRIES = 3
+_LOAD_RETRY_BACKOFF_SECONDS = 2.0
 
 _client: Optional[MongoClient] = None
+
+# Set True only after a load_state() call actually reaches MongoDB during
+# this process's startup. save_state() refuses to write while this is False
+# — otherwise a single slow-to-respond Mongo connection during the narrow
+# cold-start window (DNS/TLS handshake, Atlas waking up, any transient
+# network blip) silently falls back to an empty dict, and the NEXT save
+# (replace_one upsert) overwrites real persisted data in MongoDB with that
+# empty state — turning a one-off hiccup into permanent data loss. Confirmed
+# as the actual cause of a real "my chat history disappeared after a
+# restart, but MongoDB itself never went down" report.
+_load_ok = False
 
 
 def _get_collection():
@@ -45,17 +59,35 @@ def _get_collection():
 
 
 def load_state() -> Dict[str, Any]:
-    """Best-effort load; any problem (Mongo unreachable, missing doc) yields
-    empty state rather than crashing app startup. Deliberately synchronous —
-    only ever called at module-import time (before any event loop exists),
-    never from inside a request handler, so blocking here is safe."""
-    try:
-        doc = _get_collection().find_one({"_id": DOC_ID})
-        if doc:
-            doc.pop("_id", None)
-            return doc
-    except Exception as exc:
-        logger.warning("Could not load persisted search state from MongoDB (%s) — starting empty.", exc)
+    """Load with retries — only ever called at module-import time (before
+    any event loop exists), never from inside a request handler, so
+    blocking here for a few retries' worth of extra startup latency is a
+    fair trade for not silently discarding real data. Sets `_load_ok` on
+    success; see its docstring for why that matters."""
+    global _load_ok
+    last_exc = None
+    for attempt in range(_LOAD_RETRIES):
+        try:
+            doc = _get_collection().find_one({"_id": DOC_ID})
+            _load_ok = True
+            if doc:
+                doc.pop("_id", None)
+                return doc
+            return {}
+        except Exception as exc:
+            last_exc = exc
+            if attempt < _LOAD_RETRIES - 1:
+                logger.warning(
+                    "Could not load persisted search state from MongoDB (attempt %d/%d: %s) — retrying in %.0fs.",
+                    attempt + 1, _LOAD_RETRIES, exc, _LOAD_RETRY_BACKOFF_SECONDS,
+                )
+                time.sleep(_LOAD_RETRY_BACKOFF_SECONDS)
+    logger.error(
+        "Could not load persisted search state from MongoDB after %d attempts (%s) — running in-memory only "
+        "for this process. Existing data in MongoDB is untouched; saves are disabled until a restart "
+        "successfully reaches Mongo, so this failure can't overwrite it.",
+        _LOAD_RETRIES, last_exc,
+    )
     return {}
 
 
@@ -79,6 +111,12 @@ def save_state(
     /search/sessions routes) — each session has its own draft SearchPlan +
     chat history, separate from `search_plan` (the one the extension actually
     reads and applies to Resdex)."""
+    if not _load_ok:
+        logger.warning(
+            "Skipping save — this process's initial state load never reached MongoDB (see the error logged at "
+            "startup). Refusing to write prevents overwriting real persisted data with incomplete in-memory state."
+        )
+        return
     try:
         payload = {
             "_id": DOC_ID,

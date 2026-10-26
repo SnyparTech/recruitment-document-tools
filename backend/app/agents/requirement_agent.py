@@ -320,6 +320,16 @@ class RequirementAgent:
         # surfaced to the chat UI via generate_chat_reply's 3rd return value.
         self._last_model_label: Optional[str] = None
 
+        # Set by _call_llm_chat_edit when the LLM flags the recruiter's
+        # message as stating a durable fact/rule (e.g. a salary-conversion
+        # formula) worth remembering for future chats — see its "remember"
+        # JSON field. Reset to None at the top of every chat_edit call so a
+        # fact from a PRIOR turn can't leak onto a turn that didn't state
+        # one. Read by api/search.py right after the call (same no-race
+        # reasoning as _last_model_label above) and persisted via
+        # services/knowledge_service.py.
+        self._last_remembered_fact: Optional[str] = None
+
         self.model = model or settings.GROQ_MODEL
         self.schema = schema or load_resdex_schema()
 
@@ -341,6 +351,7 @@ class RequirementAgent:
         requirement: str,
         preferred_active_in_default: Optional[str] = None,
         preferred_provider: Optional[str] = None,
+        known_facts: Optional[List[str]] = None,
     ) -> SearchPlan:
         """
         Main entrypoint: parses requirement into validated SearchPlan.
@@ -360,7 +371,7 @@ class RequirementAgent:
         cleaned = requirement.strip()
 
         # Step 1: Attempt LLM generation as a Senior HR Recruiter (Groq or Gemini)
-        llm_plan = self._call_llm_as_hr(cleaned, preferred_provider)
+        llm_plan = self._call_llm_as_hr(cleaned, preferred_provider, known_facts)
         if llm_plan:
             return self._post_process_plan(llm_plan, cleaned, preferred_active_in_default)
 
@@ -426,7 +437,9 @@ class RequirementAgent:
             for c in self._provider_chain()
         ]
 
-    def _call_llm_as_hr(self, requirement: str, preferred_provider: Optional[str] = None) -> Optional[SearchPlan]:
+    def _call_llm_as_hr(
+        self, requirement: str, preferred_provider: Optional[str] = None, known_facts: Optional[List[str]] = None
+    ) -> Optional[SearchPlan]:
         """
         Calls the first available provider (NVIDIA NIM -> OpenRouter -> Groq
         -> Gemini) as a
@@ -496,6 +509,10 @@ Rules:
             .replace("__PG_OPTIONS__", ", ".join(f'"{o}"' for o in self._pg_options))
             .replace("__ACTIVE_IN_OPTIONS__", ", ".join(f'"{o}"' for o in self._active_in_options))
         )
+        if known_facts:
+            system_prompt += "\n\nStanding rules this recruiter has told you in past conversations — apply them here too:\n" + "\n".join(
+                f"- {fact}" for fact in known_facts
+            )
 
         user_message = {
             "role": "user",
@@ -1317,6 +1334,7 @@ Rules:
         history: Optional[List[Dict[str, str]]] = None,
         preferred_active_in_default: Optional[str] = None,
         preferred_provider: Optional[str] = None,
+        known_facts: Optional[List[str]] = None,
     ) -> Tuple[SearchPlan, str, Optional[str]]:
         """
         Single entrypoint for the requirement chat. Returns
@@ -1333,13 +1351,14 @@ Rules:
         chat UI's model picker. No falling through to a different provider.
         """
         message = (message or "").strip()
+        self._last_remembered_fact = None  # reset — only set below if THIS turn states a new fact
         if not message:
             return current_plan or SearchPlan(), "Didn't catch that — paste a JD or tell me what to change.", None
 
         has_llm_configured = bool(self._provider_chain(only_provider=preferred_provider))
 
         if current_plan is None:
-            plan = self.generate_search_plan(message, preferred_active_in_default, preferred_provider)
+            plan = self.generate_search_plan(message, preferred_active_in_default, preferred_provider, known_facts)
             model_label = self._last_model_label
             if not self._plan_has_signal(plan) and len(message) > 40 and has_llm_configured:
                 # A real JD is long; if a long message produced an empty plan
@@ -1355,7 +1374,7 @@ Rules:
             return plan, self._summarize_plan_reply(plan, prefix="Plan created"), model_label
 
         if has_llm_configured:
-            edited = self._call_llm_chat_edit(current_plan, message, history or [], preferred_provider)
+            edited = self._call_llm_chat_edit(current_plan, message, history or [], preferred_provider, known_facts)
             if edited:
                 return edited[0], edited[1], self._last_model_label
             if len(message) > 40:
@@ -1622,6 +1641,7 @@ Rules:
         message: str,
         history: List[Dict[str, str]],
         preferred_provider: Optional[str] = None,
+        known_facts: Optional[List[str]] = None,
     ) -> Optional[Tuple[SearchPlan, str]]:
         """LLM-backed free-form chat edit. Uses the same provider priority
         chain as _call_llm_as_hr (OpenAI -> NVIDIA -> OpenRouter -> Groq ->
@@ -1631,7 +1651,12 @@ Rules:
         uses the rule-based parser) if every configured provider fails.
 
         preferred_provider: see generate_search_plan — restricts this to one
-        provider, no falling through to a different LLM."""
+        provider, no falling through to a different LLM.
+        known_facts: standing rules the recruiter stated in past conversations
+        (see services/knowledge_service.py) — injected into the prompt so
+        they apply here too. The model may also flag THIS message as stating
+        a new one via the JSON contract's "remember" field, captured into
+        self._last_remembered_fact for the caller to persist."""
         provider_chain = self._provider_chain(only_provider=preferred_provider)
         if not provider_chain:
             return None
@@ -1647,9 +1672,20 @@ Rules:
             "specific fields/values added, removed, or modified (e.g. 'Added Kubernetes and Docker as "
             "required skills since the JD lists them under core requirements. Left experience and location "
             "unchanged as the instruction didn't mention them.'). Never use a generic one-liner like 'Updated "
-            'the plan.\'"}. '
+            'the plan.\'"}, '
+            '"remember": <a short, self-contained, imperative-style string ONLY if this specific message '
+            "states a durable rule, formula, policy, or standing fact meant to apply to future requirements "
+            'too (e.g. "Convert monthly salary to annual by multiplying by 12", "Always exclude '
+            'referral-only consultancies", "CTC = fixed + 0.8 * variable") — omit this field entirely '
+            "(do not set it to null or an empty string) for ordinary one-off edits to THIS plan "
+            '(e.g. "add Kubernetes", "experience 5 to 8 years") or anything already covered by an existing '
+            'standing rule below. '
             "No markdown, no explanation outside that JSON."
         )
+        if known_facts:
+            system_prompt += "\n\nStanding rules this recruiter has told you in past conversations — apply them here too:\n" + "\n".join(
+                f"- {fact}" for fact in known_facts
+            )
         messages = [{"role": "system", "content": system_prompt}]
         for h in history[-10:]:
             role = "assistant" if h.get("role") == "assistant" else "user"
@@ -1679,6 +1715,8 @@ Rules:
                     plan = SearchPlan(**plan_dict)
                     reply = parsed.get("reply") or self._summarize_plan_reply(plan, prefix="Updated the plan")
                     self._last_model_label = f"{provider_name} ({model})"
+                    remember = parsed.get("remember")
+                    self._last_remembered_fact = remember.strip() if isinstance(remember, str) and remember.strip() else None
                     return plan, reply
             except Exception as exc:
                 logger.warning(f"Chat-edit LLM parsing failed for provider '{provider_name}': {type(exc).__name__}: {exc}")
