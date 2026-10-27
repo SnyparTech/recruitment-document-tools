@@ -18,6 +18,7 @@ dictated it verbatim themselves.
 Best-effort: a Mongo hiccup here must never break the chat it rode in on.
 """
 import logging
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -30,6 +31,17 @@ logger = logging.getLogger(__name__)
 COLLECTION_NAME = "recruiter_knowledge"
 MAX_FACTS = 50  # keeps the system-prompt injection bounded — oldest facts drop off first
 
+# A restated fact (recruiter re-explaining the same rule, possibly
+# correcting a number) scores well above this on word-overlap against the
+# existing fact it's restating — confirmed against a real pile-up this
+# caused: 3 near-identical salary-formula facts (one with a wrong
+# multiplier) all got saved separately because nothing ever checked for
+# overlap, so the recruiter kept having to restate it and the system prompt
+# ended up feeding the LLM contradictory rules at once. 0.0 for genuinely
+# unrelated facts, 0.38-0.7 for real restatements/corrections — calibrated
+# against that actual data.
+_DUPLICATE_SIMILARITY_THRESHOLD = 0.3
+
 _SHORT_TIMEOUT_MS = 400
 _client: Optional[AsyncIOMotorClient] = None
 
@@ -41,12 +53,32 @@ def get_collection() -> AsyncIOMotorCollection:
     return _client[settings.MONGODB_DB_NAME][COLLECTION_NAME]
 
 
+def _tokens(text: str) -> set:
+    return {w for w in re.findall(r"[a-z0-9]+", text.lower()) if len(w) >= 3}
+
+
+def _similarity(a: str, b: str) -> float:
+    ta, tb = _tokens(a), _tokens(b)
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / len(ta | tb)
+
+
 async def add_fact(text: str, session_id: Optional[str] = None, collection=None) -> Optional[Dict[str, Any]]:
+    """Saves a fact, replacing (not duplicating) any existing fact that's
+    clearly a restatement of the same rule — see _DUPLICATE_SIMILARITY_THRESHOLD.
+    A restatement is treated as a correction: the recruiter saying it again
+    usually means the old version was wrong or imprecise, so the new text
+    wins rather than coexisting as a second, possibly-contradictory rule."""
     text = (text or "").strip()
     if not text:
         return None
     try:
         coll = collection or get_collection()
+        existing = await list_facts(collection=coll)
+        for fact in existing:
+            if _similarity(text, fact["text"]) >= _DUPLICATE_SIMILARITY_THRESHOLD:
+                await delete_fact(fact["id"], collection=coll)
         doc = {"text": text, "session_id": session_id, "created_at": datetime.utcnow()}
         result = await coll.insert_one(doc)
         doc["_id"] = result.inserted_id

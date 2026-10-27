@@ -82,6 +82,34 @@ async def test_add_fact_stores_and_returns_it(fake_collection):
 
 
 @pytest.mark.asyncio
+async def test_restating_a_similar_fact_replaces_it_instead_of_duplicating(fake_collection):
+    """Reproduces a real pile-up: the recruiter restated the same salary
+    formula 3 times (once with a wrong multiplier) and all 3 got saved
+    separately, feeding the LLM contradictory rules at once. A restatement
+    must replace the old fact, not coexist with it."""
+    first = await knowledge_service.add_fact(
+        "Convert monthly salary (LPM) to annual CTC by multiplying maximum LPM by 15 and subtracting 5 LPA from the resulting maximum value.",
+        collection=fake_collection,
+    )
+    second = await knowledge_service.add_fact(
+        "Convert monthly salary (LPM) to annual CTC: LPM * 12 - 5 (in Lakhs).",
+        collection=fake_collection,
+    )
+    facts = await knowledge_service.list_facts(collection=fake_collection)
+    assert len(facts) == 1, "restating the same rule must replace it, not add a second copy"
+    assert facts[0]["text"] == second["text"]
+    assert first["id"] != second["id"]
+
+
+@pytest.mark.asyncio
+async def test_unrelated_facts_both_coexist(fake_collection):
+    await knowledge_service.add_fact("Convert monthly salary to annual by x12.", collection=fake_collection)
+    await knowledge_service.add_fact("Always exclude referral-only consultancies.", collection=fake_collection)
+    facts = await knowledge_service.list_facts(collection=fake_collection)
+    assert len(facts) == 2
+
+
+@pytest.mark.asyncio
 async def test_add_fact_rejects_blank_text(fake_collection):
     saved = await knowledge_service.add_fact("   ", collection=fake_collection)
     assert saved is None

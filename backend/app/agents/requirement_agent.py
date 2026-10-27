@@ -510,8 +510,12 @@ Rules:
             .replace("__ACTIVE_IN_OPTIONS__", ", ".join(f'"{o}"' for o in self._active_in_options))
         )
         if known_facts:
-            system_prompt += "\n\nStanding rules this recruiter has told you in past conversations — apply them here too:\n" + "\n".join(
-                f"- {fact}" for fact in known_facts
+            system_prompt += (
+                "\n\nStanding rules this recruiter has told you in past conversations — these are not just "
+                "context, you MUST actively apply them: whenever the requirement gives you the input a rule "
+                "needs (e.g. a monthly figure when a rule converts monthly->annual), compute the result "
+                "using that rule and set the corresponding field to the computed value:\n"
+                + "\n".join(f"- {fact}" for fact in known_facts)
             )
 
         user_message = {
@@ -1678,13 +1682,20 @@ Rules:
             'too (e.g. "Convert monthly salary to annual by multiplying by 12", "Always exclude '
             'referral-only consultancies", "CTC = fixed + 0.8 * variable") — omit this field entirely '
             "(do not set it to null or an empty string) for ordinary one-off edits to THIS plan "
-            '(e.g. "add Kubernetes", "experience 5 to 8 years") or anything already covered by an existing '
-            'standing rule below. '
+            '(e.g. "add Kubernetes", "experience 5 to 8 years"). CRITICAL: if the message restates, rephrases, '
+            "or corrects a rule already listed under \"Standing rules\" below, do NOT set \"remember\" again — "
+            "it is already known. "
             "No markdown, no explanation outside that JSON."
         )
         if known_facts:
-            system_prompt += "\n\nStanding rules this recruiter has told you in past conversations — apply them here too:\n" + "\n".join(
-                f"- {fact}" for fact in known_facts
+            system_prompt += (
+                "\n\nStanding rules this recruiter has told you in past conversations — these are not just "
+                "context, you MUST actively apply them: whenever this message gives you the input a rule "
+                "needs (e.g. a monthly figure when a rule converts monthly->annual), compute the result "
+                "using that rule and set the corresponding plan field to the computed value, explicitly "
+                "stating the calculation in your reply. Do not just acknowledge the rule exists without "
+                "applying it, and do not ask the recruiter to repeat something already listed here:\n"
+                + "\n".join(f"- {fact}" for fact in known_facts)
             )
         messages = [{"role": "system", "content": system_prompt}]
         for h in history[-10:]:
