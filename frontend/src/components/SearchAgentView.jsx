@@ -107,6 +107,8 @@ export default function SearchAgentView({ onCompileCandidate }) {
   const [mandatoryKeywords, setMandatoryKeywords] = useState(new Set());
   const [isApplyingKeywords, setIsApplyingKeywords] = useState(false);
   const [keywordApplyMsg, setKeywordApplyMsg] = useState(null);
+  const [isUpdatingDraftStars, setIsUpdatingDraftStars] = useState(false);
+  const [draftUpdateMsg, setDraftUpdateMsg] = useState(null);
   const [isBroadening, setIsBroadening] = useState(false);
   const [broadenMsg, setBroadenMsg] = useState(null);
 
@@ -455,6 +457,42 @@ export default function SearchAgentView({ onCompileCandidate }) {
       setApplyMsg({ ok: false, text: err.message || 'Failed to apply the draft plan.' });
     } finally {
       setIsApplying(false);
+    }
+  };
+
+  // Lightweight alternative to Apply to Resdex for when the draft's keyword
+  // TERMS are unchanged from what's already live and only the star
+  // (mandatory/optional) selection differs — PATCHes just the star split
+  // instead of re-typing the whole form, so the extension clicks Modify and
+  // flips stars on the existing chips rather than redoing everything from
+  // scratch. Only valid once something's actually been applied (there's
+  // nothing on Resdex to Modify otherwise) — see the disabled state below.
+  const updateDraftKeywordStars = async () => {
+    if (!draftPlan || !searchResponse) return;
+    setIsUpdatingDraftStars(true);
+    setDraftUpdateMsg(null);
+
+    const kw = draftPlan.keywords || {};
+    const allKeywords = [...new Set([...(kw.required || []), ...(kw.preferred || [])])];
+    const required = allKeywords.filter((k) => draftMandatoryKeywords.has(k));
+    const preferred = allKeywords.filter((k) => !draftMandatoryKeywords.has(k));
+
+    try {
+      const resp = await apiFetch(`${API_BASE}/search/plan/keywords`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ required, preferred }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail?.message || data.detail || 'Failed to update keywords.');
+
+      setSearchResponse((prev) => prev && { ...prev, search_plan: data.plan });
+      setDraftPlan(data.plan);
+      setDraftUpdateMsg({ ok: true, text: 'Extension will click Modify and re-run the search on Resdex.' });
+    } catch (err) {
+      setDraftUpdateMsg({ ok: false, text: err.message || 'Failed to update keywords.' });
+    } finally {
+      setIsUpdatingDraftStars(false);
     }
   };
 
@@ -1209,9 +1247,25 @@ export default function SearchAgentView({ onCompileCandidate }) {
                   </>
                 )}
               </button>
+              {searchResponse && (
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={updateDraftKeywordStars}
+                  disabled={isUpdatingDraftStars}
+                  title="Only re-syncs which keywords are starred mandatory — clicks Modify on the already-open Resdex tab instead of re-typing the whole form. Use Apply to Resdex instead if you added or removed a keyword."
+                >
+                  {isUpdatingDraftStars ? 'Updating...' : 'Update (Modify + Sync)'}
+                </button>
+              )}
               {applyMsg && (
                 <span style={{ fontSize: '0.8rem', color: applyMsg.ok ? '#10B981' : '#F43F5E' }}>
                   {applyMsg.text}
+                </span>
+              )}
+              {draftUpdateMsg && (
+                <span style={{ fontSize: '0.8rem', color: draftUpdateMsg.ok ? '#10B981' : '#F43F5E' }}>
+                  {draftUpdateMsg.text}
                 </span>
               )}
             </div>
