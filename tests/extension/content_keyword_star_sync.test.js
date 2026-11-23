@@ -147,6 +147,53 @@ test("syncKeywordStarsOnForm does not click anything when state already matches"
   assert.equal(alreadyPreferred._star._clicked, false);
 });
 
+test("getLeafChipElements excludes a genuine multi-chip wrapper but keeps a real chip whose own star/remove icon coincidentally matches the chip selector", () => {
+  // Reproduces a real bug report: Resdex wraps an "AI suggested keywords...
+  // Press 'Ctrl' to mark mandatory" instructional block in a container
+  // whose class matches the chip selector too, nesting several real chips
+  // inside it — textContent on that wrapper concatenates the hint text
+  // with every nested chip's label, no separators. The first fix (exclude
+  // ANY element with a matching descendant) caused a regression: a real
+  // chip's own star/remove icon can share a "tag"/"chip"-style class
+  // (isChip=true on the icon below, simulating that), which wrongly
+  // excluded the whole real chip too — nothing ever got toggled or synced.
+  const starIconSharingChipClass = new FakeEl({ tag: "span", className: "chip-star-icon", text: "" });
+  starIconSharingChipClass._isChip = true; // the exact coincidental-overlap scenario
+  const realChip = new FakeEl({ tag: "span", className: "chip-item", text: "Python", children: [starIconSharingChipClass] });
+  realChip._isChip = true;
+
+  const nestedKeywordChips = ["SAP", "Sap Hana", "SCM"].map((t) => {
+    const c = new FakeEl({ tag: "span", className: "chip-item", text: t });
+    c._isChip = true;
+    return c;
+  });
+  const instructionalWrapper = new FakeEl({
+    tag: "div",
+    className: "tag-list",
+    text: "AI suggested keywordsPress 'Ctrl' while selecting a keyword to mark it mandatory",
+    children: nestedKeywordChips,
+  });
+  instructionalWrapper._isChip = true;
+
+  const sandbox = loadSandbox([]);
+  const leaves = sandbox.getLeafChipElements({
+    querySelectorAll: (selector) => {
+      const lower = selector.toLowerCase();
+      if (lower.includes("chip") || lower.includes("tag") || lower.includes("pill") || lower.includes("tuple")) {
+        const all = [];
+        const walk = (el) => { for (const c of el.children) { all.push(c); walk(c); } };
+        walk({ children: [realChip, instructionalWrapper] });
+        return [realChip, starIconSharingChipClass, instructionalWrapper, ...nestedKeywordChips].filter((el) => el._isChip);
+      }
+      return [];
+    },
+  });
+
+  assert.ok(leaves.includes(realChip), "a real chip with one coincidentally-matching icon must still count as a leaf");
+  assert.ok(!leaves.includes(instructionalWrapper), "the multi-chip instructional wrapper must be excluded");
+  assert.ok(!leaves.some((el) => /ai suggested/i.test(el.textContent)), "nothing with the instructional text should survive");
+});
+
 test("isStarMarkedMandatory recognizes aria-pressed/aria-checked/data-active even without a matching class name", () => {
   const sandbox = loadSandbox([]);
   const byAriaPressed = new FakeEl({ tag: "button", className: "icon-xyz", attrs: { "aria-pressed": "true" } });

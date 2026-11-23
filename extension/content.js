@@ -699,16 +699,18 @@ const CHIP_SELECTOR =
 // that wrapper AND its nested real chips — the wrapper's textContent then
 // recursively concatenates the hint text with every nested chip's label,
 // no separators, producing one garbled pseudo-keyword like "AI suggested
-// keywordsPress 'Ctrl'...SAPSap Hana...". Keep only LEAF matches (no
-// matching descendant of their own) so a wrapper never gets read as a
-// chip, plus a content-based guard as a second line of defense regardless
-// of markup structure.
+// keywordsPress 'Ctrl'...SAPSap Hana...". Exclude only genuine multi-chip
+// WRAPPERS (2+ matching descendants) — NOT "any nested match", since a
+// real chip's own star/remove icon can coincidentally share a
+// "tag"/"chip"-style class (see findMandatoryStarInChip's comment on
+// this) and would otherwise get the whole real chip wrongly excluded too.
+// Content-based guard as a second line of defense regardless of markup.
 function getLeafChipElements(root) {
   return Array.from(root.querySelectorAll(CHIP_SELECTOR)).filter(
     (c) =>
       c.offsetParent !== null &&
       c.textContent.trim().length > 0 &&
-      !c.querySelector(CHIP_SELECTOR) &&
+      c.querySelectorAll(CHIP_SELECTOR).length <= 1 &&
       !/press\s+['"]?ctrl['"]?/i.test(c.textContent) &&
       !/ai suggested/i.test(c.textContent)
   );

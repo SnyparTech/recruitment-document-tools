@@ -305,6 +305,29 @@ def test_normalize_keywords_caps_total_count():
     assert keywords.preferred == [f"Pref{i}" for i in range(12)]
 
 
+def test_chat_edit_normalizes_keywords_not_just_first_message(monkeypatch):
+    """_normalize_keywords (200-char cap, dedup, filler removal) only ran on
+    the FIRST message of a chat via generate_search_plan — every follow-up
+    edit (_call_llm_chat_edit, the common case) skipped it entirely, so an
+    edit-introduced over-length keyword never got capped and could fail to
+    even become a real chip on the live Resdex form."""
+    from app.agents.requirement_agent import RequirementAgent
+    from app.schemas.search_plan import KeywordsPlan, SearchPlan
+
+    agent = RequirementAgent()
+    overlong = "A" * 250
+    edited_plan = SearchPlan(keywords=KeywordsPlan(required=["Python", "python", overlong], preferred=[]))
+
+    monkeypatch.setattr(agent, "_provider_chain", lambda only_provider=None: [("fake", "", "", "", [])])
+    monkeypatch.setattr(agent, "_call_llm_chat_edit", lambda *a, **k: (edited_plan, "Added a keyword."))
+
+    current_plan = SearchPlan(keywords=KeywordsPlan(required=["Python"], preferred=[]))
+    plan, reply, _ = agent.generate_chat_reply(current_plan, "add that long phrase as a keyword")
+
+    assert plan.keywords.required == ["Python"], "dedup + 200-char cap must run on the edit result too"
+    assert all(len(k) <= agent.MAX_KEYWORD_LENGTH for k in plan.keywords.required)
+
+
 def test_broaden_plan_demotes_last_required_keyword_to_preferred():
     from app.agents.requirement_agent import RequirementAgent
     from app.schemas.search_plan import SearchPlan

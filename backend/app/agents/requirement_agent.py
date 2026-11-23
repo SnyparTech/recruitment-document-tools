@@ -1380,6 +1380,14 @@ Rules:
         if has_llm_configured:
             edited = self._call_llm_chat_edit(current_plan, message, history or [], preferred_provider, known_facts)
             if edited:
+                # _normalize_keywords (200-char cap, dedup, filler removal,
+                # count caps) only ran on the FIRST message of a chat via
+                # generate_search_plan — every follow-up edit skipped it, so
+                # an edit-introduced keyword (e.g. "add <long descriptive
+                # phrase>") never got capped and could fail to even become a
+                # real chip on Resdex.
+                if edited[0].keywords:
+                    self._normalize_keywords(edited[0].keywords)
                 return edited[0], edited[1], self._last_model_label
             if len(message) > 40:
                 # The free-form LLM edit failed (rate limit/transient error).
@@ -1417,6 +1425,8 @@ Rules:
                     "try rephrasing or resend it in a moment."
                 ), model_label
             return new_plan, self._summarize_plan_reply(new_plan, prefix="Replaced the plan with this new requirement"), model_label
+        if plan.keywords:
+            self._normalize_keywords(plan.keywords)
         return plan, reply, self._last_model_label
 
     @staticmethod
