@@ -1,5 +1,5 @@
 const BACKEND_BASES = [
-  "https://recruitment-document-tools.onrender.com",
+  "https://ouch-devouring-unhelpful.ngrok-free.dev",
   "http://127.0.0.1:8001",
   "http://localhost:8001",
 ];
@@ -25,7 +25,7 @@ async function checkBackendStatus() {
   const authBox = document.getElementById("device-auth-box");
   const deviceId = await getDeviceId();
   const deviceToken = await getDeviceToken();
-  const headers = { "X-Device-Id": deviceId };
+  const headers = { "X-Device-Id": deviceId, "ngrok-skip-browser-warning": "true" };
   if (deviceToken) headers["X-Device-Token"] = deviceToken;
   let connected = false;
   let unauthorized = false;
@@ -74,7 +74,7 @@ document.getElementById("pair-btn").addEventListener("click", async () => {
     try {
       const res = await fetch(base + "/auth/pair-device", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "ngrok-skip-browser-warning": "true" },
         body: JSON.stringify({ code, device_id: deviceId }),
       });
       const data = await res.json().catch(() => ({}));

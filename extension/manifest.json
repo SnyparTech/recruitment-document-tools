@@ -6,7 +6,7 @@
   "permissions": ["storage"],
   "host_permissions": [
     "*://resdex.naukri.com/*",
-    "https://recruitment-document-tools.onrender.com/*",
+    "https://ouch-devouring-unhelpful.ngrok-free.dev/*",
     "http://localhost:8001/*",
     "http://127.0.0.1:8001/*"
   ],

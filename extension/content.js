@@ -1,3 +1,4 @@
+
 /**
  * Snypar Resdex Form Auto-Filler Content Script
  * Runs inside the authenticated Naukri Resdex tab opened by Naukri Launcher.
@@ -12,7 +13,7 @@
 // adding a new endpoint (e.g. /search/results) doesn't require a second,
 // independently-drifting copy of this list — see fetchFromBackend/postToBackend.
 const BACKEND_BASE_URLS = [
-  "https://recruitment-document-tools.onrender.com",
+  "https://ouch-devouring-unhelpful.ngrok-free.dev",
   "http://127.0.0.1:8001",
   "http://localhost:8001",
 ];
@@ -78,7 +79,7 @@ async function getDeviceToken() {
 async function authHeaders() {
   const deviceId = await getDeviceId();
   const deviceToken = await getDeviceToken();
-  const headers = {};
+  const headers = { "ngrok-skip-browser-warning": "true" };
   if (deviceId) headers["X-Device-Id"] = deviceId;
   if (deviceToken) headers["X-Device-Token"] = deviceToken;
   return headers;
@@ -480,19 +481,14 @@ function getKeywordContainer(kwInput) {
 }
 
 function countKeywordChipsInContainer(container) {
-  const chips = container.querySelectorAll(
-    "div[class*='chip'], span[class*='chip'], div[class*='tag'], span[class*='tag'], li[class*='chip'], li[class*='tag'], div[class*='pill'], span[class*='pill']"
-  );
-  return chips.length;
+  return getLeafChipElements(container).length;
 }
 
 function hasKeywordChip(keyword) {
   if (!keyword) return false;
   const norm = keyword.toLowerCase().replace(/[^a-z0-9]/g, '');
   if (!norm) return false;
-  const candidates = document.querySelectorAll(
-    "div[class*='chip'], span[class*='chip'], div[class*='tag'], span[class*='tag'], li[class*='chip'], li[class*='tag'], div[class*='pill'], span[class*='pill'], [class*='tuple']"
-  );
+  const candidates = getLeafChipElements(document);
   for (const c of candidates) {
     const textNorm = c.textContent.toLowerCase().replace(/[^a-z0-9]/g, '');
     if (textNorm.includes(norm)) {
@@ -674,9 +670,7 @@ async function clickKeywordStar(skillName) {
   if (!skillName) return false;
   const clean = skillName.toLowerCase().trim();
   const cleanNorm = clean.replace(/[^a-z0-9]/g, '');
-  const chips = document.querySelectorAll(
-    "div[class*='chip'], span[class*='chip'], div[class*='tag'], span[class*='tag'], li[class*='chip'], li[class*='tag'], div[class*='pill'], span[class*='pill'], [class*='tuple']"
-  );
+  const chips = getLeafChipElements(document);
   for (const chip of chips) {
     const chipNorm = chip.textContent.toLowerCase().replace(/[^a-z0-9]/g, '');
     if (chipNorm.includes(cleanNorm)) {
@@ -692,9 +686,32 @@ async function clickKeywordStar(skillName) {
 }
 
 function countKeywordChips() {
-  return document.querySelectorAll(
-    "div[class*='chip'], span[class*='chip'], div[class*='tag'], span[class*='tag'], li[class*='chip'], li[class*='tag'], div[class*='pill'], span[class*='pill']"
-  ).length;
+  return getLeafChipElements(document).length;
+}
+
+const CHIP_SELECTOR =
+  "div[class*='chip'], span[class*='chip'], div[class*='tag'], span[class*='tag'], " +
+  "li[class*='chip'], li[class*='tag'], div[class*='pill'], span[class*='pill'], [class*='tuple']";
+
+// Resdex sometimes wraps a whole "AI suggested keywords... Press 'Ctrl' to
+// mark mandatory" instructional block in a container whose class also
+// matches CHIP_SELECTOR (e.g. a "tag-list" div). querySelectorAll returns
+// that wrapper AND its nested real chips — the wrapper's textContent then
+// recursively concatenates the hint text with every nested chip's label,
+// no separators, producing one garbled pseudo-keyword like "AI suggested
+// keywordsPress 'Ctrl'...SAPSap Hana...". Keep only LEAF matches (no
+// matching descendant of their own) so a wrapper never gets read as a
+// chip, plus a content-based guard as a second line of defense regardless
+// of markup structure.
+function getLeafChipElements(root) {
+  return Array.from(root.querySelectorAll(CHIP_SELECTOR)).filter(
+    (c) =>
+      c.offsetParent !== null &&
+      c.textContent.trim().length > 0 &&
+      !c.querySelector(CHIP_SELECTOR) &&
+      !/press\s+['"]?ctrl['"]?/i.test(c.textContent) &&
+      !/ai suggested/i.test(c.textContent)
+  );
 }
 
 // Reads the keyword chips ACTUALLY present in the Resdex form right now —
@@ -711,9 +728,7 @@ function readLiveKeywordsFromResdex() {
   if (!kwInput) return null;
   const container = getKeywordContainer(kwInput);
 
-  const chips = Array.from(container.querySelectorAll(
-    "div[class*='chip'], span[class*='chip'], div[class*='tag'], span[class*='tag'], li[class*='chip'], li[class*='tag'], div[class*='pill'], span[class*='pill'], [class*='tuple']"
-  )).filter((c) => c.offsetParent !== null && c.textContent.trim().length > 0);
+  const chips = getLeafChipElements(container);
 
   const required = [];
   const preferred = [];
@@ -2130,9 +2145,7 @@ async function syncKeywordStarsOnForm(plan) {
   const mandatoryNorm = requiredKws.map((k) => k.toLowerCase().trim().replace(/[^a-z0-9]/g, ""));
   const optionalNorm = preferredKws.map((k) => k.toLowerCase().trim().replace(/[^a-z0-9]/g, ""));
 
-  const chips = document.querySelectorAll(
-    "div[class*='chip'], span[class*='chip'], div[class*='tag'], span[class*='tag'], li[class*='chip'], li[class*='tag'], div[class*='pill'], span[class*='pill'], [class*='tuple']"
-  );
+  const chips = getLeafChipElements(document);
   let toggled = 0;
   for (const chip of chips) {
     const chipNorm = chip.textContent.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -2912,7 +2925,7 @@ async function fetchAndFill(forced = false) {
 
 // Listen for messages from popup
 if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage) {
-  chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
+  chrome.runtime.onMessage.addListener((req, _sender, sendResponse) => {
     if (req.action === "TRIGGER_FILL") {
       fetchAndFill(true);
       sendResponse({ status: "filling" });

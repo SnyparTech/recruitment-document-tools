@@ -679,7 +679,17 @@ export default function SearchAgentView({ onCompileCandidate }) {
     setMandatoryKeywords(new Set(kw.required || []));
   }, [searchResponse?.search_plan?.keywords]);
 
+  // Star clicks on the Applied panel used to only stage locally — nothing
+  // reached Resdex until a separate "Apply" click, and each click (or rapid
+  // double-click) fired its own full Modify+re-search cycle on the live
+  // tab. Debouncing collapses a burst of star clicks into one sync instead
+  // of stacking up repeated re-runs. userToggledMandatoryRef distinguishes
+  // an explicit click from the re-seed effect below (new searchResponse
+  // arriving) — only the former should trigger an auto-apply.
+  const userToggledMandatoryRef = useRef(false);
+
   const toggleMandatoryKeyword = (keyword) => {
+    userToggledMandatoryRef.current = true;
     setMandatoryKeywords((prev) => {
       const next = new Set(prev);
       if (next.has(keyword)) next.delete(keyword);
@@ -687,6 +697,14 @@ export default function SearchAgentView({ onCompileCandidate }) {
       return next;
     });
   };
+
+  useEffect(() => {
+    if (!userToggledMandatoryRef.current) return;
+    userToggledMandatoryRef.current = false;
+    const timer = setTimeout(() => applyMandatoryKeywords(), 800);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mandatoryKeywords]);
 
   const applyMandatoryKeywords = async () => {
     const kw = searchResponse?.search_plan?.keywords;
