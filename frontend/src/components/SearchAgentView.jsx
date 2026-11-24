@@ -481,7 +481,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
       const resp = await apiFetch(`${API_BASE}/search/plan/keywords`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ required, preferred }),
+        body: JSON.stringify({ required, preferred, session_id: activeSessionId }),
       });
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.detail?.message || data.detail || 'Failed to update keywords.');

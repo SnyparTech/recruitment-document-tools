@@ -194,3 +194,53 @@ def test_clear_chat_resets_session_in_place_without_removing_it_from_the_list():
     assert search_module._session_store.get(session_id) is not None, "reset must not remove the session from the list"
     assert search_module._session_store.get(session_id)["chat_history"] == []
     assert search_module._session_store.get(session_id)["draft_plan"] is None
+
+
+def test_apply_to_resdex_keeps_the_session_draft_in_sync():
+    """Real bug: the session's own stored draft_plan never changed when a
+    plan was applied, so the frontend's periodic GET /plan/chat poll (every
+    ~4s) would overwrite the just-applied state with that stale draft a few
+    seconds later — the Draft Keywords panel appeared to randomly revert.
+    POST /search/plan with a session_id must update that session's own
+    draft_plan to match exactly what was applied."""
+    _reset_to_one_empty_session()
+    session_id = search_module._session_store.active_session_id
+
+    plan = {"keywords": {"required": ["Python"], "preferred": ["Django"], "excluded": []}}
+    res = client.post("/search/plan", json={"plan": plan, "submit_search": False, "session_id": session_id})
+    assert res.status_code == 200, res.text
+
+    stored_draft = search_module._session_store.get(session_id)["draft_plan"]
+    assert stored_draft["keywords"]["required"] == ["Python"]
+    assert stored_draft["keywords"]["preferred"] == ["Django"]
+
+    chat_state = client.get(f"/search/plan/chat?session_id={session_id}").json()
+    assert chat_state["plan"]["keywords"]["required"] == ["Python"], (
+        "the next poll must see the same thing just applied, not a stale pre-apply draft"
+    )
+
+
+def test_update_keyword_mandatory_with_session_id_keeps_session_draft_in_sync():
+    """Same bug, via the lightweight PATCH /plan/keywords path (the
+    Draft panel's "Update (Modify + Sync)" button) — only the keywords
+    sub-field of the session's draft should change, everything else about
+    the draft stays untouched."""
+    _reset_to_one_empty_session()
+    session_id = search_module._session_store.active_session_id
+
+    plan = {"min_experience": 3, "keywords": {"required": ["Python"], "preferred": [], "excluded": []}}
+    client.post("/search/plan", json={"plan": plan, "submit_search": False, "session_id": session_id})
+
+    res = client.patch(
+        "/search/plan/keywords",
+        json={"required": [], "preferred": ["Python"], "session_id": session_id},
+    )
+    assert res.status_code == 200, res.text
+
+    stored_draft = search_module._session_store.get(session_id)["draft_plan"]
+    assert stored_draft["keywords"]["required"] == []
+    assert stored_draft["keywords"]["preferred"] == ["Python"]
+    assert stored_draft["min_experience"] == 3, "only keywords should change, the rest of the draft stays intact"
+
+    chat_state = client.get(f"/search/plan/chat?session_id={session_id}").json()
+    assert chat_state["plan"]["keywords"]["preferred"] == ["Python"]

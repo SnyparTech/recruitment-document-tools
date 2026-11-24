@@ -227,6 +227,12 @@ async def store_search_plan(
         session = _session_store.get(request.session_id)
         if session:
             await preference_service.record_active_in_widening(session.get("generated_active_in"), plan.active_in)
+            # Without this, the session's own stored draft_plan never
+            # changes — the frontend's periodic GET /plan/chat poll (every
+            # ~4s) would then overwrite whatever was just applied with that
+            # stale, now-divergent draft, making the Draft Keywords panel
+            # appear to randomly revert/disappear seconds after every apply.
+            await _session_store.update_session(session["id"], plan_dict, session["chat_history"], _persist_now)
 
     msg = "SearchPlan stored. Extension will auto-fill the form."
     if request.submit_search:
@@ -339,6 +345,12 @@ async def clear_candidate_results():
 class UpdateKeywordMandatoryRequest(BaseModel):
     required: List[str] = Field(..., description="Keywords HR wants marked mandatory (starred) in Resdex")
     preferred: List[str] = Field(default_factory=list, description="Remaining tracked keywords, not mandatory")
+    session_id: Optional[str] = Field(
+        default=None,
+        description="Chat session this star-split came from, if any — keeps that session's own stored "
+        "draft in sync so the frontend's periodic GET /plan/chat poll doesn't overwrite this change "
+        "with a stale draft a few seconds later.",
+    )
 
 
 @router.patch(
@@ -371,6 +383,12 @@ async def update_plan_keyword_mandatory(request: UpdateKeywordMandatoryRequest):
     _latest_search_plan["_keyword_sync_only"] = True
     _latest_plan_timestamp = time.time()
     await _persist_now()
+
+    if request.session_id:
+        session = _session_store.get(request.session_id)
+        if session and session.get("draft_plan"):
+            session["draft_plan"]["keywords"] = kw
+            await _session_store.update_session(session["id"], session["draft_plan"], session["chat_history"], _persist_now)
 
     return {
         "status": "success",
