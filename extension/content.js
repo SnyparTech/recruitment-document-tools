@@ -13,6 +13,7 @@
 // adding a new endpoint (e.g. /search/results) doesn't require a second,
 // independently-drifting copy of this list — see fetchFromBackend/postToBackend.
 const BACKEND_BASE_URLS = [
+  "https://pair-threats-stolen-monster.trycloudflare.com",
   "https://labor-photos-charm-mail.trycloudflare.com",
   "https://ouch-devouring-unhelpful.ngrok-free.dev",
   "http://127.0.0.1:8001",
@@ -895,11 +896,19 @@ async function setExperience(selector, value) {
       }
     }
     if (visibleOptions.length === 0) {
+      // Same class of bug documented above clickBestSuggestion's own
+      // proximity filter (confirmed live: this exact fallback matched
+      // leftover keyword chips and candidate-card text concatenated
+      // together, e.g. "...| >=13 Lacs | HyderabadFill searchSearch
+      // profiles", instead of a real experience option) — isPlausibleSuggestionElement's
+      // length cap is the same guard used everywhere else that scans
+      // SUGGESTION_SELECTORS against the whole document; this path just
+      // never applied it.
       const elRect = el.getBoundingClientRect();
       visibleOptions = Array.from(document.querySelectorAll(
         "div.sug-item, li.suggestion-item, div[class*='option'], li[class*='option'], ul li"
       )).filter((opt) => {
-        if (opt.offsetParent === null) return false;
+        if (opt.offsetParent === null || !isPlausibleSuggestionElement(opt)) return false;
         const r = opt.getBoundingClientRect();
         return Math.abs(r.top - elRect.bottom) <= DROPDOWN_PROXIMITY_PX
           || Math.abs(elRect.top - r.bottom) <= DROPDOWN_PROXIMITY_PX;
