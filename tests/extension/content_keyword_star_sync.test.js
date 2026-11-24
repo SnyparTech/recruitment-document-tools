@@ -147,6 +147,40 @@ test("syncKeywordStarsOnForm does not click anything when state already matches"
   assert.equal(alreadyPreferred._star._clicked, false);
 });
 
+test("waitForKeywordChipsReady polls until chips actually hydrate instead of seeing an empty form", async () => {
+  // Reproduces a real bug: right after a Modify navigation, the keyword
+  // INPUT renders well before Naukri re-hydrates the form's pre-existing
+  // keyword CHIPS. waitForFormReady only checks for the input, so
+  // syncKeywordStarsOnForm ran against a form with zero chips — not
+  // "nothing needed changing", genuinely nothing there yet — confirmed
+  // live via "Synced live Resdex keywords to website draft:
+  // {required: Array(0), preferred: Array(0)}" right after a real sync.
+  let chips = [];
+  const sandbox = loadSandbox([]);
+  sandbox.document.querySelectorAll = (selector) => {
+    const lower = selector.toLowerCase();
+    if (lower.includes("chip") || lower.includes("tag") || lower.includes("pill") || lower.includes("tuple")) {
+      return chips;
+    }
+    return [];
+  };
+
+  setTimeout(() => {
+    const realChip = new FakeEl({ tag: "span", className: "chip-item", text: "Python" });
+    realChip._isChip = true;
+    chips = [realChip];
+  }, 250);
+
+  const ready = await sandbox.waitForKeywordChipsReady(2000);
+  assert.equal(ready, true, "must wait for chips to actually appear rather than giving up immediately");
+});
+
+test("waitForKeywordChipsReady times out honestly if chips never appear", async () => {
+  const sandbox = loadSandbox([]);
+  const ready = await sandbox.waitForKeywordChipsReady(300);
+  assert.equal(ready, false);
+});
+
 test("getLeafChipElements excludes a genuine multi-chip wrapper but keeps a real chip whose own star/remove icon coincidentally matches the chip selector", () => {
   // Reproduces a real bug report: Resdex wraps an "AI suggested keywords...
   // Press 'Ctrl' to mark mandatory" instructional block in a container

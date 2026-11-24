@@ -2148,6 +2148,23 @@ async function waitForFormReady(timeoutMs = 20000) {
 // keyword into a form that already has chips for them, risking duplicates),
 // this only flips the star on each EXISTING chip to match the new mandatory
 // set, then re-clicks Search Candidates.
+
+// waitForFormReady only confirms the keyword INPUT exists — confirmed live
+// that right after a Modify navigation, the input renders well before the
+// form's pre-existing keyword CHIPS actually hydrate. Without this,
+// syncKeywordStarsOnForm (and the live-keyword read right after it) ran
+// against an empty form, finding zero chips — not "nothing needed
+// changing", genuinely nothing there yet — and the subsequent Search
+// click landed on a page that was still mid-settle too.
+async function waitForKeywordChipsReady(timeoutMs = 5000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (getLeafChipElements(document).length > 0) return true;
+    await sleep(200);
+  }
+  return false;
+}
+
 async function syncKeywordStarsOnForm(plan) {
   const requiredKws = (plan.keywords && plan.keywords.required) || [];
   const preferredKws = (plan.keywords && plan.keywords.preferred) || [];
@@ -2909,6 +2926,7 @@ async function fetchAndFill(forced = false) {
       if (fetchedData.plan?._keyword_sync_only) {
         // HR only changed which keywords are mandatory — flip stars on the
         // existing chips instead of retyping the whole form.
+        await waitForKeywordChipsReady();
         await syncKeywordStarsOnForm(fetchedData.plan);
         const verified = await clickSearchButtonAndVerify();
         if (verified) {
@@ -2937,6 +2955,7 @@ async function fetchAndFill(forced = false) {
           await setActiveIn(fetchedData.plan.active_in);
           await sleep(300);
         }
+        await waitForKeywordChipsReady();
         await syncKeywordStarsOnForm(fetchedData.plan);
         const verified = await clickSearchButtonAndVerify();
         if (verified) {
