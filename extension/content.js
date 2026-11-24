@@ -2926,22 +2926,35 @@ async function fetchAndFill(forced = false) {
       if (fetchedData.plan?._keyword_sync_only) {
         // HR only changed which keywords are mandatory — flip stars on the
         // existing chips instead of retyping the whole form.
-        await waitForKeywordChipsReady();
-        await syncKeywordStarsOnForm(fetchedData.plan);
-        const verified = await clickSearchButtonAndVerify();
-        if (verified) {
-          sessionStorage.setItem(AUTOPAGE_KEY, "1");
-          sessionStorage.removeItem("snypar_autopage_total");
-          sessionStorage.setItem(FILL_CACHE_KEY, planTs);
-          // Naukri can keep the same sid across a Modify+re-search even
-          // though the results genuinely changed — without this, the very
-          // next extraction tick sees this sid on the completed-list and
-          // immediately strips AUTOPAGE_KEY back off, stalling on page 1.
-          const sid = currentSearchId();
-          if (sid) unmarkSidCompleted(sid);
-          lastExtractedResultsUrl = null;
-        } else {
-          console.warn("[Snypar Bot] Keyword sync search re-run not verified — will retry on next eligible poll.");
+        //
+        // isFilling guards this exact block too, not just fillResdexForm —
+        // confirmed live: without it, a poll 2s later (this retry-with-
+        // verification can take 20+s) saw isFilling still false and started
+        // a SECOND, overlapping operation (a full fill) on the same page at
+        // the same time. The search-button click was failing to verify
+        // specifically because it was racing against that concurrent
+        // fillResdexForm re-typing the form underneath it.
+        isFilling = true;
+        try {
+          await waitForKeywordChipsReady();
+          await syncKeywordStarsOnForm(fetchedData.plan);
+          const verified = await clickSearchButtonAndVerify();
+          if (verified) {
+            sessionStorage.setItem(AUTOPAGE_KEY, "1");
+            sessionStorage.removeItem("snypar_autopage_total");
+            sessionStorage.setItem(FILL_CACHE_KEY, planTs);
+            // Naukri can keep the same sid across a Modify+re-search even
+            // though the results genuinely changed — without this, the very
+            // next extraction tick sees this sid on the completed-list and
+            // immediately strips AUTOPAGE_KEY back off, stalling on page 1.
+            const sid = currentSearchId();
+            if (sid) unmarkSidCompleted(sid);
+            lastExtractedResultsUrl = null;
+          } else {
+            console.warn("[Snypar Bot] Keyword sync search re-run not verified — will retry on next eligible poll.");
+          }
+        } finally {
+          isFilling = false;
         }
         return;
       }
@@ -2950,23 +2963,28 @@ async function fetchAndFill(forced = false) {
         // "Not satisfied with results" retry: same fast star-sync path as
         // _keyword_sync_only, PLUS active_in also needs re-applying (the
         // backend may have widened it up to 30 days as part of broadening).
-        updateWidgetStatus("Broadening search (keywords + active in)...", "busy");
-        if (fetchedData.plan.active_in) {
-          await setActiveIn(fetchedData.plan.active_in);
-          await sleep(300);
-        }
-        await waitForKeywordChipsReady();
-        await syncKeywordStarsOnForm(fetchedData.plan);
-        const verified = await clickSearchButtonAndVerify();
-        if (verified) {
-          sessionStorage.setItem(AUTOPAGE_KEY, "1");
-          sessionStorage.removeItem("snypar_autopage_total");
-          sessionStorage.setItem(FILL_CACHE_KEY, planTs);
-          const sid = currentSearchId();
-          if (sid) unmarkSidCompleted(sid);
-          lastExtractedResultsUrl = null;
-        } else {
-          console.warn("[Snypar Bot] Broaden-search re-run not verified — will retry on next eligible poll.");
+        isFilling = true;
+        try {
+          updateWidgetStatus("Broadening search (keywords + active in)...", "busy");
+          if (fetchedData.plan.active_in) {
+            await setActiveIn(fetchedData.plan.active_in);
+            await sleep(300);
+          }
+          await waitForKeywordChipsReady();
+          await syncKeywordStarsOnForm(fetchedData.plan);
+          const verified = await clickSearchButtonAndVerify();
+          if (verified) {
+            sessionStorage.setItem(AUTOPAGE_KEY, "1");
+            sessionStorage.removeItem("snypar_autopage_total");
+            sessionStorage.setItem(FILL_CACHE_KEY, planTs);
+            const sid = currentSearchId();
+            if (sid) unmarkSidCompleted(sid);
+            lastExtractedResultsUrl = null;
+          } else {
+            console.warn("[Snypar Bot] Broaden-search re-run not verified — will retry on next eligible poll.");
+          }
+        } finally {
+          isFilling = false;
         }
         return;
       }
