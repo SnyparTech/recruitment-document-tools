@@ -2147,9 +2147,19 @@ async function syncKeywordStarsOnForm(plan) {
 
   const chips = getLeafChipElements(document);
   let toggled = 0;
+  // A real chip's inner label (e.g. a "tag-label" span) can independently
+  // match the chip selector as a SIBLING-level entry alongside the actual
+  // interactive chip that has the star — getLeafChipElements' leaf check
+  // doesn't catch this since neither contains the other. Observed live:
+  // every single keyword logged both a correct star-toggle decision AND a
+  // spurious "no star element found" warning for the same text. Once a
+  // keyword's real chip has been processed, skip any further match with
+  // the same normalized text — the interactive element consistently comes
+  // first in DOM order.
+  const processedNorms = new Set();
   for (const chip of chips) {
     const chipNorm = chip.textContent.toLowerCase().replace(/[^a-z0-9]/g, "");
-    if (!chipNorm) continue;
+    if (!chipNorm || processedNorms.has(chipNorm)) continue;
 
     let want = null;
     if (mandatoryNorm.some((kw) => kw && chipNorm.includes(kw))) want = true;
@@ -2157,6 +2167,7 @@ async function syncKeywordStarsOnForm(plan) {
     if (want === null) continue; // chip isn't one of our tracked keywords — leave it
 
     const star = findMandatoryStarInChip(chip);
+    if (star) processedNorms.add(chipNorm);
     if (!star) {
       console.warn(`[Snypar Bot] Keyword sync: no star element found in chip "${chip.textContent.trim().slice(0, 40)}" — can't toggle it. Chip outerHTML:`, chip.outerHTML?.slice(0, 300));
       continue;
@@ -2174,27 +2185,48 @@ async function syncKeywordStarsOnForm(plan) {
   return toggled;
 }
 
-async function clickSearchButtonAndVerify() {
-  updateWidgetStatus("Re-running search with updated keywords...", "busy");
-  await sleep(300);
+function findSearchButton() {
   const allBtns = Array.from(document.querySelectorAll(
     "button#adv-search-btn, button, a[role='button'], input[type='submit'], input[type='button']"
   ));
-  const searchBtn = allBtns.find((b) => {
+  return allBtns.find((b) => {
     const txt = (b.value || b.textContent || "").trim().toLowerCase();
     return b.id === "adv-search-btn" ||
       ((txt.includes("search candidate") || txt === "search" || txt === "search candidates") && b.offsetParent !== null);
   });
-  if (!searchBtn) {
-    updateWidgetStatus("⚠ Search button not found", "offline");
-    return false;
+}
+
+// The full-fill path naturally has a long sequence of typing/section-
+// expanding before it ever clicks Search, giving the SPA plenty of time to
+// settle. This lightweight path (keyword-sync/broaden) goes almost
+// straight from "form ready" to "click Search" right after a Modify
+// navigation — far less natural settle time, which was failing to verify
+// a real re-run often enough to matter. Retries once with a fresh button
+// lookup (the first reference can go stale across a SPA re-render) and a
+// longer settle delay before giving up.
+async function clickSearchButtonAndVerify() {
+  updateWidgetStatus("Re-running search with updated keywords...", "busy");
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await sleep(attempt === 0 ? 800 : 1200);
+    const searchBtn = findSearchButton();
+    if (!searchBtn) {
+      if (attempt === 0) continue;
+      updateWidgetStatus("⚠ Search button not found", "offline");
+      return false;
+    }
+    searchBtn.scrollIntoView({ behavior: "smooth", block: "center" });
+    await sleep(300);
+    searchBtn.click();
+    const verified = await waitForResultsPageVerified(10000);
+    if (verified) {
+      updateWidgetStatus("✓ Search re-run with updated keywords", "online");
+      return true;
+    }
+    console.warn(`[Snypar Bot] Search re-run not verified on attempt ${attempt + 1}/2.`);
   }
-  searchBtn.scrollIntoView({ behavior: "smooth", block: "center" });
-  await sleep(300);
-  searchBtn.click();
-  const verified = await waitForResultsPageVerified(10000);
-  updateWidgetStatus(verified ? "✓ Search re-run with updated keywords" : "⚠ Search click unconfirmed", verified ? "online" : "offline");
-  return verified;
+  updateWidgetStatus("⚠ Search click unconfirmed", "offline");
+  return false;
 }
 
 async function ensureOnFormPage() {

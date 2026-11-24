@@ -63,6 +63,23 @@ test("waitForResultsPageVerified returns false if the URL never changes to the r
   assert.equal(verified, false);
 });
 
+test("findSearchButton matches by id first, falling back to visible 'Search Candidates' text", () => {
+  const sandbox = loadContentJsSandbox();
+
+  const byId = { id: "adv-search-btn", textContent: "irrelevant", offsetParent: null };
+  const byText = { id: "", textContent: "Search Candidates", offsetParent: {} };
+  const hiddenByText = { id: "", textContent: "Search Candidates", offsetParent: null }; // display:none — must be skipped
+
+  sandbox.document.querySelectorAll = () => [hiddenByText, byText];
+  assert.equal(sandbox.findSearchButton(), byText, "must skip an invisible match for a visible one");
+
+  sandbox.document.querySelectorAll = () => [byId, byText];
+  assert.equal(sandbox.findSearchButton(), byId, "an id match is found (doesn't require visibility, unlike the text match)");
+
+  sandbox.document.querySelectorAll = () => [hiddenByText];
+  assert.equal(sandbox.findSearchButton(), undefined, "no visible candidate at all — nothing to find");
+});
+
 test("caching decision logic: a plan is only treated as fully applied when search wasn't requested, or was requested AND verified", () => {
   // Mirrors the `searchOutcomeOk` decision in fetchAndFill() — re-derives the same
   // boolean expression to guard against regressions in that specific logic gate.

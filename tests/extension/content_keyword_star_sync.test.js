@@ -194,6 +194,31 @@ test("getLeafChipElements excludes a genuine multi-chip wrapper but keeps a real
   assert.ok(!leaves.some((el) => /ai suggested/i.test(el.textContent)), "nothing with the instructional text should survive");
 });
 
+test("syncKeywordStarsOnForm doesn't warn or misfire when a chip's inner label independently matches the chip selector too", () => {
+  // Reproduces a real live-console bug: for EVERY keyword, Resdex's chip
+  // markup has a label span (e.g. class="tag-label ellipsis") that matches
+  // the same broad chip selector as a SIBLING-level match alongside the
+  // real interactive chip (which has the star) — not nested inside it, so
+  // getLeafChipElements' "no nested match" check doesn't catch it. Both
+  // elements carry the same keyword text; only the real one has a star.
+  const star = new FakeEl({ tag: "button", className: "star-tag-wrapper naukri-btn-tertiary naukri-btn-zero" });
+  const realChip = new FakeEl({ tag: "span", className: "chip-item", text: "Sap Btp", children: [star] });
+  realChip._isChip = true;
+  const labelOnlySibling = new FakeEl({ tag: "span", className: "tag-label ellipsis", text: "Sap Btp" });
+  labelOnlySibling._isChip = true;
+
+  const sandbox = loadSandbox([realChip, labelOnlySibling]);
+  const warnings = [];
+  sandbox.console = { ...console, warn: (...args) => warnings.push(args) };
+
+  const plan = { keywords: { required: ["Sap Btp"], preferred: [] } };
+  return sandbox.syncKeywordStarsOnForm(plan).then((toggled) => {
+    assert.equal(toggled, 1, "the real chip's star must still get toggled");
+    assert.equal(star._clicked, true);
+    assert.equal(warnings.length, 0, "the label-only duplicate must not produce a spurious 'no star found' warning");
+  });
+});
+
 test("isStarMarkedMandatory recognizes aria-pressed/aria-checked/data-active even without a matching class name", () => {
   const sandbox = loadSandbox([]);
   const byAriaPressed = new FakeEl({ tag: "button", className: "icon-xyz", attrs: { "aria-pressed": "true" } });
