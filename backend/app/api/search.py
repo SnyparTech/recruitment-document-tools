@@ -45,6 +45,17 @@ ALLOWED_DOC_EXTENSIONS = {".pdf", ".docx", ".doc", ".txt"}
 MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
 
 
+def _cap_keyword_length(keywords: List[str]) -> List[str]:
+    """Drops any keyword over Resdex's 200-char per-keyword limit. Used by
+    PATCH /plan/keywords specifically — unlike POST /search/plan (schema-
+    validated via ValidationService, which already rejects an over-length
+    keyword with 422) this endpoint stores keywords straight from the
+    request body with no validation at all, so an over-length keyword
+    could reach Resdex untouched and break form-filling there."""
+    max_len = requirement_service.agent.MAX_KEYWORD_LENGTH
+    return [k for k in (keywords or []) if k and len(k) <= max_len]
+
+
 # NOTE: same single-tenant, process-global storage pattern documented below —
 # known limitation (see audit P0/P1 follow-up on session isolation), not
 # addressed in this change. What IS addressed: these globals are now backed
@@ -353,8 +364,8 @@ async def update_plan_keyword_mandatory(request: UpdateKeywordMandatoryRequest):
         )
 
     kw = _latest_search_plan.get("keywords") or {}
-    kw["required"] = request.required
-    kw["preferred"] = request.preferred
+    kw["required"] = _cap_keyword_length(request.required)
+    kw["preferred"] = _cap_keyword_length(request.preferred)
     _latest_search_plan["keywords"] = kw
     _latest_search_plan["_submit_search"] = True
     _latest_search_plan["_keyword_sync_only"] = True

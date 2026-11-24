@@ -33,6 +33,25 @@ def test_direct_plan_valid_is_stored():
     assert res.json()["validation"]["valid"] is True
 
 
+def test_direct_plan_rejects_overlength_keyword():
+    """POST /search/plan is schema-validated (ValidationService) before
+    storing — an over-200-char keyword is rejected outright, not silently
+    stored. Unlike PATCH /plan/keywords (see below), which has no
+    validation at all and must cap instead of reject."""
+    payload = _valid_plan_payload()
+    payload["plan"]["keywords"]["preferred"] = ["A" * 250, "FastAPI"]
+    res = client.post("/search/plan", json=payload)
+    assert res.status_code == 422
+    assert any("200-character" in e for e in res.json()["errors"])
+
+
+def test_patch_plan_keywords_drops_overlength_keyword():
+    client.post("/search/plan", json=_valid_plan_payload())
+    res = client.patch("/search/plan/keywords", json={"required": ["Python"], "preferred": ["A" * 250]})
+    assert res.status_code == 200, res.text
+    assert res.json()["plan"]["keywords"]["preferred"] == []
+
+
 def test_direct_plan_invalid_enum_rejected():
     payload = _valid_plan_payload()
     payload["plan"]["gender"] = "Not A Real Option"

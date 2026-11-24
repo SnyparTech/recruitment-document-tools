@@ -88,7 +88,12 @@ document.getElementById("pair-btn").addEventListener("click", async () => {
         return;
       }
       msg.className = "error";
-      msg.innerText = (data && data.detail) || "Pairing failed.";
+      // Backend's HTTPException handler wraps a plain-string detail as
+      // {"error": ..., "message": "<reason>"} — there's no top-level
+      // "detail" key, so checking only data.detail always fell through to
+      // the generic fallback below instead of the real reason (expired
+      // code, wrong code, etc).
+      msg.innerText = (data && (data.message || data.detail)) || "Pairing failed.";
       return;
     } catch (e) {}
   }

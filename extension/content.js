@@ -21,8 +21,6 @@ const BACKEND_BASE_URLS = [
 let lastProcessedTimestamp = 0;
 let isFilling = false;
 let isPaused = false;
-let lastFillCompletedAt = 0;
-const FILL_COOLDOWN_MS = 90_000;
 const FILL_CACHE_KEY = "snypar_last_fill_ts";
 
 const RESDEX_FORM_URL = "https://resdex.naukri.com/v3?activeTab=advSrch";
@@ -2096,7 +2094,6 @@ async function fillResdexForm(plan, autoSubmit = false) {
     window.removeEventListener("submit", blockSubmit, true);
     isPaused = false;
     isFilling = false;
-    lastFillCompletedAt = Date.now();
   }
 }
 
@@ -2625,6 +2622,19 @@ function isSidCompleted(sid) {
   }
 }
 
+// A keyword-sync/broaden re-search can land on the SAME sid Naukri already
+// had (Modify doesn't always mint a new one) while still producing
+// genuinely different results. Without this, extractAndSubmitOnce's own
+// isSidCompleted(sid) check immediately strips the AUTOPAGE_KEY we just set
+// back off on the very next poll tick, and pagination never advances past
+// page 1 of the fresh results.
+function unmarkSidCompleted(sid) {
+  try {
+    const list = JSON.parse(localStorage.getItem(COMPLETED_SIDS_KEY) || "[]");
+    localStorage.setItem(COMPLETED_SIDS_KEY, JSON.stringify(list.filter((s) => s !== sid)));
+  } catch (e) {}
+}
+
 function markSidCompleted(sid) {
   try {
     let list = JSON.parse(localStorage.getItem(COMPLETED_SIDS_KEY) || "[]");
@@ -2839,13 +2849,6 @@ async function fetchAndFill(forced = false) {
         return;
       }
 
-      const msSinceFill = Date.now() - lastFillCompletedAt;
-      if (!forced && lastFillCompletedAt > 0 && msSinceFill < FILL_COOLDOWN_MS) {
-        const secLeft = Math.ceil((FILL_COOLDOWN_MS - msSinceFill) / 1000);
-        updateWidgetStatus(`⏳ Cooldown (${secLeft}s)`, "busy");
-        return;
-      }
-
       if (!forced && fetchedData.timestamp <= lastProcessedTimestamp) {
         updateWidgetStatus("✓ Plan Already Applied", "online");
         return;
@@ -2871,6 +2874,13 @@ async function fetchAndFill(forced = false) {
           sessionStorage.setItem(AUTOPAGE_KEY, "1");
           sessionStorage.removeItem("snypar_autopage_total");
           sessionStorage.setItem(FILL_CACHE_KEY, planTs);
+          // Naukri can keep the same sid across a Modify+re-search even
+          // though the results genuinely changed — without this, the very
+          // next extraction tick sees this sid on the completed-list and
+          // immediately strips AUTOPAGE_KEY back off, stalling on page 1.
+          const sid = currentSearchId();
+          if (sid) unmarkSidCompleted(sid);
+          lastExtractedResultsUrl = null;
         } else {
           console.warn("[Snypar Bot] Keyword sync search re-run not verified — will retry on next eligible poll.");
         }
@@ -2892,6 +2902,9 @@ async function fetchAndFill(forced = false) {
           sessionStorage.setItem(AUTOPAGE_KEY, "1");
           sessionStorage.removeItem("snypar_autopage_total");
           sessionStorage.setItem(FILL_CACHE_KEY, planTs);
+          const sid = currentSearchId();
+          if (sid) unmarkSidCompleted(sid);
+          lastExtractedResultsUrl = null;
         } else {
           console.warn("[Snypar Bot] Broaden-search re-run not verified — will retry on next eligible poll.");
         }
@@ -2935,7 +2948,6 @@ if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage)
 
     } else if (req.action === "FORCE_FILL") {
       sessionStorage.removeItem(FILL_CACHE_KEY);
-      lastFillCompletedAt = 0;
       lastProcessedTimestamp = 0;
       isPaused = false;
       console.log("[Snypar Bot] Force Re-fill triggered — cache cleared.");
