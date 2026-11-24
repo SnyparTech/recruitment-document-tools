@@ -488,7 +488,15 @@ export default function SearchAgentView({ onCompileCandidate }) {
 
       setSearchResponse((prev) => prev && { ...prev, search_plan: data.plan });
       setDraftPlan(data.plan);
-      setDraftUpdateMsg({ ok: true, text: 'Extension will click Modify and re-run the search on Resdex.' });
+      // The backend always flags _submit_search on this PATCH (the extension
+      // really does click Modify + re-run Search), but executeMode here was
+      // never updated to reflect that — if the original apply was "Fill Form
+      // Only", isPollingResults stayed gated on the stale 'dry_run' value
+      // forever, so the website never polled for the new results even
+      // though Resdex actually produced them.
+      setExecuteMode('submit');
+      setCandidatePage(1);
+      setDraftUpdateMsg({ ok: true, text: 'Extension will click Modify, re-run the search, and the results below will refresh automatically.' });
     } catch (err) {
       setDraftUpdateMsg({ ok: false, text: err.message || 'Failed to update keywords.' });
     } finally {
@@ -763,7 +771,12 @@ export default function SearchAgentView({ onCompileCandidate }) {
       if (!resp.ok) throw new Error(data.detail?.message || data.detail || 'Failed to update keywords.');
 
       setSearchResponse((prev) => prev && { ...prev, search_plan: data.plan });
-      setKeywordApplyMsg({ ok: true, text: 'Applied — extension will click Modify and re-run the search on Resdex.' });
+      // Same executeMode gap as updateDraftKeywordStars — this PATCH always
+      // triggers a real re-search on Resdex, but isPollingResults stayed
+      // stuck on a stale 'dry_run' executeMode otherwise.
+      setExecuteMode('submit');
+      setCandidatePage(1);
+      setKeywordApplyMsg({ ok: true, text: 'Extension will click Modify, re-run the search, and the results below will refresh automatically.' });
     } catch (err) {
       setKeywordApplyMsg({ ok: false, text: err.message || 'Failed to apply keyword changes.' });
     } finally {
@@ -809,19 +822,6 @@ export default function SearchAgentView({ onCompileCandidate }) {
   const draftKeywordPills = draftPlan?.keywords
     ? [...new Set([...(draftPlan.keywords.required || []), ...(draftPlan.keywords.preferred || [])])]
     : [];
-
-  // The Draft panel and the Applied panel below it render the same
-  // keywords/JSON shape — only show the Draft one while it's actually
-  // unapplied (or diverged from what's live), so a freshly-applied plan
-  // doesn't render twice in a row.
-  const planSignature = (plan) => {
-    if (!plan) return null;
-    const clean = {};
-    Object.keys(plan).sort().forEach((k) => { if (!k.startsWith('_')) clean[k] = plan[k]; });
-    return JSON.stringify(clean);
-  };
-  const hasPendingDraftChanges =
-    !!draftPlan && planSignature(draftPlan) !== planSignature(searchResponse?.search_plan);
 
   return (
     <div>
@@ -1167,7 +1167,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
 
         {/* Draft plan keyword pills + Apply-to-Resdex — hidden once applied
             and unchanged (see Applied SearchPlan panel below instead) */}
-        {draftPlan && hasPendingDraftChanges && (
+        {draftPlan && (
           <div className="subtle-panel" style={{ marginTop: 20 }}>
             <div style={{ fontWeight: 700, marginBottom: 4 }}>Draft keywords</div>
             <p className="card-subtitle" style={{ marginTop: 0, marginBottom: 10 }}>

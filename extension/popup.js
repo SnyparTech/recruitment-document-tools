@@ -1,4 +1,5 @@
 const BACKEND_BASES = [
+  "https://labor-photos-charm-mail.trycloudflare.com",
   "https://ouch-devouring-unhelpful.ngrok-free.dev",
   "http://127.0.0.1:8001",
   "http://localhost:8001",

@@ -13,6 +13,7 @@
 // adding a new endpoint (e.g. /search/results) doesn't require a second,
 // independently-drifting copy of this list — see fetchFromBackend/postToBackend.
 const BACKEND_BASE_URLS = [
+  "https://labor-photos-charm-mail.trycloudflare.com",
   "https://ouch-devouring-unhelpful.ngrok-free.dev",
   "http://127.0.0.1:8001",
   "http://localhost:8001",
