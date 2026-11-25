@@ -2243,13 +2243,25 @@ async function clickSearchButtonAndVerify() {
     }
     searchBtn.scrollIntoView({ behavior: "smooth", block: "center" });
     await sleep(300);
+    const urlBeforeClick = window.location.href;
     searchBtn.click();
     const verified = await waitForResultsPageVerified(10000);
     if (verified) {
       updateWidgetStatus("✓ Search re-run with updated keywords", "online");
       return true;
     }
-    console.warn(`[Snypar Bot] Search re-run not verified on attempt ${attempt + 1}/2.`);
+    // No "Search button not found" warning means something WAS found and
+    // clicked — this dump is the only way to tell, without live DOM access,
+    // whether it clicked the right element that simply didn't navigate, a
+    // different/wrong element entirely, or whether the URL changed to
+    // something waitForResultsPageVerified's "/v3/search" check doesn't
+    // recognize. Same pattern already used by setExperience's own
+    // failure-path DOM dump elsewhere in this file.
+    console.warn(
+      `[Snypar Bot] Search re-run not verified on attempt ${attempt + 1}/2. ` +
+      `URL before click: "${urlBeforeClick}" — URL now: "${window.location.href}" — clicked button outerHTML:`,
+      searchBtn.outerHTML?.slice(0, 500)
+    );
   }
   updateWidgetStatus("⚠ Search click unconfirmed", "offline");
   return false;
