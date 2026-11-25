@@ -2235,14 +2235,23 @@ async function clickSearchButtonAndVerify() {
 
   for (let attempt = 0; attempt < 2; attempt++) {
     await sleep(attempt === 0 ? 800 : 1200);
+    // Confirmed by hand: the real Search Candidates button only works once
+    // it's actually been scrolled into view — whatever Naukri attaches to
+    // it isn't ready before that, even though a programmatic .click() still
+    // fires either way. Scroll to the bottom first (same as scrolling down
+    // manually), THEN precisely position the button, both instant — a
+    // "smooth" scroll's duration depends on distance and was racing the
+    // fixed 300ms settle delay that followed it.
+    window.scrollTo({ top: document.body.scrollHeight, behavior: "instant" });
+    await sleep(200);
     const searchBtn = findSearchButton();
     if (!searchBtn) {
       if (attempt === 0) continue;
       updateWidgetStatus("⚠ Search button not found", "offline");
       return false;
     }
-    searchBtn.scrollIntoView({ behavior: "smooth", block: "center" });
-    await sleep(300);
+    searchBtn.scrollIntoView({ behavior: "instant", block: "center" });
+    await sleep(400);
     const urlBeforeClick = window.location.href;
     searchBtn.click();
     const verified = await waitForResultsPageVerified(10000);
