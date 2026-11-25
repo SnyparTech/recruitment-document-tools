@@ -218,6 +218,9 @@ def test_apply_to_resdex_keeps_the_session_draft_in_sync():
     assert chat_state["plan"]["keywords"]["required"] == ["Python"], (
         "the next poll must see the same thing just applied, not a stale pre-apply draft"
     )
+    assert res.json()["session_draft_timestamp"] == chat_state["timestamp"], (
+        "frontend uses this to recognize a poll response racing an in-flight apply as stale and skip it"
+    )
 
 
 def test_update_keyword_mandatory_with_session_id_keeps_session_draft_in_sync():
@@ -244,3 +247,13 @@ def test_update_keyword_mandatory_with_session_id_keeps_session_draft_in_sync():
 
     chat_state = client.get(f"/search/plan/chat?session_id={session_id}").json()
     assert chat_state["plan"]["keywords"]["preferred"] == ["Python"]
+    assert res.json()["session_draft_timestamp"] == chat_state["timestamp"]
+
+
+def test_apply_without_session_id_returns_no_session_draft_timestamp():
+    """No session to keep in sync — must not crash, must not fabricate one."""
+    _reset_to_one_empty_session()
+    plan = {"keywords": {"required": ["Python"], "preferred": [], "excluded": []}}
+    res = client.post("/search/plan", json={"plan": plan, "submit_search": False})
+    assert res.status_code == 200, res.text
+    assert res.json()["session_draft_timestamp"] is None

@@ -80,3 +80,10 @@ class CandidateSearchResponse(BaseModel):
     search_plan: SearchPlan = Field(..., description="Structured, validated Resdex SearchPlan")
     validation: ValidationResult = Field(..., description="Schema validation report")
     execution: ExecutionResult = Field(..., description="Execution status report")
+    session_draft_timestamp: Optional[float] = Field(
+        default=None,
+        description="Set only by POST /search/plan when a session_id was given — the originating "
+        "session's own draft_timestamp right after this apply synced it. Lets the frontend's "
+        "periodic GET /plan/chat poll recognize its own response as stale and skip applying it, "
+        "instead of racing an in-flight apply and reverting it back out from under the recruiter.",
+    )

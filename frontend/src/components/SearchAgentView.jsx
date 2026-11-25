@@ -37,6 +37,16 @@ export default function SearchAgentView({ onCompileCandidate }) {
   const [showKnowledgeBase, setShowKnowledgeBase] = useState(false);
   const [draftPlan, setDraftPlan] = useState(null);
   const [isChatRestoring, setIsChatRestoring] = useState(true);
+  // Guards against a real race: fetchDraftPlan polls GET /plan/chat every
+  // ~4s with zero awareness of any apply/sync in flight. If that poll's
+  // response resolves around the same time as (or racing) a PATCH/POST
+  // that just updated the session's draft, whichever setDraftPlan call
+  // happens to run last in React wins — non-deterministic, and the
+  // confirmed cause of the Draft Keywords panel randomly reverting/
+  // disappearing seconds after an update. Tracks the newest known
+  // draft_timestamp locally; the poll (and any apply response) only ever
+  // applies a result that's at least as new as what's already known.
+  const draftTimestampRef = useRef(0);
   const chatThreadRef = useRef(null);
 
   // Multi-session chat: a recruiter can run several draft conversations
@@ -368,6 +378,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
       if (!resp.ok) throw new Error(data.detail?.message || data.detail || 'Chat request failed.');
 
       setChatMessages(data.history || []);
+      if (data.timestamp) draftTimestampRef.current = data.timestamp;
       setDraftPlan(data.plan || null);
       if (data.remembered_fact) {
         setRememberedBanner(data.remembered_fact);
@@ -397,6 +408,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
       console.warn('Failed to clear chat on server:', err);
     }
     setChatMessages([]);
+    draftTimestampRef.current = 0; // cleared server-side too — any later poll's real timestamp is >= 0, safe
     setDraftPlan(null);
     setChatInput('');
     setChatError(null);
@@ -442,6 +454,8 @@ export default function SearchAgentView({ onCompileCandidate }) {
       }
 
       setSearchResponse(data);
+      // Advance the race guard first — see draftTimestampRef's own comment.
+      if (data.session_draft_timestamp) draftTimestampRef.current = data.session_draft_timestamp;
       // Keep the draft in sync with what actually got applied (server-echoed,
       // schema-validated) — otherwise the Draft panel immediately reappears
       // next to the Applied panel showing near-identical content, since
@@ -487,6 +501,10 @@ export default function SearchAgentView({ onCompileCandidate }) {
       if (!resp.ok) throw new Error(data.detail?.message || data.detail || 'Failed to update keywords.');
 
       setSearchResponse((prev) => prev && { ...prev, search_plan: data.plan });
+      // Advance the race guard to this apply's own timestamp BEFORE setting
+      // draftPlan — a poll response already in flight with an OLDER
+      // timestamp will now lose the race instead of clobbering this update.
+      if (data.session_draft_timestamp) draftTimestampRef.current = data.session_draft_timestamp;
       setDraftPlan(data.plan);
       // The backend always flags _submit_search on this PATCH (the extension
       // really does click Modify + re-run Search), but executeMode here was
@@ -570,7 +588,10 @@ export default function SearchAgentView({ onCompileCandidate }) {
       if (!resp.ok) return;
       const data = await resp.json();
       if (isInitialLoad) setChatMessages(data.history || []);
-      setDraftPlan(data.plan || null);
+      if ((data.timestamp || 0) >= draftTimestampRef.current) {
+        draftTimestampRef.current = data.timestamp || 0;
+        setDraftPlan(data.plan || null);
+      }
       setActiveSessionId(data.session_id || null);
     } catch (err) {
       console.warn('Failed to fetch requirement chat draft:', err);
@@ -597,6 +618,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
       if (!resp.ok) throw new Error('Failed to start a new chat.');
       const data = await resp.json();
       setActiveSessionId(data.session.id);
+      draftTimestampRef.current = 0; // a brand new session — unrelated to whatever the previous one's timestamp was
       setChatMessages([]);
       setDraftPlan(null);
       setChatInput('');
@@ -619,6 +641,7 @@ export default function SearchAgentView({ onCompileCandidate }) {
       const resp = await apiFetch(`${API_BASE}/search/plan/chat?session_id=${sessionId}`);
       const data = await resp.json();
       setActiveSessionId(sessionId);
+      draftTimestampRef.current = data.timestamp || 0; // switching sessions — the old ref value belongs to a different session entirely
       setChatMessages(data.history || []);
       setDraftPlan(data.plan || null);
       setChatError(null);

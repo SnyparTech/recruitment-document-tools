@@ -223,6 +223,7 @@ async def store_search_plan(
     _latest_plan_timestamp = time.time()
     await _persist_now()
 
+    session_draft_timestamp = None
     if request.session_id:
         session = _session_store.get(request.session_id)
         if session:
@@ -232,7 +233,8 @@ async def store_search_plan(
             # ~4s) would then overwrite whatever was just applied with that
             # stale, now-divergent draft, making the Draft Keywords panel
             # appear to randomly revert/disappear seconds after every apply.
-            await _session_store.update_session(session["id"], plan_dict, session["chat_history"], _persist_now)
+            updated_session = await _session_store.update_session(session["id"], plan_dict, session["chat_history"], _persist_now)
+            session_draft_timestamp = updated_session["draft_timestamp"]
 
     msg = "SearchPlan stored. Extension will auto-fill the form."
     if request.submit_search:
@@ -252,6 +254,7 @@ async def store_search_plan(
         search_plan=plan,
         validation=validation,
         execution=execution_result,
+        session_draft_timestamp=session_draft_timestamp,
     )
 
 
@@ -384,16 +387,19 @@ async def update_plan_keyword_mandatory(request: UpdateKeywordMandatoryRequest):
     _latest_plan_timestamp = time.time()
     await _persist_now()
 
+    session_draft_timestamp = None
     if request.session_id:
         session = _session_store.get(request.session_id)
         if session and session.get("draft_plan"):
             session["draft_plan"]["keywords"] = kw
-            await _session_store.update_session(session["id"], session["draft_plan"], session["chat_history"], _persist_now)
+            updated_session = await _session_store.update_session(session["id"], session["draft_plan"], session["chat_history"], _persist_now)
+            session_draft_timestamp = updated_session["draft_timestamp"]
 
     return {
         "status": "success",
         "message": f"{len(request.required)} keyword(s) marked mandatory. Extension will re-apply on Resdex.",
         "plan": _latest_search_plan,
+        "session_draft_timestamp": session_draft_timestamp,
     }
 
 
@@ -638,6 +644,7 @@ async def chat_edit_plan(request: ChatEditRequest, session_id: Optional[str] = N
         "plan": updated["draft_plan"],
         "history": updated["chat_history"],
         "remembered_fact": remembered_fact,
+        "timestamp": updated["draft_timestamp"],
     }
 
 
