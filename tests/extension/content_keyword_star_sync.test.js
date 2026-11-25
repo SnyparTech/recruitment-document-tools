@@ -62,6 +62,16 @@ class FakeEl {
     return [];
   }
   querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
+  closest(selector) {
+    const m = /\[role=["']?([a-z]+)["']?\]/i.exec(selector);
+    const wantRole = m ? m[1] : null;
+    let el = this;
+    while (el) {
+      if (wantRole && el._attrs?.role === wantRole) return el;
+      el = el.parentElement;
+    }
+    return null;
+  }
   click() { this._clicked = true; }
 }
 
@@ -145,6 +155,35 @@ test("syncKeywordStarsOnForm does not click anything when state already matches"
   assert.equal(toggled, 0);
   assert.equal(alreadyRequired._star._clicked, false);
   assert.equal(alreadyPreferred._star._clicked, false);
+});
+
+test("getLeafChipElements excludes a still-open autocomplete suggestion even if its text substring-matches a tracked keyword", () => {
+  // Reproduces a real bug: a still-open designation-lookup suggestion
+  // "Sap Ui5 Developer" (role="option" on the <li>, not an applied chip)
+  // false-matched our tracked "SAPUI5" keyword via raw substring
+  // containment ("sapui5developer".includes("sapui5")) and logged spurious
+  // "no star found" noise for BOTH the <li> and its nested suggestion div.
+  const suggestionLabel = new FakeEl({ tag: "div", className: "suggestor-tag opt", text: "Sap Ui5 Developer" });
+  suggestionLabel._isChip = true;
+  const suggestionOption = new FakeEl({
+    tag: "li",
+    className: "tag-wrap",
+    attrs: { role: "option" },
+    children: [suggestionLabel],
+  });
+  suggestionOption._isChip = true;
+
+  const realChip = new FakeEl({ tag: "span", className: "chip-item", text: "SAPUI5" });
+  realChip._isChip = true;
+
+  const sandbox = loadSandbox([suggestionOption, suggestionLabel, realChip]);
+  const leaves = sandbox.getLeafChipElements({
+    querySelectorAll: () => [suggestionOption, suggestionLabel, realChip],
+  });
+
+  assert.ok(leaves.includes(realChip), "the real applied chip must still be found");
+  assert.ok(!leaves.includes(suggestionOption), "the open suggestion's <li role=option> must be excluded");
+  assert.ok(!leaves.includes(suggestionLabel), "the suggestion's nested label must be excluded too (closest(), not getAttribute())");
 });
 
 test("waitForKeywordChipsReady polls until chips actually hydrate instead of seeing an empty form", async () => {

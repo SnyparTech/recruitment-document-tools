@@ -712,7 +712,16 @@ function getLeafChipElements(root) {
       c.textContent.trim().length > 0 &&
       c.querySelectorAll(CHIP_SELECTOR).length <= 1 &&
       !/press\s+['"]?ctrl['"]?/i.test(c.textContent) &&
-      !/ai suggested/i.test(c.textContent)
+      !/ai suggested/i.test(c.textContent) &&
+      // A still-open autocomplete suggestion (role="option", e.g. a
+      // designation-lookup dropdown item) is a candidate the recruiter
+      // hasn't confirmed yet, not an applied keyword chip — confirmed
+      // live: "Sap Ui5 Developer" (an unrelated designation suggestion)
+      // false-matched our tracked "SAPUI5" keyword via raw substring
+      // containment ("sapui5developer".includes("sapui5")) and logged
+      // spurious "no star found" noise. closest(), not getAttribute(),
+      // since the role lives on an ancestor <li>, not every nested part.
+      !c.closest('[role="option"]')
   );
 }
 
@@ -2212,13 +2221,23 @@ async function syncKeywordStarsOnForm(plan) {
 }
 
 function findSearchButton() {
+  // Direct id lookup first, unambiguous — .find() over a combined selector
+  // list picks whichever element matches ANY branch of the OR first in DOM
+  // order, and a tab-navigation button (role="tab", already aria-selected,
+  // its label just happens to also literally say "Search candidates") can
+  // sit earlier in the DOM than the real #adv-search-btn submit button.
+  // Confirmed live: clicking that tab is a no-op (it's already the active
+  // tab) — identical URL before and after.
+  const byId = document.querySelector("button#adv-search-btn");
+  if (byId) return byId;
+
   const allBtns = Array.from(document.querySelectorAll(
-    "button#adv-search-btn, button, a[role='button'], input[type='submit'], input[type='button']"
+    "button, a[role='button'], input[type='submit'], input[type='button']"
   ));
   return allBtns.find((b) => {
+    if (b.getAttribute("role") === "tab") return false;
     const txt = (b.value || b.textContent || "").trim().toLowerCase();
-    return b.id === "adv-search-btn" ||
-      ((txt.includes("search candidate") || txt === "search" || txt === "search candidates") && b.offsetParent !== null);
+    return (txt.includes("search candidate") || txt === "search" || txt === "search candidates") && b.offsetParent !== null;
   });
 }
 

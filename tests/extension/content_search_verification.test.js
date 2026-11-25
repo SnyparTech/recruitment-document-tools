@@ -63,19 +63,31 @@ test("waitForResultsPageVerified returns false if the URL never changes to the r
   assert.equal(verified, false);
 });
 
-test("findSearchButton matches by id first, falling back to visible 'Search Candidates' text", () => {
+test("findSearchButton does a direct id lookup first, falling back to visible 'Search Candidates' text", () => {
   const sandbox = loadContentJsSandbox();
+  const fakeBtn = (overrides) => ({ id: "", textContent: "", offsetParent: {}, getAttribute: () => null, ...overrides });
 
-  const byId = { id: "adv-search-btn", textContent: "irrelevant", offsetParent: null };
-  const byText = { id: "", textContent: "Search Candidates", offsetParent: {} };
-  const hiddenByText = { id: "", textContent: "Search Candidates", offsetParent: null }; // display:none — must be skipped
+  const byId = fakeBtn({ id: "adv-search-btn", textContent: "irrelevant" });
+  const byText = fakeBtn({ textContent: "Search Candidates" });
+  const hiddenByText = fakeBtn({ textContent: "Search Candidates", offsetParent: null }); // display:none — must be skipped
+  // Confirmed live: a tab-navigation button's label can ALSO literally be
+  // "Search candidates" (already aria-selected, clicking it is a no-op) —
+  // role="tab" must never win the fallback scan even though its text matches.
+  const tabWithSameText = fakeBtn({ textContent: "Search candidates", getAttribute: (n) => (n === "role" ? "tab" : null) });
 
+  sandbox.document.querySelector = () => null; // no direct #adv-search-btn this time
   sandbox.document.querySelectorAll = () => [hiddenByText, byText];
   assert.equal(sandbox.findSearchButton(), byText, "must skip an invisible match for a visible one");
 
-  sandbox.document.querySelectorAll = () => [byId, byText];
-  assert.equal(sandbox.findSearchButton(), byId, "an id match is found (doesn't require visibility, unlike the text match)");
+  sandbox.document.querySelector = () => byId;
+  sandbox.document.querySelectorAll = () => [byText]; // irrelevant — id lookup must win outright
+  assert.equal(sandbox.findSearchButton(), byId, "a direct #adv-search-btn match is used unconditionally, no DOM-order ambiguity");
 
+  sandbox.document.querySelector = () => null;
+  sandbox.document.querySelectorAll = () => [tabWithSameText, byText];
+  assert.equal(sandbox.findSearchButton(), byText, "a role=tab element must never be picked even if its text matches first in DOM order");
+
+  sandbox.document.querySelector = () => null;
   sandbox.document.querySelectorAll = () => [hiddenByText];
   assert.equal(sandbox.findSearchButton(), undefined, "no visible candidate at all — nothing to find");
 });
