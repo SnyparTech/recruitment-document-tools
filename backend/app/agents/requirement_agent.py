@@ -346,6 +346,14 @@ class RequirementAgent:
             "options", ["3 days", "7 days", "15 days", "30 days", "2 months", "3 months", "6 months"]
         )
 
+        add_fields = self.schema.get("sections", {}).get("additional_details", {}).get("fields", {})
+        self._employment_type_options = add_fields.get("employment_type", {}).get(
+            "options", ["Any", "Full time", "Part time"]
+        )
+        self._job_type_options = add_fields.get("job_type", {}).get(
+            "options", ["Any", "Permanent", "Temporary/Contract job"]
+        )
+
     def generate_search_plan(
         self,
         requirement: str,
@@ -497,6 +505,7 @@ Rules:
 - notice_period must be a flat list of strings like ["0-15 days"], never a dict
 - ug_qualification: ONLY set if the JD explicitly states a degree requirement. Allowed values: __UG_OPTIONS__. Otherwise null.
 - pg_qualification: ONLY set if the JD explicitly states a postgraduate requirement. Allowed values: __PG_OPTIONS__. Otherwise null.
+- job_type and employment_type are two DIFFERENT Resdex fields — never merge them into one made-up string like "Permanent / Contract". job_type is ONLY about Permanent vs Contract: allowed values __JOB_TYPE_OPTIONS__, set it if the JD states that distinction, otherwise null. employment_type is ONLY about Full time vs Part time: allowed values __EMPLOYMENT_TYPE_OPTIONS__, set it if the JD states that distinction, otherwise null. Each field's value MUST be exactly one of its own allowed values, never a paraphrase and never the other field's value.
 - Experience: ONLY extract if explicitly stated in the text (e.g. "5 to 10 years"). NEVER invent or guess experience numbers if not mentioned in the JD.
 - verified_mobile, verified_email, attached_resume: ALWAYS set to true by default (show only candidates with verified contact info and resume). Only set to false if explicitly excluded.
 - Leave active_in null unless the requirement explicitly ties a duration to candidate activity/recency (e.g. "active in the last 30 days", "updated within 2 months") — the system defaults it to 15 days otherwise. If stated, active_in MUST be exactly one of these values, not a paraphrase: __ACTIVE_IN_OPTIONS__. NEVER assume or inject hardcoded values for gender, career_break, differently_abled, defence_background, or location. If not explicitly requested in the requirement, set them to null.
@@ -508,6 +517,8 @@ Rules:
             system_prompt.replace("__UG_OPTIONS__", ", ".join(f'"{o}"' for o in self._ug_options))
             .replace("__PG_OPTIONS__", ", ".join(f'"{o}"' for o in self._pg_options))
             .replace("__ACTIVE_IN_OPTIONS__", ", ".join(f'"{o}"' for o in self._active_in_options))
+            .replace("__JOB_TYPE_OPTIONS__", ", ".join(f'"{o}"' for o in self._job_type_options))
+            .replace("__EMPLOYMENT_TYPE_OPTIONS__", ", ".join(f'"{o}"' for o in self._employment_type_options))
         )
         if known_facts:
             system_prompt += (

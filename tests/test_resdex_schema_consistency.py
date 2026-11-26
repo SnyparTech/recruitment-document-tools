@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 from app.agents.requirement_agent import (
     NOTICE_PERIOD_MAP,
+    RequirementAgent,
     load_resdex_schema,
 )
 
@@ -56,6 +57,29 @@ def test_rule_based_job_type_and_employment_type_values_are_valid_schema_options
     allowed_emp_type = _options("additional_details", "employment_type")
     for value in ("Full time", "Part time"):
         assert value in allowed_emp_type
+
+
+def test_llm_prompt_distinguishes_job_type_from_employment_type():
+    """Real bug: the LLM prompt gave no guidance on job_type vs
+    employment_type (two different Resdex fields — Permanent/Contract vs
+    Full time/Part time) and no allowed-values list for either, so it
+    hallucinated a single merged, invalid string "Permanent / Contract"
+    into employment_type, which ValidationService then rejected with a
+    422 on Apply to Resdex. The prompt must list each field's own real
+    options and leave no __PLACEHOLDER__ unsubstituted."""
+    agent = RequirementAgent()
+    # Build the same substitution generate_search_plan() does, without an LLM call.
+    system_prompt = """job_type and employment_type are two DIFFERENT Resdex fields. job_type allowed values: __JOB_TYPE_OPTIONS__. employment_type allowed values: __EMPLOYMENT_TYPE_OPTIONS__."""
+    substituted = (
+        system_prompt.replace("__JOB_TYPE_OPTIONS__", ", ".join(f'"{o}"' for o in agent._job_type_options))
+        .replace("__EMPLOYMENT_TYPE_OPTIONS__", ", ".join(f'"{o}"' for o in agent._employment_type_options))
+    )
+    assert "__JOB_TYPE_OPTIONS__" not in substituted and "__EMPLOYMENT_TYPE_OPTIONS__" not in substituted
+    allowed_job_type = _options("additional_details", "job_type")
+    allowed_emp_type = _options("additional_details", "employment_type")
+    assert set(agent._job_type_options) == allowed_job_type
+    assert set(agent._employment_type_options) == allowed_emp_type
+    assert "Permanent / Contract" not in agent._job_type_options and "Permanent / Contract" not in agent._employment_type_options
 
 
 def test_llm_prompt_education_options_match_schema():
